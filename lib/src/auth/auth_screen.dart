@@ -151,7 +151,15 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
             _field(_password, 'пароль (мин. 8)', secret: true),
           ],
         _Mode.code => [
-            _field(_email, 'почта', keyboard: TextInputType.emailAddress),
+            if (_email.text.trim().isEmpty)
+              _field(_email, 'почта', keyboard: TextInputType.emailAddress)
+            else
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text('Код отправлен на ${_email.text.trim()}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.grey)),
+              ),
             const SizedBox(height: 8),
             _field(_code, 'код из 6 цифр', keyboard: TextInputType.number),
           ],
@@ -165,8 +173,15 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       };
 
   List<Widget> _switchLinks() {
-    TextButton link(String t, _Mode m) =>
-        TextButton(onPressed: () => setState(() => _mode = m), child: Text(t));
+    TextButton link(String t, _Mode m, {bool resend = false}) => TextButton(
+        onPressed: () {
+          if (resend) {
+            _run((r) => r.resendCode(email: _email.text.trim()));
+          } else {
+            setState(() => _mode = m);
+          }
+        },
+        child: Text(t));
     return switch (_mode) {
       _Mode.login => [
           link('Нет аккаунта? Зарегистрироваться', _Mode.register),
@@ -178,6 +193,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
           link('Есть код из письма', _Mode.code),
         ],
       _Mode.code => [
+          link('Отправить код ещё раз', _Mode.code, resend: true),
+          link('Не та почта? Назад к регистрации', _Mode.register),
           link('Назад ко входу', _Mode.login),
         ],
       _Mode.reset => [
