@@ -29,8 +29,9 @@ class AuthScreen extends ConsumerStatefulWidget {
 
 class _AuthScreenState extends ConsumerState<AuthScreen> {
   _Mode _mode = _Mode.login;
-  final _host = TextEditingController(text: '127.0.0.1');
-  final _port = TextEditingController(text: '8181');
+  // Server address lives here for now; a settings screen comes later.
+  static const _host = '127.0.0.1';
+  static const _port = 8181;
   final _login = TextEditingController();
   final _nick = TextEditingController();
   final _email = TextEditingController();
@@ -41,8 +42,6 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   @override
   void dispose() {
-    _host.dispose();
-    _port.dispose();
     _login.dispose();
     _nick.dispose();
     _email.dispose();
@@ -54,7 +53,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   Future<void> _connect() async {
     final conn = ref.read(connectionProvider);
     if (!conn.isOpen) {
-      await conn.connect(_host.text.trim(), int.parse(_port.text.trim()));
+      await conn.connect(_host, _port);
     }
   }
 
@@ -99,23 +98,12 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
             shrinkWrap: true,
             padding: const EdgeInsets.all(24),
             children: [
-              const _Logo(),
+              const Center(child: _Logo()),
               const SizedBox(height: 12),
               Text(_title(),
                   style: Theme.of(context).textTheme.headlineSmall,
                   textAlign: TextAlign.center),
               const SizedBox(height: 16),
-              Row(children: [
-                Expanded(
-                    child: _field(_host, 'Хост',
-                        keyboard: TextInputType.text)),
-                const SizedBox(width: 8),
-                SizedBox(
-                    width: 90,
-                    child: _field(_port, 'Порт',
-                        keyboard: TextInputType.number)),
-              ]),
-              const SizedBox(height: 8),
               ..._modeFields(),
               if (_error != null) ...[
                 const SizedBox(height: 8),
