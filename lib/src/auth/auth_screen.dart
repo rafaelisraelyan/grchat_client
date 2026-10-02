@@ -1,0 +1,282 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../app/providers.dart';
+import 'auth_repository.dart';
+
+enum _Mode { login, register, code, reset }
+
+const _errText = <String, String>{
+  'BAD_CREDENTIALS': 'Неверный логин или пароль',
+  'EMAIL_NOT_VERIFIED': 'Почта не подтверждена — введи код из письма',
+  'NICK_TAKEN': 'Такой ник уже занят',
+  'EMAIL_TAKEN': 'Такая почта уже зарегистрирована',
+  'BAD_NICK': 'Ник: 3–24 символа (латиница, цифры, _ .)',
+  'BAD_EMAIL': 'Проверь почту',
+  'WEAK_PASSWORD': 'Пароль короче 8 символов',
+  'BAD_CODE': 'Неверный код',
+  'CODE_EXPIRED': 'Код протух — запроси новый',
+  'RESEND_COOLDOWN': 'Подожди минуту перед повторной отправкой',
+  'RATE_LIMITED': 'Слишком часто, подожди немного',
+};
+
+class AuthScreen extends ConsumerStatefulWidget {
+  const AuthScreen({super.key});
+
+  @override
+  ConsumerState<AuthScreen> createState() => _AuthScreenState();
+}
+
+class _AuthScreenState extends ConsumerState<AuthScreen> {
+  _Mode _mode = _Mode.login;
+  final _host = TextEditingController(text: '127.0.0.1');
+  final _port = TextEditingController(text: '8181');
+  final _login = TextEditingController();
+  final _nick = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  final _code = TextEditingController();
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _host.dispose();
+    _port.dispose();
+    _login.dispose();
+    _nick.dispose();
+    _email.dispose();
+    _password.dispose();
+    _code.dispose();
+    super.dispose();
+  }
+
+  Future<void> _connect() async {
+    final conn = ref.read(connectionProvider);
+    if (!conn.isOpen) {
+      await conn.connect(_host.text.trim(), int.parse(_port.text.trim()));
+    }
+  }
+
+  Future<void> _run(Future<void> Function(AuthRepository) action) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await _connect();
+      await action(ref.read(authRepositoryProvider));
+    } on GrchatException catch (e) {
+      setState(() => _error = _errText[e.code] ?? 'Ошибка: ${e.code}');
+    } catch (e) {
+      setState(() => _error = 'Нет соединения: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = ref.watch(sessionProvider);
+    if (session != null) {
+      return Scaffold(
+        body: Center(child: Text('Привет, ${session.nick}! Чат — следующим шагом.')),
+      );
+    }
+    return Scaffold(
+      appBar: AppBar(
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.brightness_6),
+            onPressed: () => ref.read(themeModeProvider.notifier).toggle(),
+          ),
+        ],
+      ),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.all(24),
+            children: [
+              const _Logo(),
+              const SizedBox(height: 12),
+              Text(_title(),
+                  style: Theme.of(context).textTheme.headlineSmall,
+                  textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              Row(children: [
+                Expanded(
+                    child: _field(_host, 'Хост',
+                        keyboard: TextInputType.text)),
+                const SizedBox(width: 8),
+                SizedBox(
+                    width: 90,
+                    child: _field(_port, 'Порт',
+                        keyboard: TextInputType.number)),
+              ]),
+              const SizedBox(height: 8),
+              ..._modeFields(),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(_error!, style: const TextStyle(color: Colors.red)),
+              ],
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed: _busy ? null : _submit,
+                child: Text(_busy ? '...' : _submitLabel()),
+              ),
+              const SizedBox(height: 8),
+              ..._switchLinks(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _title() => switch (_mode) {
+        _Mode.login => 'С возвращением',
+        _Mode.register => 'Создать аккаунт',
+        _Mode.code => 'Код из письма',
+        _Mode.reset => 'Новый пароль',
+      };
+
+  String _submitLabel() => switch (_mode) {
+        _Mode.login => 'Войти',
+        _Mode.register => 'Зарегистрироваться',
+        _Mode.code => 'Подтвердить',
+        _Mode.reset => 'Сбросить пароль',
+      };
+
+  List<Widget> _modeFields() => switch (_mode) {
+        _Mode.login => [
+            _field(_login, 'ник или почта'),
+            const SizedBox(height: 8),
+            _field(_password, 'пароль', secret: true),
+          ],
+        _Mode.register => [
+            _field(_nick, 'ник'),
+            const SizedBox(height: 8),
+            _field(_email, 'почта', keyboard: TextInputType.emailAddress),
+            const SizedBox(height: 8),
+            _field(_password, 'пароль (мин. 8)', secret: true),
+          ],
+        _Mode.code => [
+            _field(_email, 'почта', keyboard: TextInputType.emailAddress),
+            const SizedBox(height: 8),
+            _field(_code, 'код из 6 цифр', keyboard: TextInputType.number),
+          ],
+        _Mode.reset => [
+            _field(_email, 'почта', keyboard: TextInputType.emailAddress),
+            const SizedBox(height: 8),
+            _field(_code, 'код из письма', keyboard: TextInputType.number),
+            const SizedBox(height: 8),
+            _field(_password, 'новый пароль', secret: true),
+          ],
+      };
+
+  List<Widget> _switchLinks() {
+    TextButton link(String t, _Mode m) =>
+        TextButton(onPressed: () => setState(() => _mode = m), child: Text(t));
+    return switch (_mode) {
+      _Mode.login => [
+          link('Нет аккаунта? Зарегистрироваться', _Mode.register),
+          link('Забыл пароль', _Mode.reset),
+          link('Есть код из письма', _Mode.code),
+        ],
+      _Mode.register => [
+          link('Уже есть аккаунт? Войти', _Mode.login),
+          link('Есть код из письма', _Mode.code),
+        ],
+      _Mode.code => [
+          link('Назад ко входу', _Mode.login),
+        ],
+      _Mode.reset => [
+          link('Назад ко входу', _Mode.login),
+        ],
+    };
+  }
+
+  void _submit() {
+    switch (_mode) {
+      case _Mode.login:
+        _run((r) async {
+          final s = await r.login(
+              login: _login.text.trim(), password: _password.text);
+          ref.read(sessionProvider.notifier).set(s);
+        });
+      case _Mode.register:
+        _run((r) async {
+          final needVerify = await r.register(
+              nick: _nick.text.trim(),
+              email: _email.text.trim(),
+              password: _password.text);
+          if (!mounted) return;
+          if (needVerify) {
+            _email.text = _email.text.trim();
+            setState(() => _mode = _Mode.code);
+          }
+        });
+      case _Mode.code:
+        _run((r) async {
+          await r.verifyEmail(
+              email: _email.text.trim(), code: _code.text.trim());
+          if (mounted) setState(() => _mode = _Mode.login);
+        });
+      case _Mode.reset:
+        _run((r) async {
+          if (_password.text.isEmpty) {
+            await r.forgot(email: _email.text.trim());
+            if (mounted) {
+              setState(() =>
+                  _error = 'Код отправлен — введи его и новый пароль');
+            }
+          } else {
+            await r.reset(
+                email: _email.text.trim(),
+                code: _code.text.trim(),
+                newPassword: _password.text);
+            if (mounted) setState(() => _mode = _Mode.login);
+          }
+        });
+    }
+  }
+
+  Widget _field(TextEditingController c, String hint,
+      {bool secret = false, TextInputType keyboard = TextInputType.text}) {
+    return TextField(
+      controller: c,
+      obscureText: secret,
+      keyboardType: keyboard,
+      decoration: InputDecoration(
+          hintText: hint,
+          border: const OutlineInputBorder(),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 12)),
+      onSubmitted: (_) {
+        if (!_busy) _submit();
+      },
+    );
+  }
+}
+
+class _Logo extends StatelessWidget {
+  const _Logo();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 64,
+      height: 64,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        gradient: const LinearGradient(
+            colors: [Color(0xFF574CC9), Color(0xFF8AB4FF)]),
+      ),
+      alignment: Alignment.center,
+      child: const Text('G',
+          style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
+    );
+  }
+}
