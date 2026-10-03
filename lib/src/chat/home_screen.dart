@@ -1,8 +1,10 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
+import '../settings/settings_screen.dart';
 import '../widgets/avatar.dart';
 import 'home_state.dart';
 import 'models.dart';
@@ -19,6 +21,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   final _scroll = ScrollController();
   bool _membersOpen = true;
   bool _typingSent = false;
+  double? _uploading;
 
   @override
   void initState() {
@@ -123,8 +126,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Padding(
           padding: const EdgeInsets.all(12),
-          child: Text(curComm?.name ?? 'grchat',
-              style: const TextStyle(fontWeight: FontWeight.w700)),
+          child: Row(children: [
+            Expanded(
+              child: Text(curComm?.name ?? 'grchat',
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+            ),
+            IconButton(
+                tooltip: 'Найти пользователя',
+                icon: const Icon(Icons.search, size: 18),
+                onPressed: _searchDialog),
+          ]),
         ),
         Expanded(
           child: ListView(
@@ -209,6 +220,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             child: Text(s?.nick ?? '?',
                 maxLines: 1, overflow: TextOverflow.ellipsis)),
         IconButton(
+            tooltip: 'Настройки',
+            icon: const Icon(Icons.settings, size: 18),
+            onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const SettingsScreen()))),
+        IconButton(
             tooltip: 'Тема',
             icon: const Icon(Icons.brightness_6, size: 18),
             onPressed: () =>
@@ -283,29 +301,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (scope != null)
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-          child: TextField(
-            controller: _input,
-            decoration: InputDecoration(
-              hintText: 'Написать в ${scope.title}…',
-              border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(20)),
-              contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 16, vertical: 12),
-              suffixIcon: IconButton(
-                  icon: const Icon(Icons.send), onPressed: _send),
-            ),
-            onChanged: (_) {
-              if (!_typingSent) {
-                _typingSent = true;
-                ref.read(homeStateProvider.notifier).sendTyping(true);
-                Future.delayed(const Duration(seconds: 3), () {
-                  _typingSent = false;
-                  ref.read(homeStateProvider.notifier).sendTyping(false);
-                });
-              }
-            },
-            onSubmitted: (_) => _send(),
-          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            if (_uploading != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: LinearProgressIndicator(value: _uploading),
+              ),
+            Row(children: [
+              IconButton(
+                  tooltip: 'Прикрепить файл',
+                  icon: const Icon(Icons.attach_file),
+                  onPressed: _uploading == null ? _pickAndSend : null),
+              Expanded(
+                child: TextField(
+                  controller: _input,
+                  decoration: InputDecoration(
+                    hintText: 'Написать в ${scope.title}…',
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(20)),
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                  ),
+                  onChanged: (_) {
+                    if (!_typingSent) {
+                      _typingSent = true;
+                      ref.read(homeStateProvider.notifier).sendTyping(true);
+                      Future.delayed(const Duration(seconds: 3), () {
+                        _typingSent = false;
+                        ref
+                            .read(homeStateProvider.notifier)
+                            .sendTyping(false);
+                      });
+                    }
+                  },
+                  onSubmitted: (_) => _send(),
+                ),
+              ),
+              IconButton(icon: const Icon(Icons.send), onPressed: _send),
+            ]),
+          ]),
         ),
     ]);
   }
@@ -341,14 +375,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         ? Colors.white
                         : Theme.of(context).colorScheme.onSurface)),
             for (final a in m.attachments)
-              Container(
-                margin: const EdgeInsets.only(top: 6),
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                    border: Border.all(color: Colors.grey.withValues(alpha: 0.4)),
-                    borderRadius: BorderRadius.circular(8)),
-                child: Text('📎 ${a.filename} · ${_size(a.sizeBytes)}'),
-              ),
+              _AttachmentView(
+                  attachment: a, mine: mine),
             if (m.editedAt != null)
               const Text('(изм.)',
                   style: TextStyle(fontSize: 10, color: Colors.grey)),
@@ -358,15 +386,75 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  String _size(int b) =>
-      b < 1024 ? '$b Б' : b < 1048576 ? '${(b / 1024).toStringAsFixed(1)} КБ' : '${(b / 1048576).toStringAsFixed(1)} МБ';
-
   void _send() {
     final t = _input.text;
     if (t.trim().isEmpty) return;
     _input.clear();
     _typingSent = false;
     ref.read(homeStateProvider.notifier).send(t);
+  }
+
+  static String _mimeOf(String name) {
+    final ext = name.contains('.')
+        ? name.split('.').last.toLowerCase()
+        : '';
+    return switch (ext) {
+      'png' => 'image/png',
+      'jpg' || 'jpeg' => 'image/jpeg',
+      'gif' => 'image/gif',
+      'webp' => 'image/webp',
+      'mp3' => 'audio/mpeg',
+      'mp4' => 'video/mp4',
+      'pdf' => 'application/pdf',
+      'txt' || 'md' => 'text/plain',
+      'zip' => 'application/zip',
+      _ => 'application/octet-stream',
+    };
+  }
+
+  Future<void> _pickAndSend() async {
+    final scope = ref.read(homeStateProvider).scope;
+    if (scope == null) return;
+    final picked = await FilePicker.pickFiles();
+    if (picked.isEmpty) return;
+    final file = picked.first;
+    final bytes = await file.xFile.readAsBytes();
+    setState(() => _uploading = 0);
+    try {
+      final caption = _input.text.trim();
+      _input.clear();
+      final api = ref.read(fileApiProvider);
+      if (scope is ChannelScope) {
+        await api.upload(
+            channelId: scope.channel.id,
+            dmId: null,
+            filename: file.name,
+            bytes: bytes,
+            mime: _mimeOf(file.name),
+            text: caption,
+            onProgress: (p) {
+              if (mounted) setState(() => _uploading = p);
+            });
+      } else if (scope is DmScope) {
+        await api.upload(
+            channelId: null,
+            dmId: scope.thread.id,
+            filename: file.name,
+            bytes: bytes,
+            mime: _mimeOf(file.name),
+            text: caption,
+            onProgress: (p) {
+              if (mounted) setState(() => _uploading = p);
+            });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Не отправлено: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = null);
+    }
   }
 
   Widget _membersPane(HomeData data) {
@@ -487,8 +575,79 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  Future<void> _newDmDialog() async {
+  Future<void> _searchDialog() async {
     final nick = TextEditingController();
+    String? found;
+    String? error;
+    await showDialog(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+              builder: (ctx, setD) => AlertDialog(
+                title: const Text('Найти пользователя'),
+                content: Column(mainAxisSize: MainAxisSize.min, children: [
+                  TextField(
+                      controller: nick,
+                      decoration:
+                          const InputDecoration(hintText: 'Точный ник')),
+                  if (error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(error!, style: const TextStyle(color: Colors.red)),
+                  ],
+                  if (found != null) ...[
+                    const SizedBox(height: 8),
+                    Text('Найден: $found',
+                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                  ],
+                ]),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('Отмена')),
+                  TextButton(
+                      onPressed: () async {
+                        try {
+                          final u = await ref
+                              .read(chatRepositoryProvider)
+                              .findUser(nick.text.trim());
+                          setD(() {
+                            found = u.nick;
+                            error = null;
+                          });
+                        } catch (e) {
+                          setD(() {
+                            found = null;
+                            error = 'Не найден';
+                          });
+                        }
+                      },
+                      child: const Text('Найти')),
+                  if (found != null)
+                    FilledButton(
+                        onPressed: () => Navigator.pop(ctx, found),
+                        child: const Text('Написать')),
+                ],
+              ),
+            ));
+    if (found != null && mounted) {
+      try {
+        final dmId =
+            await ref.read(chatRepositoryProvider).openDm(found!);
+        await ref.read(homeStateProvider.notifier).refresh();
+        final dms = ref.read(homeStateProvider).dms;
+        final match = dms.where((d) => d.id == dmId);
+        if (match.isNotEmpty && mounted) {
+          await ref.read(homeStateProvider.notifier).selectDm(match.first);
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('$e')));
+        }
+      }
+    }
+  }
+
+  Future<void> _newDmDialog() async {    final nick = TextEditingController();
     final id = await showDialog<String>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -524,5 +683,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         await ref.read(homeStateProvider.notifier).selectDm(found.first);
       }
     }
+  }
+}
+
+String formatSize(int b) =>
+    b < 1024 ? '$b Б' : b < 1048576 ? '${(b / 1024).toStringAsFixed(1)} КБ' : '${(b / 1048576).toStringAsFixed(1)} МБ';
+
+class _AttachmentView extends ConsumerWidget {
+  const _AttachmentView(
+      {required this.attachment, required this.mine});
+
+  final Attachment attachment;
+  final bool mine;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (attachment.mime.startsWith('image/')) {
+      final cached = ref.watch(fileCacheProvider)[attachment.fileId];
+      if (cached == null) {
+        ref.read(fileCacheProvider.notifier).fetch(attachment.fileId).then((_) {
+        }).catchError((_) {});
+        return Container(
+          margin: const EdgeInsets.only(top: 6),
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+              border:
+                  Border.all(color: Colors.grey.withValues(alpha: 0.4)),
+              borderRadius: BorderRadius.circular(8)),
+          child: Text('🖼 ${attachment.filename} · ${formatSize(attachment.sizeBytes)}'),
+        );
+      }
+      return Container(
+        margin: const EdgeInsets.only(top: 6),
+        constraints: const BoxConstraints(maxHeight: 240, maxWidth: 320),
+        decoration:
+            BoxDecoration(borderRadius: BorderRadius.circular(8)),
+        clipBehavior: Clip.antiAlias,
+        child: Image.memory(cached, fit: BoxFit.cover),
+      );
+    }
+    final color = mine ? Colors.white70 : null;
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+          border: Border.all(color: Colors.grey.withValues(alpha: 0.4)),
+          borderRadius: BorderRadius.circular(8)),
+      child: Text('📎 ${attachment.filename} · ${formatSize(attachment.sizeBytes)}',
+          style: TextStyle(color: color)),
+    );
   }
 }

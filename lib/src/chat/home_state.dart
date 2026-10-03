@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:riverpod/riverpod.dart';
 
 import '../app/providers.dart';
 import 'chat_repository.dart';
+import 'file_api.dart';
 import 'models.dart';
 
 /// Selected conversation: channel or DM thread.
@@ -86,6 +88,28 @@ final chatRepositoryProvider = Provider<ChatRepository>((ref) {
   if (s == null) throw StateError('no session');
   return ChatRepository(ref.watch(connectionProvider), s);
 });
+
+final fileApiProvider = Provider<FileApi>((ref) {
+  final s = ref.watch(sessionProvider);
+  if (s == null) throw StateError('no session');
+  return FileApi(ref.watch(connectionProvider), s);
+});
+
+class FileCache extends Notifier<Map<String, Uint8List>> {
+  @override
+  Map<String, Uint8List> build() => {};
+
+  Future<Uint8List> fetch(String fileId) async {
+    final hit = state[fileId];
+    if (hit != null) return hit;
+    final bytes = await ref.read(fileApiProvider).download(fileId);
+    state = {...state, fileId: bytes};
+    return bytes;
+  }
+}
+
+final fileCacheProvider =
+    NotifierProvider<FileCache, Map<String, Uint8List>>(FileCache.new);
 
 class HomeState extends Notifier<HomeData> {
   StreamSubscription<Map<String, dynamic>>? _pushSub;

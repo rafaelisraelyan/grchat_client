@@ -95,6 +95,12 @@ class ChatRepository {
     return r['dm_id'] as String;
   }
 
+  Future<({String userId, String nick})> findUser(String nick) async {
+    final r = await _conn.request('find_user', fields: {..._auth, 'nick': nick});
+    _throwIfError(r);
+    return (userId: r['user_id'] as String, nick: r['nick'] as String);
+  }
+
   Future<String> createCommunity(String name) async {
     final r =
         await _conn.request('create_community', fields: {..._auth, 'name': name});
