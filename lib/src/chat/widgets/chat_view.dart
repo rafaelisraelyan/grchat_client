@@ -4,7 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home_state.dart';
 import '../models.dart';
-import 'message_bubble.dart';
+import '../../app/providers.dart';
+import 'message_list.dart';
 
 /// Center column: header, message list, composer.
 class ChatView extends ConsumerStatefulWidget {
@@ -87,23 +88,11 @@ class _ChatViewState extends ConsumerState<ChatView> {
             ? const Center(child: CircularProgressIndicator())
             : data.scope == null
                 ? const Center(child: Text('Выбери канал или личку слева'))
-                : ListView.builder(
+                : MessageList(
                     controller: _scroll,
-                    padding: const EdgeInsets.all(16),
-                    itemCount: data.messages.length +
-                        (data.typing.isEmpty ? 0 : 1),
-                    itemBuilder: (ctx, i) {
-                      if (i >= data.messages.length) {
-                        return Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                              '${data.typing.join(', ')} печатает…',
-                              style: const TextStyle(
-                                  color: Colors.grey, fontSize: 12)),
-                        );
-                      }
-                      return MessageBubble(message: data.messages[i]);
-                    },
+                    messages: data.messages,
+                    typing: data.typing,
+                    myId: ref.watch(sessionProvider)?.userId ?? '',
                   ),
       ),
       if (scope != null)

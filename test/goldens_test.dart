@@ -34,19 +34,33 @@ class _FakeHome extends HomeState {
       scope: ChannelScope(comm, comm.channels.first),
       messages: [
         Message(
+            id: 'm0',
+            channelId: 'ch1',
+            authorId: 'u2',
+            authorNick: 'Second',
+            text: 'Вчерашний вопрос',
+            createdAt: '2026-09-01T20:10:00Z'),
+        Message(
             id: 'm1',
             channelId: 'ch1',
             authorId: 'u2',
             authorNick: 'Second',
             text: 'Привет! Видишь вложения?',
-            createdAt: ''),
+            createdAt: '2026-09-02T12:41:00Z'),
+        Message(
+            id: 'm1b',
+            channelId: 'ch1',
+            authorId: 'u2',
+            authorNick: 'Second',
+            text: 'Я сейчас закончу работу.',
+            createdAt: '2026-09-02T12:42:00Z'),
         Message(
             id: 'm2',
             channelId: 'ch1',
             authorId: 'u1',
             authorNick: 'Rafael',
             text: 'Вижу',
-            createdAt: '',
+            createdAt: '2026-09-02T12:43:00Z',
             attachments: [
               Attachment(
                   fileId: 'f1',
