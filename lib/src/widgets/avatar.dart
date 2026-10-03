@@ -44,20 +44,86 @@ class ServerTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return SizedBox(
       width: 44,
       height: 44,
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(14),
-        border: selected
-            ? Border.all(color: Colors.white, width: 2)
-            : null,
+      child: Stack(children: [
+        if (selected)
+          Positioned(
+            left: -12,
+            top: 10,
+            bottom: 10,
+            child: Container(
+              width: 4,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: selected ? color : color.withValues(alpha: 0.45),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          alignment: Alignment.center,
+          child: Text(letter,
+              style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white)),
+        ),
+      ]),
+    );
+  }
+}
+
+/// Home/DM stand tile: chat icon identity, no emoji.
+class HomeTile extends StatelessWidget {
+  const HomeTile({super.key, required this.selected, required this.onTap});
+
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: Stack(children: [
+          if (selected)
+            Positioned(
+              left: -12,
+              top: 10,
+              bottom: 10,
+              child: Container(
+                width: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: selected
+                  ? const Color(0xFF574CC9)
+                  : Colors.grey.withValues(alpha: 0.25),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            alignment: Alignment.center,
+            child: Icon(Icons.forum,
+                color: selected ? Colors.white : Colors.grey, size: 22),
+          ),
+        ]),
       ),
-      alignment: Alignment.center,
-      child: Text(letter,
-          style: const TextStyle(
-              fontSize: 18, fontWeight: FontWeight.w700, color: Colors.white)),
     );
   }
 }

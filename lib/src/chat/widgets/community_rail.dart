@@ -24,10 +24,7 @@ class CommunityRail extends ConsumerWidget {
         color: GrchatColors.of(context).bgRail,
         child: Column(children: [
           const SizedBox(height: 10),
-          InkWell(
-            onTap: st.goHome,
-            child: ServerTile('💬', selected: homeOn),
-          ),
+          HomeTile(selected: homeOn, onTap: st.goHome),
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Container(
