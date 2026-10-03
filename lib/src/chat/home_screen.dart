@@ -29,24 +29,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Row(
-        children: [
-          CommunityRail(onAddServer: () => showServerDialog(context, ref)),
-          ContextSidebar(
-            onSearch: () => showSearchDialog(context, ref),
-            onNewDm: () => showNewDmDialog(context, ref),
-            onVoice: _voiceStub,
-          ),
-          Expanded(
-              child: ChatView(
-            onToggleMembers: () =>
-                setState(() => _membersOpen = !_membersOpen),
-            onInvite: () => showInviteDialog(context, ref),
-            onVoice: _voiceStub,
-          )),
-          if (_membersOpen) const MembersPanel(),
-        ],
-      ),
+      body: LayoutBuilder(builder: (ctx, constraints) {
+        // Plan §62: full layout above 1250px, members auto-hidden below.
+        final showMembers =
+            _membersOpen && constraints.maxWidth > 1250;
+        return Row(
+          children: [
+            CommunityRail(
+                onAddServer: () => showServerDialog(context, ref)),
+            ContextSidebar(
+              onSearch: () => showSearchDialog(context, ref),
+              onNewDm: () => showNewDmDialog(context, ref),
+              onVoice: _voiceStub,
+            ),
+            Expanded(
+                child: ChatView(
+              onToggleMembers: () =>
+                  setState(() => _membersOpen = !_membersOpen),
+              onInvite: () => showInviteDialog(context, ref),
+              onVoice: _voiceStub,
+            )),
+            if (showMembers) const MembersPanel(),
+          ],
+        );
+      }),
     );
   }
 

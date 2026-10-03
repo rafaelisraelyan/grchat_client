@@ -6,6 +6,7 @@ import 'package:grchat_client/src/app/theme.dart';
 import 'package:grchat_client/src/auth/auth_repository.dart';
 import 'package:grchat_client/src/auth/auth_screen.dart';
 import 'package:grchat_client/src/chat/home_screen.dart';
+import 'package:grchat_client/src/chat/widgets/members_panel.dart';
 import 'package:grchat_client/src/chat/home_state.dart';
 import 'package:grchat_client/src/chat/models.dart';
 
@@ -163,6 +164,26 @@ void main() {
     await t.pumpAndSettle();
     await expectLater(
         find.byType(HomeScreen), matchesGoldenFile('goldens/home_dm.png'));
+  });
+
+  testWidgets('home narrow hides members', (t) async {
+    t.view.physicalSize = const Size(1000, 700);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+          homeStateProvider.overrideWith(_FakeHome.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const HomeScreen())));
+    await t.pumpAndSettle();
+    expect(find.byType(MembersPanel), findsNothing);
+    await expectLater(
+        find.byType(HomeScreen), matchesGoldenFile('goldens/home_narrow.png'));
   });
 
   testWidgets('settings', (t) async {
