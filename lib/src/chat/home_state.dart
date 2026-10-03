@@ -40,6 +40,7 @@ class HomeData {
   const HomeData({
     this.communities = const [],
     this.dms = const [],
+    this.activeCommunityId,
     this.scope,
     this.messages = const [],
     this.members = const [],
@@ -51,6 +52,9 @@ class HomeData {
 
   final List<Community> communities;
   final List<DmThread> dms;
+
+  /// null means the DM stand (Discord-like home), otherwise a community id.
+  final String? activeCommunityId;
   final Scope? scope;
   final List<Message> messages;
   final List<Member> members;
@@ -62,6 +66,7 @@ class HomeData {
   HomeData copyWith({
     List<Community>? communities,
     List<DmThread>? dms,
+    String? Function()? activeCommunityId,
     Scope? scope,
     List<Message>? messages,
     List<Member>? members,
@@ -73,6 +78,9 @@ class HomeData {
       HomeData(
         communities: communities ?? this.communities,
         dms: dms ?? this.dms,
+        activeCommunityId: activeCommunityId == null
+            ? this.activeCommunityId
+            : activeCommunityId(),
         scope: scope ?? this.scope,
         messages: messages ?? this.messages,
         members: members ?? this.members,
@@ -144,6 +152,7 @@ class HomeState extends Notifier<HomeData> {
   Future<void> selectChannel(Community community, Channel channel) async {
     if (channel.type != 'text') return;
     state = state.copyWith(
+        activeCommunityId: () => community.id,
         scope: ChannelScope(community, channel),
         messages: const [],
         members: const [],
@@ -155,7 +164,8 @@ class HomeState extends Notifier<HomeData> {
       final msgs = await repo.historyChannel(channel.id);
       final members = await repo.members(community.id);
       if (state.scope?.key == 'c:${channel.id}') {
-        state = state.copyWith(messages: msgs, members: members, loading: false);
+        state =
+            state.copyWith(messages: msgs, members: members, loading: false);
       }
     } catch (e) {
       state = state.copyWith(loading: false, error: e.toString());
@@ -165,9 +175,12 @@ class HomeState extends Notifier<HomeData> {
   Future<void> selectDm(DmThread thread) async {
     final myId = ref.read(sessionProvider)?.userId ?? '';
     state = state.copyWith(
+        activeCommunityId: () => null,
         scope: DmScope(thread, myId),
         messages: const [],
-        members: const [],
+        members: thread.members
+            .map((m) => Member(userId: m.userId, nick: m.nick, role: ''))
+            .toList(),
         typing: {},
         loading: true,
         unread: {...state.unread}..remove('d:${thread.id}'));
@@ -179,6 +192,22 @@ class HomeState extends Notifier<HomeData> {
     } catch (e) {
       state = state.copyWith(loading: false, error: e.toString());
     }
+  }
+
+  /// The DM stand: DMs only, no channels. Keeps the selected DM if any.
+  void goHome() {
+    final dm = state.scope is DmScope ? state.scope : null;
+    state = HomeData(
+      communities: state.communities,
+      dms: state.dms,
+      activeCommunityId: null,
+      scope: dm,
+      messages: dm == null ? const [] : state.messages,
+      members: dm == null ? const [] : state.members,
+      typing: {},
+      unread: state.unread,
+      loading: false,
+    );
   }
 
   Future<void> send(String text) async {
@@ -209,12 +238,13 @@ class HomeState extends Notifier<HomeData> {
     switch (type) {
       case 'message_new':
         final msg = Message.fromJson(ev);
-        final key = msg.channelId != null ? 'c:${msg.channelId}' : 'd:${msg.dmId}';
+        final key =
+            msg.channelId != null ? 'c:${msg.channelId}' : 'd:${msg.dmId}';
         if (scope?.key == key) {
           state = state.copyWith(messages: [...state.messages, msg]);
         } else {
-          state = state.copyWith(
-              unread: {...state.unread}..update(key, (v) => v + 1, ifAbsent: () => 1));
+          state = state.copyWith(unread: {...state.unread}
+            ..update(key, (v) => v + 1, ifAbsent: () => 1));
         }
         if (msg.dmId != null) _refreshDms();
       case 'message_edited':
@@ -234,23 +264,21 @@ class HomeState extends Notifier<HomeData> {
                     : m)
                 .toList());
       case 'message_deleted':
-        state = state.copyWith(
-            messages: state.messages
-                .where((m) => m.id != ev['message_id'])
-                .toList());
+        state = state.copyWith(messages:
+            state.messages.where((m) => m.id != ev['message_id']).toList());
       case 'typing':
         final scopeKey = ev['channel_id'] != null
             ? 'c:${ev['channel_id']}'
             : 'd:${ev['dm_id']}';
-        if (scope?.key == scopeKey && (ev['is_typing'] as bool? ?? false)) {
-          final nick = (ev['nick'] ?? ev['author_nick'] ?? '?').toString();
+        final nick = (ev['nick'] ?? '?').toString();
+        if (scope?.key == scopeKey &&
+            (ev['is_typing'] as bool? ?? false)) {
           state = state.copyWith(typing: {...state.typing, nick});
           Future.delayed(const Duration(seconds: 4), () {
             state = state.copyWith(
                 typing: state.typing.where((n) => n != nick).toSet());
           });
         } else if (!(ev['is_typing'] as bool? ?? false)) {
-          final nick = (ev['nick'] ?? '?').toString();
           state = state.copyWith(
               typing: state.typing.where((n) => n != nick).toSet());
         }

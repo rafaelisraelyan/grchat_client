@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
+import '../app/theme.dart';
 import '../settings/settings_screen.dart';
 import '../widgets/avatar.dart';
 import 'home_state.dart';
@@ -67,12 +68,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final st = ref.read(homeStateProvider.notifier);
     final scope = data.scope;
     final curId = scope is ChannelScope ? scope.community.id : null;
+    final homeOn = data.activeCommunityId == null;
     return SizedBox(
       width: 64,
       child: Material(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+      color: GrchatColors.of(context).bgRail,
       child: Column(children: [
         const SizedBox(height: 10),
+        InkWell(
+          onTap: st.goHome,
+          child: ServerTile('💬', selected: homeOn),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Container(height: 1, width: 32, color: Colors.grey.withValues(alpha: 0.4)),
+        ),
         for (var i = 0; i < data.communities.length; i++)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
@@ -115,61 +125,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _channelsPane(HomeData data) {
     final st = ref.read(homeStateProvider.notifier);
     final scope = data.scope;
-    Community? curComm =
-        scope is ChannelScope ? scope.community : null;
-    curComm ??= data.communities.isNotEmpty ? data.communities.first : null;
     final myId = ref.read(sessionProvider)?.userId ?? '';
+    if (data.activeCommunityId == null) {
+      return SizedBox(
+        width: 220,
+        child: Material(
+        color: GrchatColors.of(context).bgSidebar,
+        child: _dmList(data, st, scope, myId),
+        ),
+      );
+    }
+    final found = data.communities.where((c) => c.id == data.activeCommunityId);
+    final Community? comm = found.isNotEmpty ? found.first : null;
     return SizedBox(
       width: 220,
       child: Material(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+      color: GrchatColors.of(context).bgSidebar,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Padding(
           padding: const EdgeInsets.all(12),
-          child: Row(children: [
-            Expanded(
-              child: Text(curComm?.name ?? 'grchat',
-                  style: const TextStyle(fontWeight: FontWeight.w700)),
-            ),
-            IconButton(
-                tooltip: 'Найти пользователя',
-                icon: const Icon(Icons.search, size: 18),
-                onPressed: _searchDialog),
-          ]),
+          child: Text(comm?.name ?? 'grchat',
+              style: const TextStyle(fontWeight: FontWeight.w700)),
         ),
         Expanded(
           child: ListView(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             children: [
-              if (curComm != null) ...[
+              if (comm != null) ...[
                 _groupLabel('Текстовые каналы'),
-                for (final ch
-                    in curComm.channels.where((c) => c.type == 'text'))
+                for (final ch in comm.channels.where((c) => c.type == 'text'))
                   _chanTile(
                       '# ${ch.name}',
                       scope?.key == 'c:${ch.id}',
-                      () => st.selectChannel(curComm!, ch),
+                      () => st.selectChannel(comm, ch),
                       data.unread['c:${ch.id}']),
                 _groupLabel('Голосовые каналы'),
-                for (final ch
-                    in curComm.channels.where((c) => c.type != 'text'))
+                for (final ch in comm.channels.where((c) => c.type != 'text'))
                   ListTile(
                       dense: true,
                       leading: const Icon(Icons.volume_up, size: 18),
                       title: Text(ch.name),
                       onTap: () => _voiceStub(ch)),
               ],
-              _groupLabel('Личные сообщения'),
-              for (final dm in data.dms)
-                _chanTile(
-                    dm.title(myId), scope?.key == 'd:${dm.id}',
-                    () => st.selectDm(dm), data.unread['d:${dm.id}'],
-                    icon: dm.isGroup ? Icons.group : Icons.person),
-              ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.add, size: 18),
-                  title: const Text('Новая личка'),
-                  onTap: _newDmDialog),
             ],
           ),
         ),
@@ -177,6 +174,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ]),
       ),
     );
+  }
+
+  Widget _dmList(HomeData data, HomeState st, Scope? scope, String myId) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(children: [
+          const Expanded(
+            child: Text('Личные сообщения',
+                style: TextStyle(fontWeight: FontWeight.w700)),
+          ),
+          IconButton(
+              tooltip: 'Найти пользователя',
+              icon: const Icon(Icons.search, size: 18),
+              onPressed: _searchDialog),
+        ]),
+      ),
+      Expanded(
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          children: [
+            for (final dm in data.dms)
+              _chanTile(
+                  dm.title(myId), scope?.key == 'd:${dm.id}',
+                  () => st.selectDm(dm), data.unread['d:${dm.id}'],
+                  icon: dm.isGroup ? Icons.group : Icons.person),
+            ListTile(
+                dense: true,
+                leading: const Icon(Icons.add, size: 18),
+                title: const Text('Новая личка'),
+                onTap: _newDmDialog),
+          ],
+        ),
+      ),
+      _meRow(),
+    ]);
   }
 
   Widget _groupLabel(String t) => Padding(
@@ -461,7 +494,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return SizedBox(
       width: 180,
       child: Material(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+      color: GrchatColors.of(context).bgSidebar,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Padding(
             padding: const EdgeInsets.all(12),
@@ -484,7 +517,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       leading: Avatar(m.nick, radius: 13),
                       title: Text(m.nick,
                           maxLines: 1, overflow: TextOverflow.ellipsis),
-                      trailing: RolePill(m.role),
+                      trailing:
+                          m.role.isEmpty ? null : RolePill(m.role),
                     );
                   },
                 ),
@@ -694,7 +728,8 @@ class _AttachmentView extends ConsumerWidget {
       {required this.attachment, required this.mine});
 
   final Attachment attachment;
-  final bool mine;
+  final bool mine;
+
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {

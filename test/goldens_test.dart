@@ -25,8 +25,8 @@ class _FakeHome extends HomeState {
     ]);
     return HomeData(
       communities: [comm],
-      dms: [
-        DmThread(id: 'd1', isGroup: false, members: [
+      activeCommunityId: 'c1',
+      dms: [        DmThread(id: 'd1', isGroup: false, members: [
           DmMember(userId: 'u1', nick: 'Rafael'),
           DmMember(userId: 'u2', nick: 'Second'),
         ], lastText: 'Привет!'),
@@ -63,6 +63,45 @@ class _FakeHome extends HomeState {
   }
 }
 
+class _FakeHomeDm extends HomeState {
+  @override
+  HomeData build() {
+    return HomeData(
+      communities: const [],
+      dms: [
+        DmThread(id: 'd1', isGroup: false, members: [
+          DmMember(userId: 'u1', nick: 'Rafael'),
+          DmMember(userId: 'u2', nick: 'Second'),
+        ], lastText: 'Привет!'),
+        DmThread(id: 'd2', isGroup: true, members: [
+          DmMember(userId: 'u1', nick: 'Rafael'),
+          DmMember(userId: 'u2', nick: 'Second'),
+          DmMember(userId: 'u3', nick: 'TestPilot'),
+        ]),
+      ],
+      scope: DmScope(
+          DmThread(id: 'd1', isGroup: false, members: [
+            DmMember(userId: 'u1', nick: 'Rafael'),
+            DmMember(userId: 'u2', nick: 'Second'),
+          ]),
+          'u1'),
+      messages: [
+        Message(
+            id: 'm9',
+            dmId: 'd1',
+            authorId: 'u2',
+            authorNick: 'Second',
+            text: 'Это личка',
+            createdAt: ''),
+      ],
+      members: [
+        Member(userId: 'u1', nick: 'Rafael', role: ''),
+        Member(userId: 'u2', nick: 'Second', role: ''),
+      ],
+    );
+  }
+}
+
 void main() {
   testWidgets('auth screen', (t) async {
     t.view.physicalSize = const Size(1280, 720);
@@ -89,5 +128,24 @@ void main() {
     await t.pumpAndSettle();
     await expectLater(
         find.byType(HomeScreen), matchesGoldenFile('goldens/home_dark.png'));
+  });
+
+  testWidgets('home dm stand', (t) async {
+    t.view.physicalSize = const Size(1280, 720);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+          homeStateProvider.overrideWith(_FakeHomeDm.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const HomeScreen())));
+    await t.pumpAndSettle();
+    await expectLater(
+        find.byType(HomeScreen), matchesGoldenFile('goldens/home_dm.png'));
   });
 }
