@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
+import '../app/theme.dart';
 
 final storageUsageProvider = FutureProvider<Map<String, int>>((ref) async {
   final s = ref.watch(sessionProvider);
@@ -25,55 +26,123 @@ class SettingsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final mode = ref.watch(themeModeProvider);
-    final usage = ref.watch(storageUsageProvider);
-    final session = ref.watch(sessionProvider);
     return Scaffold(
       appBar: AppBar(title: const Text('Настройки')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          ListTile(
-            leading: const Icon(Icons.person),
-            title: Text(session?.nick ?? '?'),
-            subtitle: const Text('Мой аккаунт'),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              _section(context, 'Аккаунт', [
+                _row(context,
+                    icon: Icons.person,
+                    title: ref.watch(sessionProvider)?.nick ?? '?',
+                    subtitle: 'Никнейм'),
+              ]),
+              _section(context, 'Оформление', [
+                _themeRow(context, ref),
+              ]),
+              _section(context, 'Хранилище', [
+                _storageRow(ref),
+              ]),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.logout, color: Colors.red),
+                label: const Text('Выйти',
+                    style: TextStyle(color: Colors.red)),
+                onPressed: () async {
+                  await ref.read(connectionProvider).dispose();
+                  ref.read(sessionProvider.notifier).set(null);
+                  if (context.mounted) Navigator.pop(context);
+                },
+              ),
+            ],
           ),
-          const Divider(),
-          SwitchListTile(
-            secondary: const Icon(Icons.brightness_6),
-            title: const Text('Тёмная тема'),
-            value: mode == ThemeMode.dark,
-            onChanged: (_) =>
-                ref.read(themeModeProvider.notifier).toggle(),
-          ),
-          ListTile(
-            leading: const Icon(Icons.cloud),
-            title: const Text('Файлы на сервере'),
-            subtitle: usage.when(
-              data: (u) => Text(
-                  '${_size(u['used_bytes']!)} из ${_size(u['quota_bytes']!)}'),
-              loading: () => const Text('…'),
-              error: (_, _) => const Text('—'),
-            ),
-          ),
-          const ListTile(
-            leading: Icon(Icons.dns),
-            title: Text('Сервер'),
-            subtitle: Text('127.0.0.1:8181 (скоро — выбор в настройках)'),
-          ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.logout, color: Colors.red),
-            title:
-                const Text('Выйти', style: TextStyle(color: Colors.red)),
-            onTap: () async {
-              await ref.read(connectionProvider).dispose();
-              ref.read(sessionProvider.notifier).set(null);
-              if (context.mounted) Navigator.pop(context);
-            },
-          ),
-        ],
+        ),
       ),
+    );
+  }
+
+  Widget _section(BuildContext context, String title, List<Widget> rows) {
+    final c = GrchatColors.of(context);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
+        child: Text(title,
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: c.textMuted)),
+      ),
+      Container(
+        decoration: BoxDecoration(
+            color: c.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: c.borderSubtle)),
+        child: Column(children: rows),
+      ),
+    ]);
+  }
+
+  Widget _row(BuildContext context,
+      {required IconData icon,
+      required String title,
+      required String subtitle}) {
+    return ListTile(
+      leading: Icon(icon),
+      title: Text(title),
+      subtitle: Text(subtitle),
+    );
+  }
+
+  Widget _themeRow(BuildContext context, WidgetRef ref) {
+    final mode = ref.watch(themeModeProvider);
+    return ListTile(
+      leading: const Icon(Icons.brightness_6),
+      title: const Text('Тема'),
+      trailing: SegmentedButton<ThemeMode>(
+        segments: const [
+          ButtonSegment(
+              value: ThemeMode.dark,
+              icon: Icon(Icons.dark_mode, size: 18)),
+          ButtonSegment(
+              value: ThemeMode.light,
+              icon: Icon(Icons.light_mode, size: 18)),
+        ],
+        selected: {mode == ThemeMode.system ? ThemeMode.dark : mode},
+        onSelectionChanged: (s) {
+          final want = s.first;
+          final cur = ref.read(themeModeProvider);
+          if ((cur == ThemeMode.dark) != (want == ThemeMode.dark)) {
+            ref.read(themeModeProvider.notifier).toggle();
+          }
+        },
+      ),
+    );
+  }
+
+  Widget _storageRow(WidgetRef ref) {
+    final usage = ref.watch(storageUsageProvider);
+    return usage.when(
+      data: (u) {
+        final used = u['used_bytes']!;
+        final quota = u['quota_bytes']!;
+        final frac = quota == 0 ? 0.0 : (used / quota).clamp(0.0, 1.0);
+        return ListTile(
+          leading: const Icon(Icons.cloud),
+          title: Text(
+              '${_size(used)} из ${_size(quota)} использовано'),
+          subtitle: Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: LinearProgressIndicator(value: frac),
+          ),
+        );
+      },
+      loading: () => const ListTile(
+          leading: Icon(Icons.cloud), title: Text('…')),
+      error: (_, _) => const ListTile(
+          leading: Icon(Icons.cloud), title: Text('—')),
     );
   }
 

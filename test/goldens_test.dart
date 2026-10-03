@@ -9,6 +9,8 @@ import 'package:grchat_client/src/chat/home_screen.dart';
 import 'package:grchat_client/src/chat/home_state.dart';
 import 'package:grchat_client/src/chat/models.dart';
 
+import 'package:grchat_client/src/settings/settings_screen.dart';
+
 class _FakeSession extends SessionState {
   @override
   Session? build() =>
@@ -161,5 +163,23 @@ void main() {
     await t.pumpAndSettle();
     await expectLater(
         find.byType(HomeScreen), matchesGoldenFile('goldens/home_dm.png'));
+  });
+
+  testWidgets('settings', (t) async {
+    t.view.physicalSize = const Size(1280, 720);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const SettingsScreen())));
+    await t.pumpAndSettle();
+    await expectLater(find.byType(SettingsScreen),
+        matchesGoldenFile('goldens/settings.png'));
   });
 }

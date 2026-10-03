@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
+import '../widgets/code_input.dart';
 import 'auth_repository.dart';
 
 enum _Mode { login, register, code, reset }
@@ -39,6 +40,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   final _code = TextEditingController();
   String? _error;
   bool _busy = false;
+  DateTime? _resendAt;
 
   @override
   void dispose() {
@@ -57,8 +59,11 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     }
   }
 
-  Future<void> _run(Future<void> Function(AuthRepository) action) async {
-    setState(() {
+  void _startCooldown() {
+    _resendAt = DateTime.now().add(const Duration(seconds: 60));
+  }
+
+  Future<void> _run(Future<void> Function(AuthRepository) action) async {    setState(() {
       _busy = true;
       _error = null;
     });
@@ -152,16 +157,23 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
           ],
         _Mode.code => [
             if (_email.text.trim().isEmpty)
-              _field(_email, 'почта', keyboard: TextInputType.emailAddress)
+              _field(_email, 'почта',
+                  keyboard: TextInputType.emailAddress)
             else
               Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text('Код отправлен на ${_email.text.trim()}',
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                    'Код отправлен на ${_email.text.trim()}\nСрок действия — 20 минут',
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: Colors.grey)),
               ),
-            const SizedBox(height: 8),
-            _field(_code, 'код из 6 цифр', keyboard: TextInputType.number),
+            CodeInput(
+              key: ValueKey(_email.text.trim()),
+              onCompleted: (v) {
+                _code.text = v;
+                _submit();
+              },
+            ),
           ],
         _Mode.reset => [
             _field(_email, 'почта', keyboard: TextInputType.emailAddress),
@@ -177,11 +189,31 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
         onPressed: () {
           if (resend) {
             _run((r) => r.resendCode(email: _email.text.trim()));
+            setState(() => _resendAt =
+                DateTime.now().add(const Duration(seconds: 60)));
           } else {
+            if (m == _Mode.code) _startCooldown();
             setState(() => _mode = m);
           }
         },
         child: Text(t));
+    if (_mode == _Mode.code) {
+      final left = _resendAt == null
+          ? 0
+          : _resendAt!.difference(DateTime.now()).inSeconds;
+      return [
+        if (left > 0)
+          _CountdownText(
+              seconds: left,
+              onTick: () {
+                if (mounted) setState(() {});
+              })
+        else
+          link('Отправить код ещё раз', _Mode.code, resend: true),
+        link('Не та почта? Назад к регистрации', _Mode.register),
+        link('Назад ко входу', _Mode.login),
+      ];
+    }
     return switch (_mode) {
       _Mode.login => [
           link('Нет аккаунта? Зарегистрироваться', _Mode.register),
@@ -220,6 +252,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
           if (!mounted) return;
           if (needVerify) {
             _email.text = _email.text.trim();
+            _startCooldown();
             setState(() => _mode = _Mode.code);
           }
         });
@@ -262,6 +295,36 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       onSubmitted: (_) {
         if (!_busy) _submit();
       },
+    );
+  }
+}
+
+class _CountdownText extends StatefulWidget {
+  const _CountdownText({required this.seconds, required this.onTick});
+
+  final int seconds;
+  final VoidCallback onTick;
+
+  @override
+  State<_CountdownText> createState() => _CountdownTextState();
+}
+
+class _CountdownTextState extends State<_CountdownText> {
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(seconds: 1), () {
+      if (mounted) widget.onTick();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.seconds;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Text('Повторить отправку через 0:${s.toString().padLeft(2, '0')}',
+          style: const TextStyle(color: Colors.grey)),
     );
   }
 }
