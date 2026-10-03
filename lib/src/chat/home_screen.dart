@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
+import '../widgets/avatar.dart';
 import 'home_state.dart';
 import 'models.dart';
 
@@ -61,24 +62,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _rail(HomeData data) {
     final st = ref.read(homeStateProvider.notifier);
-    return Container(
+    final scope = data.scope;
+    final curId = scope is ChannelScope ? scope.community.id : null;
+    return SizedBox(
       width: 64,
+      child: Material(
       color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
       child: Column(children: [
         const SizedBox(height: 10),
-        for (final c in data.communities)
+        for (var i = 0; i < data.communities.length; i++)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: InkWell(
               onTap: () {
+                final c = data.communities[i];
                 if (c.channels.any((ch) => ch.type == 'text')) {
                   st.selectChannel(
                       c, c.channels.firstWhere((ch) => ch.type == 'text'));
                 }
               },
-              child: CircleAvatar(
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  child: Text(c.name.isEmpty ? '?' : c.name[0])),
+              child: ServerTile(
+                data.communities[i].name.isEmpty
+                    ? '?'
+                    : data.communities[i].name[0].toUpperCase(),
+                color: _srvColor(i),
+                selected: data.communities[i].id == curId,
+              ),
             ),
           ),
         IconButton(
@@ -86,7 +95,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             onPressed: _serverDialog,
             icon: const Icon(Icons.add)),
       ]),
+      ),
     );
+  }
+
+  Color _srvColor(int i) {
+    const palette = [
+      Color(0xFF574CC9),
+      Color(0xFF2E7D5B),
+      Color(0xFFB5651D),
+      Color(0xFF4A90D9),
+    ];
+    return palette[i % palette.length];
   }
 
   Widget _channelsPane(HomeData data) {
@@ -96,8 +116,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         scope is ChannelScope ? scope.community : null;
     curComm ??= data.communities.isNotEmpty ? data.communities.first : null;
     final myId = ref.read(sessionProvider)?.userId ?? '';
-    return Container(
+    return SizedBox(
       width: 220,
+      child: Material(
       color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Padding(
@@ -143,6 +164,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
         _meRow(),
       ]),
+      ),
     );
   }
 
@@ -181,10 +203,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return Container(
       padding: const EdgeInsets.all(8),
       child: Row(children: [
-        CircleAvatar(
-            radius: 14,
-            backgroundColor: Theme.of(context).colorScheme.primary,
-            child: Text(s == null || s.nick.isEmpty ? '?' : s.nick[0])),
+        Avatar(s?.nick ?? '?', radius: 14),
         const SizedBox(width: 8),
         Expanded(
             child: Text(s?.nick ?? '?',
@@ -224,6 +243,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 tooltip: 'Скопировать инвайт',
                 icon: const Icon(Icons.person_add, size: 20),
                 onPressed: _inviteDialog),
+            IconButton(
+                tooltip: 'Позвонить (скоро)',
+                icon: const Icon(Icons.call, size: 20),
+                onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                        content: Text('Звонки — следующим шагом')))),
           ],
           IconButton(
               tooltip: 'Участники',
@@ -262,7 +287,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             controller: _input,
             decoration: InputDecoration(
               hintText: 'Написать в ${scope.title}…',
-              border: const OutlineInputBorder(),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(20)),
+              contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 12),
               suffixIcon: IconButton(
                   icon: const Icon(Icons.send), onPressed: _send),
             ),
@@ -342,14 +370,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _membersPane(HomeData data) {
-    return Container(
+    return SizedBox(
       width: 180,
+      child: Material(
       color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        const Padding(
-            padding: EdgeInsets.all(12),
-            child: Text('Участники',
-                style: TextStyle(fontWeight: FontWeight.w700))),
+        Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text('В СЕТИ — ${data.members.length}',
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey,
+                    fontWeight: FontWeight.w600))),
         Expanded(
           child: data.members.isEmpty
               ? const Padding(
@@ -361,23 +393,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     final m = data.members[i];
                     return ListTile(
                       dense: true,
-                      leading: CircleAvatar(
-                          radius: 13,
-                          backgroundColor:
-                              Theme.of(context).colorScheme.primary,
-                          child: Text(
-                              m.nick.isEmpty ? '?' : m.nick[0],
-                              style: const TextStyle(fontSize: 12))),
+                      leading: Avatar(m.nick, radius: 13),
                       title: Text(m.nick,
                           maxLines: 1, overflow: TextOverflow.ellipsis),
-                      subtitle: Text(m.role,
-                          style: const TextStyle(
-                              fontSize: 11, color: Colors.grey)),
+                      trailing: RolePill(m.role),
                     );
                   },
                 ),
         ),
       ]),
+      ),
     );
   }
 
