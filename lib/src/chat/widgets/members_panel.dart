@@ -13,13 +13,13 @@ class MembersPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final data = ref.watch(homeStateProvider);
     return SizedBox(
-      width: 180,
+      width: 230,
       child: Material(
         color: GrchatColors.of(context).bgSidebar,
         child:
             Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
               child: Text('В СЕТИ — ${data.members.length}',
                   style: const TextStyle(
                       fontSize: 11,
@@ -32,17 +32,39 @@ class MembersPanel extends ConsumerWidget {
                     child:
                         Text('—', style: TextStyle(color: Colors.grey)))
                 : ListView.builder(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8),
                     itemCount: data.members.length,
                     itemBuilder: (ctx, i) {
                       final m = data.members[i];
-                      return ListTile(
-                        dense: true,
-                        leading: Avatar(m.nick, radius: 13),
-                        title: Text(m.nick,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis),
-                        trailing:
-                            m.role.isEmpty ? null : RolePill(m.role),
+                      return Padding(
+                        padding:
+                            const EdgeInsets.symmetric(vertical: 5),
+                        child: Row(children: [
+                          Avatar(m.nick, radius: 14),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(m.nick,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontSize: 14)),
+                                  if (m.role.isNotEmpty &&
+                                      m.role != 'member')
+                                    Text(m.role,
+                                        style: TextStyle(
+                                            fontSize: 11,
+                                            color: GrchatColors.of(
+                                                    context)
+                                                .textMuted)),
+                                ]),
+                          ),
+                        ]),
                       );
                     },
                   ),
