@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'src/app/providers.dart';
 import 'src/app/theme.dart';
 import 'src/auth/auth_screen.dart';
+import 'src/chat/home_screen.dart';
 
 void main() {
   runApp(const ProviderScope(child: GrchatApp()));
@@ -20,7 +21,18 @@ class GrchatApp extends ConsumerWidget {
       theme: grchatLight,
       darkTheme: grchatDark,
       themeMode: mode,
-      home: const AuthScreen(),
+      home: const _Root(),
     );
+  }
+}
+
+class _Root extends ConsumerWidget {
+  const _Root();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.watch(sessionProvider);
+    if (session == null) return const AuthScreen();
+    return const HomeScreen();
   }
 }
