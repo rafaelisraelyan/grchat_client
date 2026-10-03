@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../home_state.dart';
 import '../models.dart';
 import '../../app/providers.dart';
+import '../../app/theme.dart';
 import 'message_list.dart';
 
 /// Center column: header, message list, composer.
@@ -91,51 +92,85 @@ class _ChatViewState extends ConsumerState<ChatView> {
                 : MessageList(
                     controller: _scroll,
                     messages: data.messages,
-                    typing: data.typing,
                     myId: ref.watch(sessionProvider)?.userId ?? '',
                   ),
       ),
       if (scope != null)
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
+            if (data.typing.isNotEmpty)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 4, bottom: 4),
+                  child: Text('${data.typing.join(', ')} печатает…',
+                      style: TextStyle(
+                          color: GrchatColors.of(context).textMuted,
+                          fontSize: 12)),
+                ),
+              ),
             if (_uploading != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: LinearProgressIndicator(value: _uploading),
               ),
-            Row(children: [
-              IconButton(
-                  tooltip: 'Прикрепить файл',
-                  icon: const Icon(Icons.attach_file),
-                  onPressed: _uploading == null ? _pickAndSend : null),
-              Expanded(
-                child: TextField(
-                  controller: _input,
-                  decoration: InputDecoration(
-                    hintText: 'Написать в ${scope.title}…',
-                    border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(20)),
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 12),
-                  ),
-                  onChanged: (_) {
-                    if (!_typingSent) {
-                      _typingSent = true;
-                      ref.read(homeStateProvider.notifier).sendTyping(true);
-                      Future.delayed(const Duration(seconds: 3), () {
-                        _typingSent = false;
+            Container(
+              constraints: const BoxConstraints(minHeight: 48),
+              decoration: BoxDecoration(
+                border: Border.all(
+                    color: GrchatColors.of(context).borderSubtle),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Row(children: [
+                IconButton(
+                    tooltip: 'Прикрепить файл',
+                    icon: const Icon(Icons.attach_file, size: 20),
+                    onPressed:
+                        _uploading == null ? _pickAndSend : null),
+                Expanded(
+                  child: TextField(
+                    controller: _input,
+                    minLines: 1,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      hintText: 'Написать в ${scope.title}…',
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 12),
+                    ),
+                    onChanged: (_) {
+                      if (!_typingSent) {
+                        _typingSent = true;
                         ref
                             .read(homeStateProvider.notifier)
-                            .sendTyping(false);
-                      });
-                    }
-                  },
-                  onSubmitted: (_) => _send(),
+                            .sendTyping(true);
+                        Future.delayed(const Duration(seconds: 3), () {
+                          _typingSent = false;
+                          ref
+                              .read(homeStateProvider.notifier)
+                              .sendTyping(false);
+                        });
+                      }
+                    },
+                    onSubmitted: (_) => _send(),
+                  ),
                 ),
-              ),
-              IconButton(icon: const Icon(Icons.send), onPressed: _send),
-            ]),
+                ValueListenableBuilder<TextEditingValue>(
+                  valueListenable: _input,
+                  builder: (ctx, v, _) {
+                    final can = v.text.trim().isNotEmpty;
+                    return IconButton(
+                        icon: const Icon(Icons.send, size: 20),
+                        color: can
+                            ? GrchatColors.of(context).accent
+                            : GrchatColors.of(context).textMuted,
+                        onPressed: can ? _send : null);
+                  },
+                ),
+              ]),
+            ),
           ]),
         ),
     ]);

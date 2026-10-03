@@ -45,12 +45,10 @@ class MessageList extends StatelessWidget {
   const MessageList(
       {super.key,
       required this.messages,
-      required this.typing,
       required this.myId,
       this.controller});
 
   final List<Message> messages;
-  final Set<String> typing;
   final String myId;
   final ScrollController? controller;
 
@@ -83,13 +81,6 @@ class MessageList extends StatelessWidget {
       run.add(m);
     }
     flush();
-    if (typing.isNotEmpty) {
-      items.add(Padding(
-        padding: const EdgeInsets.only(top: 4, left: 44),
-        child: Text('${typing.join(', ')} печатает…',
-            style: const TextStyle(color: Colors.grey, fontSize: 12)),
-      ));
-    }
     return ListView.builder(
       controller: controller,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
