@@ -168,54 +168,41 @@ class MessageGroup extends ConsumerWidget {
   }
 }
 
-class _MessageRow extends StatefulWidget {
+class _MessageRow extends ConsumerWidget {
   const _MessageRow({required this.message, required this.mine});
 
   final Message message;
   final bool mine;
 
   @override
-  State<_MessageRow> createState() => _MessageRowState();
-}
-
-class _MessageRowState extends State<_MessageRow> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final m = widget.message;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: Stack(children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (m.text.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 1),
-                child: _TextLine(message: m),
-              ),
-            for (final a in m.attachments)
-              AttachmentView(attachment: a),
-          ],
-        ),
-        if (_hover && widget.mine)
-          Positioned(
-            right: 0,
-            top: 0,
-            child: _HoverActions(message: m),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final m = message;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (m.text.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 1),
+            child: _TextLine(message: m, mine: mine),
           ),
-      ]),
+        for (final a in m.attachments)
+          AttachmentView(attachment: a),
+        if (mine && m.text.isEmpty && m.attachments.isNotEmpty)
+          Align(
+            alignment: Alignment.centerRight,
+            child: _RowMenu(message: m),
+          ),
+      ],
     );
   }
 }
 
 class _TextLine extends ConsumerWidget {
-  const _TextLine({required this.message});
+  const _TextLine({required this.message, required this.mine});
 
   final Message message;
+  final bool mine;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -234,44 +221,36 @@ class _TextLine extends ConsumerWidget {
             child: Text('(изм.)',
                 style: TextStyle(fontSize: 12, color: c.textMuted)),
           ),
+        if (mine)
+          _RowMenu(message: m),
       ],
     );
   }
 }
 
-class _HoverActions extends ConsumerWidget {
-  const _HoverActions({required this.message});
+class _RowMenu extends ConsumerWidget {
+  const _RowMenu({required this.message});
 
   final Message message;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final c = GrchatColors.of(context);
-    return Container(
-      decoration: BoxDecoration(
-          color: c.surfaceElevated,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: c.borderSubtle),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withValues(alpha: 0.4),
-                blurRadius: 8,
-                offset: const Offset(0, 2)),
-          ]),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        IconButton(
-            iconSize: 18,
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.all(8),
-            icon: const Icon(Icons.edit),
-            onPressed: () => _editDialog(context, ref)),
-        IconButton(
-            iconSize: 18,
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.all(8),
-            icon: Icon(Icons.delete, color: c.danger),
-            onPressed: () => _deleteConfirm(context, ref)),
-      ]),
+    return PopupMenuButton<String>(
+      icon: Icon(Icons.more_vert, size: 16, color: GrchatColors.of(context).textMuted),
+      tooltip: '',
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+      onSelected: (v) {
+        if (v == 'edit') {
+          _editDialog(context, ref);
+        } else if (v == 'delete') {
+          _deleteConfirm(context, ref);
+        }
+      },
+      itemBuilder: (ctx) => const [
+        PopupMenuItem(value: 'edit', child: Text('Изменить')),
+        PopupMenuItem(value: 'delete', child: Text('Удалить')),
+      ],
     );
   }
 
