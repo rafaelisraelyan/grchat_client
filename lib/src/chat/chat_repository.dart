@@ -35,18 +35,28 @@ class ChatRepository {
     }).toList();
   }
 
-  Future<List<Message>> historyChannel(String channelId, {int limit = 50}) async {
-    final r = await _conn.request('history',
-        fields: {..._auth, 'channel_id': channelId, 'limit': limit});
+  Future<List<Message>> historyChannel(String channelId,
+      {int limit = 50, String? beforeId}) async {
+    final r = await _conn.request('history', fields: {
+      ..._auth,
+      'channel_id': channelId,
+      'limit': limit,
+      if (beforeId case final id) 'before_id': id,
+    });
     _throwIfError(r);
     return ((r['messages'] as List?) ?? const [])
         .map((m) => Message.fromJson(m as Map<String, dynamic>))
         .toList();
   }
 
-  Future<List<Message>> historyDm(String dmId, {int limit = 50}) async {
-    final r = await _conn.request('history',
-        fields: {..._auth, 'dm_id': dmId, 'limit': limit});
+  Future<List<Message>> historyDm(String dmId,
+      {int limit = 50, String? beforeId}) async {
+    final r = await _conn.request('history', fields: {
+      ..._auth,
+      'dm_id': dmId,
+      'limit': limit,
+      if (beforeId case final id) 'before_id': id,
+    });
     _throwIfError(r);
     return ((r['messages'] as List?) ?? const [])
         .map((m) => Message.fromJson(m as Map<String, dynamic>))
@@ -61,6 +71,18 @@ class ChatRepository {
   Future<void> sendDm(String dmId, String text) async {
     _throwIfError(await _conn.request('message_send',
         fields: {..._auth, 'dm_id': dmId, 'text': text}));
+  }
+
+  Future<void> editMessage(String messageId, String text) async {
+    final r = await _conn.request('message_edit',
+        fields: {..._auth, 'message_id': messageId, 'text': text});
+    _throwIfError(r);
+  }
+
+  Future<void> deleteMessage(String messageId) async {
+    final r = await _conn.request('message_delete',
+        fields: {..._auth, 'message_id': messageId});
+    _throwIfError(r);
   }
 
   Future<void> sendTypingChannel(String channelId, bool typing) async {

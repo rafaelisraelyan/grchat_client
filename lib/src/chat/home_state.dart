@@ -47,6 +47,8 @@ class HomeData {
     this.typing = const {},
     this.unread = const {},
     this.loading = true,
+    this.loadingOlder = false,
+    this.hasMore = true,
     this.error,
   });
 
@@ -61,6 +63,8 @@ class HomeData {
   final Set<String> typing;
   final Map<String, int> unread;
   final bool loading;
+  final bool loadingOlder;
+  final bool hasMore;
   final String? error;
 
   HomeData copyWith({
@@ -73,6 +77,8 @@ class HomeData {
     Set<String>? typing,
     Map<String, int>? unread,
     bool? loading,
+    bool? loadingOlder,
+    bool? hasMore,
     String? error,
   }) =>
       HomeData(
@@ -87,6 +93,8 @@ class HomeData {
         typing: typing ?? this.typing,
         unread: unread ?? this.unread,
         loading: loading ?? this.loading,
+        loadingOlder: loadingOlder ?? this.loadingOlder,
+        hasMore: hasMore ?? this.hasMore,
         error: error,
       );
 }
@@ -158,6 +166,8 @@ class HomeState extends Notifier<HomeData> {
         members: const [],
         typing: {},
         loading: true,
+        loadingOlder: false,
+        hasMore: true,
         unread: {...state.unread}..remove('c:${channel.id}'));
     final repo = ref.read(chatRepositoryProvider);
     try {
@@ -183,6 +193,8 @@ class HomeState extends Notifier<HomeData> {
             .toList(),
         typing: {},
         loading: true,
+        loadingOlder: false,
+        hasMore: true,
         unread: {...state.unread}..remove('d:${thread.id}'));
     try {
       final msgs = await ref.read(chatRepositoryProvider).historyDm(thread.id);
@@ -210,6 +222,45 @@ class HomeState extends Notifier<HomeData> {
     );
   }
 
+  /// Loads an older page above the current first message.
+  /// Returns how many messages were prepended.
+  Future<int> loadOlder() async {
+    final scope = state.scope;
+    if (scope == null ||
+        state.loadingOlder ||
+        !state.hasMore ||
+        state.messages.isEmpty) {
+      return 0;
+    }
+    state = state.copyWith(loadingOlder: true);
+    try {
+      final repo = ref.read(chatRepositoryProvider);
+      final beforeId = state.messages.first.id;
+      late final List<Message> older;
+      if (scope is ChannelScope) {
+        older = await repo.historyChannel(scope.channel.id,
+            beforeId: beforeId);
+      } else if (scope is DmScope) {
+        older =
+            await repo.historyDm(scope.thread.id, beforeId: beforeId);
+      } else {
+        state = state.copyWith(loadingOlder: false);
+        return 0;
+      }
+      final known = state.messages.map((m) => m.id).toSet();
+      final fresh = older.where((m) => !known.contains(m.id)).toList();
+      state = state.copyWith(
+        messages: [...fresh, ...state.messages],
+        loadingOlder: false,
+        hasMore: older.length >= 50,
+      );
+      return fresh.length;
+    } catch (_) {
+      state = state.copyWith(loadingOlder: false);
+      return 0;
+    }
+  }
+
   Future<void> send(String text) async {
     final scope = state.scope;
     final t = text.trim();
@@ -220,6 +271,18 @@ class HomeState extends Notifier<HomeData> {
     } else if (scope is DmScope) {
       await repo.sendDm(scope.thread.id, t);
     }
+  }
+
+  Future<void> editMessage(String messageId, String text) async {
+    await ref
+        .read(chatRepositoryProvider)
+        .editMessage(messageId, text);
+  }
+
+  Future<void> deleteMessage(String messageId) async {
+    await ref
+        .read(chatRepositoryProvider)
+        .deleteMessage(messageId);
   }
 
   void sendTyping(bool typing) {

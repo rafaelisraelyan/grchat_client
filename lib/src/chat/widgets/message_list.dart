@@ -158,7 +158,8 @@ class MessageGroup extends ConsumerWidget {
                             TextStyle(fontSize: 12, color: c.textMuted)),
                   ]),
                   const SizedBox(height: 1),
-                  for (final m in messages) _MessageLines(message: m),
+                  for (final m in messages)
+                    _MessageRow(message: m, mine: mine),
                 ]),
           ),
         ],
@@ -167,8 +168,52 @@ class MessageGroup extends ConsumerWidget {
   }
 }
 
-class _MessageLines extends ConsumerWidget {
-  const _MessageLines({required this.message});
+class _MessageRow extends StatefulWidget {
+  const _MessageRow({required this.message, required this.mine});
+
+  final Message message;
+  final bool mine;
+
+  @override
+  State<_MessageRow> createState() => _MessageRowState();
+}
+
+class _MessageRowState extends State<_MessageRow> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final m = widget.message;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: Stack(children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (m.text.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 1),
+                child: _TextLine(message: m),
+              ),
+            for (final a in m.attachments)
+              AttachmentView(attachment: a),
+          ],
+        ),
+        if (_hover && widget.mine)
+          Positioned(
+            right: 0,
+            top: 0,
+            child: _HoverActions(message: m),
+          ),
+      ]),
+    );
+  }
+}
+
+class _TextLine extends ConsumerWidget {
+  const _TextLine({required this.message});
 
   final Message message;
 
@@ -176,34 +221,115 @@ class _MessageLines extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final m = message;
     final c = GrchatColors.of(context);
-    return Column(
+    return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
       children: [
-        if (m.text.isNotEmpty)
+        Expanded(
+          child: Text(m.text,
+              style: const TextStyle(fontSize: 15, height: 1.4)),
+        ),
+        if (m.editedAt != null)
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 1),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Text(m.text,
-                      style: const TextStyle(fontSize: 15, height: 1.4)),
-                ),
-                if (m.editedAt != null)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 6, top: 2),
-                    child: Text('(изм.)',
-                        style:
-                            TextStyle(fontSize: 12, color: c.textMuted)),
-                  ),
-              ],
-            ),
+            padding: const EdgeInsets.only(left: 6, top: 2),
+            child: Text('(изм.)',
+                style: TextStyle(fontSize: 12, color: c.textMuted)),
           ),
-        for (final a in m.attachments)
-          AttachmentView(attachment: a),
       ],
     );
+  }
+}
+
+class _HoverActions extends ConsumerWidget {
+  const _HoverActions({required this.message});
+
+  final Message message;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = GrchatColors.of(context);
+    return Container(
+      decoration: BoxDecoration(
+          color: c.surfaceElevated,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: c.borderSubtle)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        IconButton(
+            tooltip: 'Изменить',
+            iconSize: 16,
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.edit),
+            onPressed: () => _editDialog(context, ref)),
+        IconButton(
+            tooltip: 'Удалить',
+            iconSize: 16,
+            visualDensity: VisualDensity.compact,
+            icon: Icon(Icons.delete, color: c.danger),
+            onPressed: () => _deleteConfirm(context, ref)),
+      ]),
+    );
+  }
+
+  Future<void> _editDialog(BuildContext context, WidgetRef ref) async {
+    final tc = TextEditingController(text: message.text);
+    final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+              title: const Text('Изменить сообщение'),
+              content: TextField(
+                  controller: tc,
+                  autofocus: true,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                      border: OutlineInputBorder())),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('Отмена')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text('Сохранить')),
+              ],
+            ));
+    if (ok == true && context.mounted) {
+      try {
+        await ref
+            .read(homeStateProvider.notifier)
+            .editMessage(message.id, tc.text.trim());
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('$e')));
+        }
+      }
+    }
+  }
+
+  Future<void> _deleteConfirm(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+              title: const Text('Удалить сообщение?'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('Отмена')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text('Удалить')),
+              ],
+            ));
+    if (ok == true && context.mounted) {
+      try {
+        await ref
+            .read(homeStateProvider.notifier)
+            .deleteMessage(message.id);
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('$e')));
+        }
+      }
+    }
   }
 }
 

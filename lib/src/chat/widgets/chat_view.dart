@@ -31,10 +31,36 @@ class _ChatViewState extends ConsumerState<ChatView> {
   double? _uploading;
 
   @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_onScroll);
+  }
+
+  @override
   void dispose() {
+    _scroll.removeListener(_onScroll);
     _input.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scroll.hasClients || _scroll.position.pixels > 200) return;
+    final st = ref.read(homeStateProvider.notifier);
+    final data = ref.read(homeStateProvider);
+    if (data.loadingOlder || !data.hasMore || data.messages.isEmpty) return;
+    final prevMax = _scroll.position.maxScrollExtent;
+    final prevPixels = _scroll.position.pixels;
+    st.loadOlder().then((n) {
+      if (n > 0 && mounted && _scroll.hasClients) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!_scroll.hasClients) return;
+          final grown = _scroll.position.maxScrollExtent - prevMax;
+          _scroll.jumpTo((prevPixels + grown)
+              .clamp(0.0, _scroll.position.maxScrollExtent));
+        });
+      }
+    });
   }
 
   void _scrollDown() {
