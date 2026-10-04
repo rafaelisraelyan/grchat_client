@@ -254,19 +254,17 @@ void main() {
     await t.pump(const Duration(seconds: 2));
     await expectLater(
         find.byType(HomeScreen), matchesGoldenFile('goldens/hover.png'));
-    // actions menu is always visible on own messages: edit opens a dialog
-    await t.tap(find.byIcon(Icons.more_vert).first);
-    await t.pumpAndSettle();
-    await t.tap(find.text('Изменить'));
+    // hover toolbar with visible icons; taps open real dialogs
+    await t.tap(find.byIcon(Icons.edit));
     await t.pumpAndSettle();
     expect(find.text('Изменить сообщение'), findsOneWidget);
     expect(find.text('Моё сообщение'), findsWidgets);
     await t.tap(find.text('Отмена'));
     await t.pumpAndSettle();
     // delete opens a confirm
-    await t.tap(find.byIcon(Icons.more_vert).first);
-    await t.pumpAndSettle();
-    await t.tap(find.text('Удалить'));
+    await g.moveTo(t.getCenter(find.text('Моё сообщение')));
+    await t.pump(const Duration(milliseconds: 300));
+    await t.tap(find.byIcon(Icons.delete));
     await t.pumpAndSettle();
     expect(find.text('Удалить сообщение?'), findsOneWidget);
     await t.tap(find.text('Отмена'));

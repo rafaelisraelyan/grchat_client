@@ -168,94 +168,75 @@ class MessageGroup extends ConsumerWidget {
   }
 }
 
-class _MessageRow extends ConsumerWidget {
+class _MessageRow extends StatefulWidget {
   const _MessageRow({required this.message, required this.mine});
 
   final Message message;
   final bool mine;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final m = message;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (m.text.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 1),
-            child: _TextLine(message: m, mine: mine),
-          ),
-        for (final a in m.attachments)
-          AttachmentView(attachment: a),
-        if (mine && m.text.isEmpty && m.attachments.isNotEmpty)
-          Align(
-            alignment: Alignment.centerRight,
-            child: _RowMenu(message: m),
-          ),
-      ],
-    );
-  }
+  State<_MessageRow> createState() => _MessageRowState();
 }
 
-class _TextLine extends ConsumerWidget {
-  const _TextLine({required this.message, required this.mine});
-
-  final Message message;
-  final bool mine;
+class _MessageRowState extends State<_MessageRow> {
+  bool _hover = false;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final m = message;
-    final c = GrchatColors.of(context);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Text(m.text,
-              style: const TextStyle(fontSize: 15, height: 1.4)),
-        ),
-        if (m.editedAt != null)
-          Padding(
-            padding: const EdgeInsets.only(left: 6, top: 2),
-            child: Text('(изм.)',
-                style: TextStyle(fontSize: 12, color: c.textMuted)),
+  Widget build(BuildContext context) {
+    final m = widget.message;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onSecondaryTapDown: widget.mine
+            ? (d) => _rowMenu(context, d.globalPosition)
+            : null,
+        child: Stack(children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (m.text.isNotEmpty)
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 1),
+                  child: _TextLine(message: m),
+                ),
+              for (final a in m.attachments)
+                AttachmentView(attachment: a),
+            ],
           ),
-        if (mine)
-          _RowMenu(message: m),
-      ],
+          if (_hover && widget.mine)
+            Positioned(
+              right: 4,
+              top: 0,
+              child: _HoverActions(message: m),
+            ),
+        ]),
+      ),
     );
   }
-}
 
-class _RowMenu extends ConsumerWidget {
-  const _RowMenu({required this.message});
-
-  final Message message;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return PopupMenuButton<String>(
-      icon: Icon(Icons.more_vert, size: 16, color: GrchatColors.of(context).textMuted),
-      tooltip: '',
-      padding: EdgeInsets.zero,
-      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-      onSelected: (v) {
-        if (v == 'edit') {
-          _editDialog(context, ref);
-        } else if (v == 'delete') {
-          _deleteConfirm(context, ref);
-        }
-      },
-      itemBuilder: (ctx) => const [
+  Future<void> _rowMenu(BuildContext context, Offset at) async {
+    final v = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      items: const [
         PopupMenuItem(value: 'edit', child: Text('Изменить')),
         PopupMenuItem(value: 'delete', child: Text('Удалить')),
       ],
     );
+    if (!context.mounted) return;
+    if (v == 'edit') {
+      _editDialog(context);
+    } else if (v == 'delete') {
+      _deleteConfirm(context);
+    }
   }
 
-  Future<void> _editDialog(BuildContext context, WidgetRef ref) async {
-    final tc = TextEditingController(text: message.text);
+  Future<void> _editDialog(BuildContext context) async {
+    final ref = ProviderScope.containerOf(context);
+    final tc = TextEditingController(text: widget.message.text);
     final ok = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -279,7 +260,7 @@ class _RowMenu extends ConsumerWidget {
       try {
         await ref
             .read(homeStateProvider.notifier)
-            .editMessage(message.id, tc.text.trim());
+            .editMessage(widget.message.id, tc.text.trim());
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(context)
@@ -289,7 +270,8 @@ class _RowMenu extends ConsumerWidget {
     }
   }
 
-  Future<void> _deleteConfirm(BuildContext context, WidgetRef ref) async {
+  Future<void> _deleteConfirm(BuildContext context) async {
+    final ref = ProviderScope.containerOf(context);
     final ok = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -307,12 +289,136 @@ class _RowMenu extends ConsumerWidget {
       try {
         await ref
             .read(homeStateProvider.notifier)
-            .deleteMessage(message.id);
+            .deleteMessage(widget.message.id);
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(context)
               .showSnackBar(SnackBar(content: Text('$e')));
         }
+      }
+    }
+  }
+}
+
+class _TextLine extends ConsumerWidget {
+  const _TextLine({required this.message});
+
+  final Message message;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final m = message;
+    final c = GrchatColors.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Text(m.text,
+              style: const TextStyle(fontSize: 15, height: 1.4)),
+        ),
+        if (m.editedAt != null)
+          Padding(
+            padding: const EdgeInsets.only(left: 6, top: 2),
+            child: Text('(изм.)',
+                style: TextStyle(fontSize: 12, color: c.textMuted)),
+          ),
+      ],
+    );
+  }
+}
+
+class _HoverActions extends StatelessWidget {
+  const _HoverActions({required this.message});
+
+  final Message message;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = GrchatColors.of(context);
+    return Material(
+      color: c.surfaceElevated,
+      borderRadius: BorderRadius.circular(10),
+      elevation: 6,
+      shadowColor: Colors.black.withValues(alpha: 0.5),
+      child: Container(
+        decoration: BoxDecoration(
+            border: Border.all(color: c.borderSubtle),
+            borderRadius: BorderRadius.circular(10)),
+        padding: const EdgeInsets.symmetric(horizontal: 2),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          _HoverBtn(icon: Icons.edit, label: 'Изменить', message: message, isDelete: false),
+          _HoverBtn(icon: Icons.delete, label: 'Удалить', message: message, isDelete: true),
+        ]),
+      ),
+    );
+  }
+}
+
+class _HoverBtn extends ConsumerWidget {
+  const _HoverBtn({required this.icon, required this.label, required this.message, required this.isDelete});
+
+  final IconData icon;
+  final String label;
+  final Message message;
+  final bool isDelete;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = GrchatColors.of(context);
+    return Tooltip(
+      message: label,
+      waitDuration: const Duration(seconds: 2),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => isDelete ? _deleteConfirm(context, ref, message) : _editDialog(context, ref, message),
+        child: Padding(
+          padding: const EdgeInsets.all(9),
+          child: Icon(icon, size: 20, color: isDelete ? c.danger : c.textPrimary),
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> _editDialog(BuildContext context, WidgetRef ref, Message message) async {
+  final tc = TextEditingController(text: message.text);
+  final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+            title: const Text('Изменить сообщение'),
+            content: TextField(controller: tc, autofocus: true, maxLines: 4, decoration: const InputDecoration(border: OutlineInputBorder())),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сохранить')),
+            ],
+          ));
+  if (ok == true && context.mounted) {
+    try {
+      await ref.read(homeStateProvider.notifier).editMessage(message.id, tc.text.trim());
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+}
+
+Future<void> _deleteConfirm(BuildContext context, WidgetRef ref, Message message) async {
+  final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+            title: const Text('Удалить сообщение?'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Удалить')),
+            ],
+          ));
+  if (ok == true && context.mounted) {
+    try {
+      await ref.read(homeStateProvider.notifier).deleteMessage(message.id);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
       }
     }
   }
