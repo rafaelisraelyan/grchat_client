@@ -251,18 +251,24 @@ class _HoverActions extends ConsumerWidget {
       decoration: BoxDecoration(
           color: c.surfaceElevated,
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: c.borderSubtle)),
+          border: Border.all(color: c.borderSubtle),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withValues(alpha: 0.4),
+                blurRadius: 8,
+                offset: const Offset(0, 2)),
+          ]),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         IconButton(
-            tooltip: 'Изменить',
-            iconSize: 16,
+            iconSize: 18,
             visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.all(8),
             icon: const Icon(Icons.edit),
             onPressed: () => _editDialog(context, ref)),
         IconButton(
-            tooltip: 'Удалить',
-            iconSize: 16,
+            iconSize: 18,
             visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.all(8),
             icon: Icon(Icons.delete, color: c.danger),
             onPressed: () => _deleteConfirm(context, ref)),
       ]),

@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -119,6 +121,33 @@ class _FakeHomeDm extends HomeState {
   }
 }
 
+class _FakeHomeHover extends HomeState {
+  @override
+  HomeData build() {
+    return HomeData(
+      communities: const [],
+      activeCommunityId: null,
+      dms: const [],
+      scope: DmScope(
+          DmThread(id: 'd1', isGroup: false, members: [
+            DmMember(userId: 'u1', nick: 'Rafael'),
+            DmMember(userId: 'u2', nick: 'Second'),
+          ]),
+          'u1'),
+      messages: [
+        Message(
+            id: 'm1',
+            dmId: 'd1',
+            authorId: 'u1',
+            authorNick: 'Rafael',
+            text: 'Моё сообщение',
+            createdAt: '2026-09-02T12:41:00Z'),
+      ],
+      members: const [],
+    );
+  }
+}
+
 void main() {
   testWidgets('auth screen', (t) async {
     t.view.physicalSize = const Size(1280, 720);
@@ -202,5 +231,44 @@ void main() {
     await t.pumpAndSettle();
     await expectLater(find.byType(SettingsScreen),
         matchesGoldenFile('goldens/settings.png'));
+  });
+
+  testWidgets('own message hover actions', (t) async {
+    t.view.physicalSize = const Size(1280, 720);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+          homeStateProvider.overrideWith(_FakeHomeHover.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const HomeScreen())));
+    await t.pumpAndSettle();
+    final g = await t.createGesture(kind: ui.PointerDeviceKind.mouse);
+    await g.addPointer();
+    await g.moveTo(t.getCenter(find.text('Моё сообщение')));
+    await t.pump(const Duration(seconds: 2));
+    await expectLater(
+        find.byType(HomeScreen), matchesGoldenFile('goldens/hover.png'));
+    // buttons actually work: edit opens a dialog with the text
+    await t.tap(find.byIcon(Icons.edit));
+    await t.pumpAndSettle();
+    expect(find.text('Изменить сообщение'), findsOneWidget);
+    expect(find.text('Моё сообщение'), findsWidgets);
+    await t.tap(find.text('Отмена'));
+    await t.pumpAndSettle();
+    // delete opens a confirm
+    await g.moveTo(t.getCenter(find.text('Моё сообщение')));
+    await t.pump(const Duration(milliseconds: 300));
+    await t.tap(find.byIcon(Icons.delete));
+    await t.pumpAndSettle();
+    expect(find.text('Удалить сообщение?'), findsOneWidget);
+    await t.tap(find.text('Отмена'));
+    await t.pumpAndSettle();
+    await g.removePointer();
   });
 }
