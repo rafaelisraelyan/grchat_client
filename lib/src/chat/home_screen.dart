@@ -5,6 +5,7 @@ import 'home_state.dart';
 import 'models.dart';
 import '../call/call_overlay.dart';
 import '../call/call_state.dart';
+import '../voice/voice_state.dart';
 import 'widgets/chat_view.dart';
 import 'widgets/community_rail.dart';
 import 'widgets/context_sidebar.dart';
@@ -27,6 +28,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     Future.microtask(() {
       ref.read(homeStateProvider.notifier).init();
       ref.read(callStateProvider.notifier).ensureListening();
+      ref.read(voiceStateProvider.notifier).ensureListening();
     });
   }
 

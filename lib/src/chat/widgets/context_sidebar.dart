@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../settings/settings_screen.dart';
+import '../../voice/voice_state.dart';
 import '../../widgets/avatar.dart';
 import '../home_state.dart';
 import '../models.dart';
@@ -80,9 +81,7 @@ class ContextSidebar extends ConsumerWidget {
                   groupLabel('Голосовые каналы'),
                   for (final ch
                       in comm.channels.where((c) => c.type != 'text'))
-                    VoiceTile(
-                        name: ch.name,
-                        onTap: () => onVoice(ch)),
+                    VoiceTile(channel: ch, members: data.members),
                 ],
               ],
             ),
@@ -194,31 +193,88 @@ class ChannelTile extends StatelessWidget {
   }
 }
 
-class VoiceTile extends StatelessWidget {
-  const VoiceTile({super.key, required this.name, required this.onTap});
+class VoiceTile extends ConsumerWidget {
+  const VoiceTile(
+      {super.key, required this.channel, required this.members});
 
-  final String name;
-  final VoidCallback onTap;
+  final Channel channel;
+  final List<Member> members;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final c = GrchatColors.of(context);
+    final voice = ref.watch(voiceStateProvider);
+    final notifier = ref.read(voiceStateProvider.notifier);
+    final joined =
+        notifier.joinedChannelId == channel.id;
+    final ids = voice[channel.id] ?? const {};
+    String nick(String id) {
+      for (final m in members) {
+        if (m.userId == id) return m.nick;
+      }
+      return id.substring(0, 8);
+    }
+
     return InkWell(
       borderRadius: BorderRadius.circular(8),
-      onTap: onTap,
+      onTap: () async {
+        try {
+          if (joined) {
+            await notifier.leave();
+          } else {
+            await notifier.join(channel.id);
+          }
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text('$e')));
+          }
+        }
+      },
       child: Container(
-        height: 36,
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Row(children: [
-          Icon(Icons.volume_up, size: 18, color: c.textMuted),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: c.textSecondary)),
-          ),
-        ]),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: joined ? c.surfaceSelected : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: 36,
+                child: Row(children: [
+                  Icon(Icons.volume_up,
+                      size: 18,
+                      color: joined ? c.accent : c.textMuted),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(channel.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: joined
+                                ? c.textPrimary
+                                : c.textSecondary,
+                            fontWeight: joined
+                                ? FontWeight.w700
+                                : FontWeight.w400)),
+                  ),
+                  if (joined)
+                    const Icon(Icons.logout, size: 14),
+                ]),
+              ),
+              for (final id in ids)
+                Padding(
+                  padding:
+                      const EdgeInsets.only(left: 24, top: 1, bottom: 1),
+                  child: Text(nick(id),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 12, color: c.textSecondary)),
+                ),
+            ]),
       ),
     );
   }

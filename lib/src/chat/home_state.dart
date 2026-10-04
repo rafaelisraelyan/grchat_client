@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:riverpod/riverpod.dart';
 
 import '../app/providers.dart';
+import '../voice/voice_state.dart';
 import 'chat_repository.dart';
 import 'file_api.dart';
 import 'models.dart';
@@ -176,6 +177,10 @@ class HomeState extends Notifier<HomeData> {
       if (state.scope?.key == 'c:${channel.id}') {
         state =
             state.copyWith(messages: msgs, members: members, loading: false);
+      }
+      final voice = ref.read(voiceStateProvider.notifier);
+      for (final ch in community.channels) {
+        if (ch.type != 'text') voice.refresh(ch.id).catchError((_) {});
       }
     } catch (e) {
       state = state.copyWith(loading: false, error: e.toString());
