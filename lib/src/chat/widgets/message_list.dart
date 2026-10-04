@@ -180,6 +180,7 @@ class _MessageRow extends StatefulWidget {
 
 class _MessageRowState extends State<_MessageRow> {
   bool _hover = false;
+  DateTime? _lastTapDown;
 
   @override
   Widget build(BuildContext context) {
@@ -188,6 +189,21 @@ class _MessageRowState extends State<_MessageRow> {
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
+        // Manual double-click: DoubleTapGestureRecognizer here breaks
+        // child button taps, so detect the second tap-down by hand.
+        onTapDown: widget.mine
+            ? (_) {
+                final now = DateTime.now();
+                if (_lastTapDown != null &&
+                    now.difference(_lastTapDown!) <
+                        const Duration(milliseconds: 400)) {
+                  _lastTapDown = null;
+                  _editDialog(context);
+                } else {
+                  _lastTapDown = now;
+                }
+              }
+            : null,
         onSecondaryTapDown: widget.mine
             ? (d) => _rowMenu(context, d.globalPosition)
             : null,

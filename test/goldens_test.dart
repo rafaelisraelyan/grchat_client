@@ -271,4 +271,26 @@ void main() {
     await t.pumpAndSettle();
     await g.removePointer();
   });
+
+  testWidgets('double click edits own message', (t) async {
+    t.view.physicalSize = const Size(1280, 720);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+          homeStateProvider.overrideWith(_FakeHomeHover.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const HomeScreen())));
+    await t.pumpAndSettle();
+    await t.tap(find.text('Моё сообщение'));
+    await t.pump(const Duration(milliseconds: 50));
+    await t.tap(find.text('Моё сообщение'));
+    await t.pumpAndSettle();
+    expect(find.text('Изменить сообщение'), findsOneWidget);
+  });
 }
