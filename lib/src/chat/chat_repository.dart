@@ -85,6 +85,55 @@ class ChatRepository {
     _throwIfError(r);
   }
 
+  Future<void> kick(String communityId, String userId) async {
+    final r = await _conn.request('kick',
+        fields: {..._auth, 'community_id': communityId, 'user_id': userId});
+    _throwIfError(r);
+  }
+
+  Future<void> ban(String communityId, String userId, {int? untilMin}) async {
+    final r = await _conn.request('ban', fields: {
+      ..._auth,
+      'community_id': communityId,
+      'user_id': userId,
+      if (untilMin case final m) 'until_min': m,
+    });
+    _throwIfError(r);
+  }
+
+  Future<void> unban(String communityId, String userId) async {
+    final r = await _conn.request('unban',
+        fields: {..._auth, 'community_id': communityId, 'user_id': userId});
+    _throwIfError(r);
+  }
+
+  Future<void> mute(String communityId, String userId, int untilMin) async {
+    final r = await _conn.request('mute', fields: {
+      ..._auth,
+      'community_id': communityId,
+      'user_id': userId,
+      'until_min': untilMin,
+    });
+    _throwIfError(r);
+  }
+
+  Future<void> unmute(String communityId, String userId) async {
+    final r = await _conn.request('unmute',
+        fields: {..._auth, 'community_id': communityId, 'user_id': userId});
+    _throwIfError(r);
+  }
+
+  Future<void> grantRole(
+      String communityId, String userId, String role) async {
+    final r = await _conn.request('role_grant', fields: {
+      ..._auth,
+      'community_id': communityId,
+      'user_id': userId,
+      'role': role,
+    });
+    _throwIfError(r);
+  }
+
   Future<void> sendTypingChannel(String channelId, bool typing) async {
     try {
       await _conn.request('typing',
