@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:video_player/video_player.dart';
 
 import '../../app/theme.dart';
 import '../../widgets/avatar.dart';
@@ -447,8 +451,10 @@ class AttachmentView extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    if (attachment.mime.startsWith('image/')) {
-      final cached = ref.watch(fileCacheProvider)[attachment.fileId];
+    if (attachment.mime.startsWith('video/')) {
+      return _VideoAttachment(attachment: attachment);
+    }
+    if (attachment.mime.startsWith('image/')) {      final cached = ref.watch(fileCacheProvider)[attachment.fileId];
       if (cached == null) {
         ref
             .read(fileCacheProvider.notifier)
@@ -470,8 +476,131 @@ class AttachmentView extends ConsumerWidget {
   }
 }
 
-class _FileCard extends StatelessWidget {
-  const _FileCard({required this.attachment});
+/// Inline video: downloads once, plays from temp file, tap toggles.
+class _VideoAttachment extends ConsumerStatefulWidget {
+  const _VideoAttachment({required this.attachment});
+
+  final Attachment attachment;
+
+  @override
+  ConsumerState<_VideoAttachment> createState() => _VideoAttachmentState();
+}
+
+class _VideoAttachmentState extends ConsumerState<_VideoAttachment> {
+  VideoPlayerController? _ctl;
+  bool _ready = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _ctl?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final bytes = await ref
+          .read(fileCacheProvider.notifier)
+          .fetch(widget.attachment.fileId);
+      final dir = await getTemporaryDirectory();
+      final file = File(
+          '${dir.path}/${widget.attachment.fileId}_${widget.attachment.filename}');
+      if (!await file.exists()) {
+        await file.writeAsBytes(bytes, flush: true);
+      }
+      if (!mounted) return;
+      final ctl = VideoPlayerController.file(file);
+      await ctl.initialize();
+      if (!mounted) {
+        await ctl.dispose();
+        return;
+      }
+      setState(() {
+        _ctl = ctl;
+        _ready = true;
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = GrchatColors.of(context);
+    if (_error != null) {
+      return _FileCard(attachment: widget.attachment);
+    }
+    if (!_ready || _ctl == null) {
+      return Container(
+        margin: const EdgeInsets.only(top: 6),
+        constraints:
+            const BoxConstraints(maxWidth: 300, minHeight: 120),
+        decoration: BoxDecoration(
+            color: c.surface,
+            border: Border.all(color: c.borderSubtle),
+            borderRadius: BorderRadius.circular(10)),
+        alignment: Alignment.center,
+        child: const SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      constraints: const BoxConstraints(maxWidth: 300),
+      decoration: BoxDecoration(
+          color: Colors.black,
+          borderRadius: BorderRadius.circular(10)),
+      clipBehavior: Clip.antiAlias,
+      child: AspectRatio(
+        aspectRatio:
+            _ctl!.value.aspectRatio == 0 ? 16 / 9 : _ctl!.value.aspectRatio,
+        child: Stack(alignment: Alignment.center, children: [
+          VideoPlayer(_ctl!),
+          if (!_ctl!.value.isPlaying)
+            GestureDetector(
+              onTap: () => _toggle(),
+              child: Container(
+                decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    shape: BoxShape.circle),
+                padding: const EdgeInsets.all(12),
+                child: const Icon(Icons.play_arrow,
+                    size: 32, color: Colors.white),
+              ),
+            ),
+          Positioned.fill(
+            child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: () => _toggle(),
+                child: const SizedBox.expand()),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  void _toggle() {
+    final ctl = _ctl;
+    if (ctl == null) return;
+    setState(() {
+      if (ctl.value.isPlaying) {
+        ctl.pause();
+      } else {
+        ctl.play();
+      }
+    });
+  }
+}
+
+class _FileCard extends StatelessWidget {  const _FileCard({required this.attachment});
 
   final Attachment attachment;
 
