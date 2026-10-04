@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'home_state.dart';
 import 'models.dart';
+import '../call/call_overlay.dart';
+import '../call/call_state.dart';
 import 'widgets/chat_view.dart';
 import 'widgets/community_rail.dart';
 import 'widgets/context_sidebar.dart';
@@ -22,8 +24,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    Future.microtask(
-        () => ref.read(homeStateProvider.notifier).init());
+    Future.microtask(() {
+      ref.read(homeStateProvider.notifier).init();
+      ref.read(callStateProvider.notifier).ensureListening();
+    });
   }
 
   @override
@@ -33,25 +37,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         // Plan §62: full layout above 1250px, members auto-hidden below.
         final showMembers =
             _membersOpen && constraints.maxWidth > 1250;
-        return Row(
-          children: [
-            CommunityRail(
-                onAddServer: () => showServerDialog(context, ref)),
-            ContextSidebar(
-              onSearch: () => showSearchDialog(context, ref),
-              onNewDm: () => showNewDmDialog(context, ref),
-              onVoice: _voiceStub,
-            ),
-            Expanded(
-                child: ChatView(
-              onToggleMembers: () =>
-                  setState(() => _membersOpen = !_membersOpen),
-              onInvite: () => showInviteDialog(context, ref),
-              onVoice: _voiceStub,
-            )),
-            if (showMembers) const MembersPanel(),
-          ],
-        );
+        return Stack(children: [
+          Row(
+            children: [
+              CommunityRail(
+                  onAddServer: () => showServerDialog(context, ref)),
+              ContextSidebar(
+                onSearch: () => showSearchDialog(context, ref),
+                onNewDm: () => showNewDmDialog(context, ref),
+                onVoice: _voiceStub,
+              ),
+              Expanded(
+                  child: ChatView(
+                onToggleMembers: () =>
+                    setState(() => _membersOpen = !_membersOpen),
+                onInvite: () => showInviteDialog(context, ref),
+                onVoice: _voiceStub,
+              )),
+              if (showMembers) const MembersPanel(),
+            ],
+          ),
+          const CallOverlay(),
+        ]);
       }),
     );
   }

@@ -1,0 +1,68 @@
+import '../auth/auth_repository.dart';
+import '../transport/grchat_connection.dart';
+
+/// Server call signaling (our protocol) + TURN credentials.
+/// Media itself is WebRTC P2P (TURN fallback) — see CallState.
+class CallApi {
+  CallApi(this._conn, this._session);
+  final GrchatConnection _conn;
+  final Session _session;
+
+  Map<String, String> get _auth => {'session_token': _session.token};
+
+  void _throwIfError(Map<String, dynamic> r) {
+    if (r['type'] == 'error') {
+      throw GrchatException(r['code']?.toString() ?? 'UNKNOWN', r);
+    }
+  }
+
+  Future<String> offer({String? peerNick, String? dmId, required String sdp}) async {
+    final r = await _conn.request('call_offer', fields: {
+      ..._auth,
+      if (peerNick case final pn) 'peer_nick': pn,
+      if (dmId case final d) 'dm_id': d,
+      'sdp': sdp,
+    });
+    _throwIfError(r);
+    return r['call_id'] as String;
+  }
+
+  Future<void> answer(
+      {required String callId, required bool accept, String? sdp}) async {
+    final r = await _conn.request('call_answer', fields: {
+      ..._auth,
+      'call_id': callId,
+      'accept': accept,
+      if (sdp case final s) 'sdp': s,
+    });
+    _throwIfError(r);
+  }
+
+  Future<void> ice(
+      {required String callId,
+      required String candidate,
+      String? sdpMid,
+      String? sdpMLineIndex}) async {
+    final r = await _conn.request('ice', fields: {
+      ..._auth,
+      'call_id': callId,
+      'candidate': candidate,
+      if (sdpMid case final sm) 'sdp_mid': sm,
+      if (sdpMLineIndex case final sl) 'sdp_mline_index': sl,
+    });
+    _throwIfError(r);
+  }
+
+  Future<void> hangup(String callId) async {
+    final r = await _conn.request('call_hangup',
+        fields: {..._auth, 'call_id': callId});
+    _throwIfError(r);
+  }
+
+  /// TURN credentials for coturn REST, or null when disabled server-side.
+  Future<Map<String, dynamic>?> turnCredentials() async {
+    final r = await _conn.request('turn_credentials', fields: _auth);
+    if (r['type'] == 'error') return null;
+    return r;
+  }
+}

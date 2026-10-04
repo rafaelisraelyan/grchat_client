@@ -6,6 +6,7 @@ import '../home_state.dart';
 import '../models.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
+import '../../call/call_state.dart';
 import 'message_list.dart';
 
 /// Center column: header, message list, composer.
@@ -97,12 +98,16 @@ class _ChatViewState extends ConsumerState<ChatView> {
                 tooltip: 'Скопировать инвайт',
                 icon: const Icon(Icons.person_add, size: 20),
                 onPressed: widget.onInvite),
+          ],
+          if (scope is DmScope) ...[
             IconButton(
-                tooltip: 'Позвонить (скоро)',
+                tooltip: 'Позвонить',
                 icon: const Icon(Icons.call, size: 20),
-                onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text('Звонки — следующим шагом')))),
+                onPressed: () => _startCall(video: false)),
+            IconButton(
+                tooltip: 'Видеозвонок',
+                icon: const Icon(Icons.videocam, size: 20),
+                onPressed: () => _startCall(video: true)),
           ],
           IconButton(
               tooltip: 'Участники',
@@ -208,6 +213,30 @@ class _ChatViewState extends ConsumerState<ChatView> {
     _input.clear();
     _typingSent = false;
     ref.read(homeStateProvider.notifier).send(t);
+  }
+
+  Future<void> _startCall({required bool video}) async {
+    final scope = ref.read(homeStateProvider).scope;
+    if (scope is! DmScope) return;
+    final myId = ref.read(sessionProvider)?.userId;
+    final others =
+        scope.thread.members.where((m) => m.userId != myId).toList();
+    try {
+      if (!scope.thread.isGroup && others.length == 1) {
+        await ref
+            .read(callStateProvider.notifier)
+            .startCall(peerNick: others.first.nick, video: video);
+      } else {
+        await ref
+            .read(callStateProvider.notifier)
+            .startCall(dmId: scope.thread.id, video: video);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Не вышло позвонить: $e')));
+      }
+    }
   }
 
   static String _mimeOf(String name) {
