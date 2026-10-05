@@ -86,6 +86,18 @@ class TrayBackend {
     } catch (_) {}
   }
 
+  /// Remove the icon before process exit. Otherwise Windows keeps
+  /// a ghost icon until the cursor hovers over it.
+  Future<void> disposeTray() async {
+    try {
+      _tray?.setVisible(false);
+    } catch (_) {}
+    try {
+      _tray?.dispose();
+    } catch (_) {}
+    _tray = null;
+  }
+
   Future<Image?> _loadIcon() async {
     for (final name in ['assets/tray.png', 'assets/tray.ico']) {
       try {

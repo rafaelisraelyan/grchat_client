@@ -37,6 +37,11 @@ Future<void> hideWindow() async {
 Future<void> destroyWindow() async {
   if (!isDesktop) return;
   try {
-    await windowManager.destroy();
+    // No await on destroy(): it kills the platform channel the reply
+    // would come back on, so awaiting it can hang forever.
+    await windowManager.setPreventClose(false);
+  } catch (_) {}
+  try {
+    windowManager.destroy();
   } catch (_) {}
 }

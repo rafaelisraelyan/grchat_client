@@ -71,12 +71,23 @@ class _GrchatAppState extends ConsumerState<GrchatApp> with WindowListener {
       },
       isNotificationsOn: () =>
           ref.read(notifyBackendProvider).enabled(),
-      onQuit: () async {
-        try {
-          await ref.read(connectionProvider).dispose();
-        } catch (_) {}
-        await destroyWindow();
-        exit(0);
+      onQuit: () {
+        DesktopLog.write('app: quit requested');
+        () async {
+          try {
+            await ref
+                .read(connectionProvider)
+                .dispose()
+                .timeout(const Duration(seconds: 2));
+          } catch (_) {}
+          try {
+            await _tray?.disposeTray();
+          } catch (_) {}
+          // destroyWindow() is fire-and-forget by design (see window.dart).
+          await destroyWindow();
+          DesktopLog.write('app: quit exiting');
+          exit(0);
+        }();
       },
     );
     await _tray!.init();
