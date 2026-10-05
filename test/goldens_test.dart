@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:grchat_client/src/app/providers.dart';
 import 'package:grchat_client/src/app/theme.dart';
 import 'package:grchat_client/src/auth/auth_repository.dart';
+import 'package:grchat_client/src/search/find_dialog.dart';
+import 'package:grchat_client/src/search/search_address.dart';
+import 'package:grchat_client/src/search/search_results.dart';
 import 'package:grchat_client/src/auth/auth_screen.dart';
 import 'package:grchat_client/src/chat/home_screen.dart';
 import 'package:grchat_client/src/chat/widgets/members_panel.dart';
@@ -224,6 +228,69 @@ class _FakeHomeEmpty extends HomeState {
   }
 }
 
+class _GoldenFindApi implements FindSearchApi {
+  _GoldenFindApi({this.hang = false, this.fail = false});
+  final bool hang;
+  final bool fail;
+
+  @override
+  Future<ServerHit> findServer(String alias) async {
+    if (fail) throw GrchatException('NOT_FOUND');
+    if (hang) await Completer<void>().future;
+    return ServerHit(
+        communityId: 'c1',
+        name: 'GR Audio',
+        alias: alias,
+        isPrivate: false,
+        membersCount: 423,
+        isMember: false);
+  }
+
+  @override
+  Future<ChannelHit> findChannel(String alias) async {
+    if (fail) throw GrchatException('NOT_FOUND');
+    if (hang) await Completer<void>().future;
+    return ChannelHit(
+        channelId: 'ch9',
+        name: 'News',
+        alias: alias,
+        type: 'text',
+        isPrivate: false,
+        subscribersCount: 12,
+        hasAccess: false);
+  }
+
+  @override
+  Future<({String userId, String nick})> findUser(String nick) async {
+    if (fail) throw GrchatException('NOT_FOUND');
+    return (userId: 'u9', nick: nick);
+  }
+}
+
+Future<void> _pumpFind(WidgetTester t, Widget dialog, ThemeMode mode) async {
+  t.view.physicalSize = const Size(800, 600);
+  t.view.devicePixelRatio = 1.0;
+  addTearDown(t.view.resetPhysicalSize);
+  await t.pumpWidget(MaterialApp(
+      theme: grchatLight,
+      darkTheme: grchatDark,
+      themeMode: mode,
+      home: Scaffold(body: Center(child: dialog))));
+  await t.pumpAndSettle();
+}
+
+FindDialog _findDialog(FindSearchApi api,
+        {SearchTargetType initial = SearchTargetType.channel}) =>
+    FindDialog(
+      initialType: initial,
+      search: api,
+      onOpenServer: (_) async {},
+      onOpenChannel: (_) async {},
+      onWriteUser: (_) async {},
+      onJoinServer: (_) async {},
+      onSubscribeChannel: (_) async {},
+    );
+
 void main() {
   testWidgets('auth screen', (t) async {
     t.view.physicalSize = const Size(1280, 720);
@@ -394,8 +461,7 @@ void main() {
     await g.removePointer();
   });
 
-  testWidgets('double click edits own message', (t) async {
-    t.view.physicalSize = const Size(1280, 720);
+  testWidgets('double click edits own message', (t) async {    t.view.physicalSize = const Size(1280, 720);
     t.view.devicePixelRatio = 1.0;
     addTearDown(t.view.resetPhysicalSize);
     await t.pumpWidget(ProviderScope(
@@ -414,5 +480,59 @@ void main() {
     await t.tap(find.text('Моё сообщение'));
     await t.pumpAndSettle();
     expect(find.text('Изменить сообщение'), findsOneWidget);
+  });
+
+  testWidgets('find dialog dark', (t) async {
+    await _pumpFind(t, _findDialog(_GoldenFindApi()), ThemeMode.dark);
+    await expectLater(
+        find.byType(FindDialog), matchesGoldenFile('goldens/find_dark.png'));
+  });
+
+  testWidgets('find dialog light server', (t) async {
+    await _pumpFind(
+        t,
+        _findDialog(_GoldenFindApi(),
+            initial: SearchTargetType.server),
+        ThemeMode.light);
+    await expectLater(find.byType(FindDialog),
+        matchesGoldenFile('goldens/find_light.png'));
+  });
+
+  testWidgets('find dialog bot inactive', (t) async {
+    await _pumpFind(
+        t,
+        _findDialog(_GoldenFindApi(), initial: SearchTargetType.bot),
+        ThemeMode.dark);
+    await expectLater(find.byType(FindDialog),
+        matchesGoldenFile('goldens/find_bot.png'));
+  });
+
+  testWidgets('find dialog result', (t) async {
+    await _pumpFind(t, _findDialog(_GoldenFindApi()), ThemeMode.dark);
+    await t.enterText(find.byType(TextField), 'NEWS');
+    await t.tap(find.text('Найти'));
+    await t.pumpAndSettle();
+    await expectLater(find.byType(FindDialog),
+        matchesGoldenFile('goldens/find_result.png'));
+  });
+
+  testWidgets('find dialog not found', (t) async {
+    await _pumpFind(
+        t, _findDialog(_GoldenFindApi(fail: true)), ThemeMode.dark);
+    await t.enterText(find.byType(TextField), 'NOPE');
+    await t.tap(find.text('Найти'));
+    await t.pumpAndSettle();
+    await expectLater(find.byType(FindDialog),
+        matchesGoldenFile('goldens/find_not_found.png'));
+  });
+
+  testWidgets('find dialog loading', (t) async {
+    await _pumpFind(
+        t, _findDialog(_GoldenFindApi(hang: true)), ThemeMode.dark);
+    await t.enterText(find.byType(TextField), 'NEWS');
+    await t.tap(find.text('Найти'));
+    await t.pump();
+    await expectLater(find.byType(FindDialog),
+        matchesGoldenFile('goldens/find_loading.png'));
   });
 }

@@ -1,8 +1,10 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home_state.dart';
+import '../../search/search_address.dart';
 import '../../widgets/toast.dart';
 import 'empty_chat.dart';
 import '../models.dart';
@@ -96,8 +98,20 @@ class _ChatViewState extends ConsumerState<ChatView> {
                   style: const TextStyle(
                       fontSize: 16, fontWeight: FontWeight.w700))),
           if (scope is ChannelScope) ...[
+            if (scope.channel.alias.isNotEmpty)
+              IconButton(
+                  tooltip: 'Копировать адрес канала',
+                  icon: const Icon(Icons.link, size: 20),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(
+                        text: addressOf(SearchTargetType.channel,
+                            scope.channel.alias)));
+                    Toast.show(context, 'Адрес скопирован');
+                  }),
             IconButton(
-                tooltip: 'Скопировать инвайт',
+                tooltip: scope.community == null
+                    ? 'Добавить участника'
+                    : 'Скопировать инвайт',
                 icon: const Icon(Icons.person_add, size: 20),
                 onPressed: widget.onInvite),
           ],

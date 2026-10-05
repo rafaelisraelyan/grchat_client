@@ -16,7 +16,7 @@ class CommunityRail extends ConsumerWidget {
     final data = ref.watch(homeStateProvider);
     final st = ref.read(homeStateProvider.notifier);
     final scope = data.scope;
-    final curId = scope is ChannelScope ? scope.community.id : null;
+    final curId = scope is ChannelScope ? scope.community?.id : null;
     final homeOn = data.activeCommunityId == null;
     return SizedBox(
       width: 64,

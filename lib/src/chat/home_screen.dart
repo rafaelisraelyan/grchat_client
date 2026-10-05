@@ -101,7 +101,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           Row(
             children: [
               CommunityRail(
-                  onAddServer: () => showServerDialog(context, ref)),
+                  onAddServer: () => showAddMenu(context, ref)),
               ContextSidebar(
                 onSearch: () => showSearchDialog(context, ref),
                 onNewDm: () => showNewDmDialog(context, ref),

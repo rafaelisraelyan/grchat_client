@@ -2,60 +2,389 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../search/find_dialog.dart';
+import '../../search/search_address.dart';
+import '../../search/search_results.dart';
 import '../home_state.dart';
 import '../../widgets/toast.dart';
 
 Future<void> showServerDialog(BuildContext context, WidgetRef ref) async {
   final name = TextEditingController();
+  final alias = TextEditingController();
   final code = TextEditingController();
+  var isPrivate = false;
+  String? error;
   await showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-            title: const Text('Сервер'),
-            content: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(
-                  controller: name,
-                  decoration: const InputDecoration(
-                      hintText: 'Название нового сервера')),
-              const SizedBox(height: 8),
-              TextField(
-                  controller: code,
-                  decoration: const InputDecoration(
-                      hintText: 'Инвайт-код для входа')),
-            ]),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('Отмена')),
-              TextButton(
-                  onPressed: () async {
-                    final repo = ref.read(chatRepositoryProvider);
-                    try {
-                      if (code.text.trim().isNotEmpty) {
-                        await repo.joinByInvite(code.text);
-                      } else if (name.text.trim().isNotEmpty) {
-                        await repo.createCommunity(name.text.trim());
+      builder: (ctx) => StatefulBuilder(
+            builder: (ctx, setD) => AlertDialog(
+              title: const Text('Сервер'),
+              content: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextField(
+                    controller: name,
+                    decoration: const InputDecoration(
+                        hintText: 'Название нового сервера')),
+                const SizedBox(height: 8),
+                TextField(
+                    controller: alias,
+                    decoration: const InputDecoration(
+                        hintText: 'Код, напр. GRAUDIO (необязательно)')),
+                const SizedBox(height: 8),
+                TextField(
+                    controller: code,
+                    decoration: const InputDecoration(
+                        hintText: 'Инвайт-код для входа')),
+                Row(children: [
+                  Checkbox(
+                      value: isPrivate,
+                      onChanged: (v) =>
+                          setD(() => isPrivate = v ?? false)),
+                  const Text('Приватный'),
+                ]),
+                if (error != null) ...[
+                  const SizedBox(height: 4),
+                  Text(error!,
+                      style: const TextStyle(color: Colors.red)),
+                ],
+              ]),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('Отмена')),
+                TextButton(
+                    onPressed: () async {
+                      final repo = ref.read(chatRepositoryProvider);
+                      try {
+                        String? openedId;
+                        if (code.text.trim().isNotEmpty) {
+                          await repo.joinByInvite(code.text);
+                        } else if (name.text.trim().isNotEmpty) {
+                          final a = alias.text.trim();
+                          final created = await repo.createCommunity(
+                              name.text.trim(),
+                              alias: a.isEmpty ? null : a,
+                              isPrivate: isPrivate);
+                          openedId = created.communityId;
+                        }
+                        final st = ref
+                            .read(homeStateProvider.notifier);
+                        await st.refresh();
+                        if (openedId != null && context.mounted) {
+                          await _openCommunity(
+                              ref, st, openedId, context);
+                        }
+                      } catch (e) {
+                        setD(() => error = searchErrorText(
+                            SearchTargetType.server, e));
+                        return;
                       }
-                      await ref
-                          .read(homeStateProvider.notifier)
-                          .refresh();
-                    } catch (e) {
-                      if (context.mounted) Toast.show(context, '$e');
-                    }
-                    if (ctx.mounted) Navigator.pop(ctx);
-                  },
-                  child: const Text('Ок')),
+                      if (ctx.mounted) Navigator.pop(ctx);
+                    },
+                    child: const Text('Ок')),
+              ],
+            ),
+          ));
+}
+
+/// Selects the first text channel of a community (after create/join).
+Future<void> _openCommunity(WidgetRef ref, HomeState st, String communityId,
+    BuildContext context) async {
+  try {
+    final comms = ref
+        .read(homeStateProvider)
+        .communities
+        .where((c) => c.id == communityId);
+    if (comms.isNotEmpty) {
+      final chs =
+          comms.first.channels.where((c) => c.type == 'text');
+      if (chs.isNotEmpty) await st.selectChannel(comms.first, chs.first);
+    }
+  } catch (e) {
+    if (context.mounted) Toast.show(context, '$e');
+  }
+}
+
+/// The "+" menu in the rail: find first, create second. Never mixed.
+Future<void> showAddMenu(BuildContext context, WidgetRef ref) async {
+  final pick = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+            title: const Text('Добавить'),
+            children: [
+              SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, 'find'),
+                  child: const Text('Найти')),
+              SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, 'server'),
+                  child: const Text('Создать сервер')),
+              SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, 'channel'),
+                  child: const Text('Создать канал')),
+              const SimpleDialogOption(
+                  onPressed: null,
+                  child: Text('Создать бота · Скоро')),
             ],
+          ));
+  if (!context.mounted) return;
+  switch (pick) {
+    case 'find':
+      await showFindDialog(context, ref);
+    case 'server':
+      await showServerDialog(context, ref);
+    case 'channel':
+      await showCreateChannelDialog(context, ref);
+  }
+}
+
+Future<void> showCreateChannelDialog(
+    BuildContext context, WidgetRef ref) async {
+  final name = TextEditingController();
+  final alias = TextEditingController();
+  var type = 'text';
+  var isPrivate = false;
+  String? error;
+  await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+            builder: (ctx, setD) => AlertDialog(
+              title: const Text('Новый канал'),
+              content: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextField(
+                    controller: name,
+                    decoration: const InputDecoration(
+                        hintText: 'Название канала')),
+                const SizedBox(height: 8),
+                TextField(
+                    controller: alias,
+                    decoration: const InputDecoration(
+                        hintText: 'Код, напр. NEWS (необязательно)')),
+                const SizedBox(height: 8),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                        value: 'text', label: Text('Текст')),
+                    ButtonSegment(
+                        value: 'voice', label: Text('Голос')),
+                  ],
+                  selected: {type},
+                  onSelectionChanged: (s) =>
+                      setD(() => type = s.first),
+                ),
+                Row(children: [
+                  Checkbox(
+                      value: isPrivate,
+                      onChanged: (v) =>
+                          setD(() => isPrivate = v ?? false)),
+                  const Text('Приватный'),
+                ]),
+                if (error != null) ...[
+                  const SizedBox(height: 4),
+                  Text(error!,
+                      style: const TextStyle(color: Colors.red)),
+                ],
+              ]),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('Отмена')),
+                TextButton(
+                    onPressed: () async {
+                      if (name.text.trim().length < 2) {
+                        setD(() => error = 'Некорректное название.');
+                        return;
+                      }
+                      try {
+                        final repo =
+                            ref.read(chatRepositoryProvider);
+                        final a = alias.text.trim();
+                        final created = await repo.createChannel(
+                            name: name.text.trim(),
+                            type: type,
+                            alias: a.isEmpty ? null : a,
+                            isPrivate: isPrivate);
+                        final st = ref
+                            .read(homeStateProvider.notifier);
+                        await st.refresh();
+                        final mine = ref
+                            .read(homeStateProvider)
+                            .myChannels
+                            .where((c) => c.id == created.channelId);
+                        if (mine.isNotEmpty) {
+                          await st.selectStandaloneChannel(mine.first);
+                        }
+                      } catch (e) {
+                        setD(() => error = searchErrorText(
+                            SearchTargetType.channel, e));
+                        return;
+                      }
+                      if (ctx.mounted) Navigator.pop(ctx);
+                    },
+                    child: const Text('Создать')),
+              ],
+            ),
+          ));
+}
+
+Future<void> showChannelGrantDialog(
+    BuildContext context, WidgetRef ref, String channelId) async {
+  final nick = TextEditingController();
+  String? error;
+  await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+            builder: (ctx, setD) => AlertDialog(
+              title: const Text('Добавить участника'),
+              content: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextField(
+                    controller: nick,
+                    decoration: const InputDecoration(
+                        hintText: 'Ник пользователя')),
+                if (error != null) ...[
+                  const SizedBox(height: 8),
+                  Text(error!,
+                      style: const TextStyle(color: Colors.red)),
+                ],
+              ]),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('Отмена')),
+                TextButton(
+                    onPressed: () async {
+                      try {
+                        await ref
+                            .read(chatRepositoryProvider)
+                            .channelGrant(channelId, nick.text.trim());
+                      } catch (e) {
+                        setD(() => error = searchErrorText(
+                            SearchTargetType.channel, e));
+                        return;
+                      }
+                      if (ctx.mounted) Navigator.pop(ctx);
+                    },
+                    child: const Text('Добавить')),
+              ],
+            ),
+          ));
+}
+
+class _RepoFindApi implements FindSearchApi {
+  _RepoFindApi(this.ref);
+  final WidgetRef ref;
+
+  @override
+  Future<ServerHit> findServer(String alias) =>
+      ref.read(chatRepositoryProvider).findServer(alias);
+
+  @override
+  Future<ChannelHit> findChannel(String alias) =>
+      ref.read(chatRepositoryProvider).findChannel(alias);
+
+  @override
+  Future<({String userId, String nick})> findUser(String nick) =>
+      ref.read(chatRepositoryProvider).findUser(nick);
+}
+
+/// Unified find dialog wired to the live backend + navigation.
+Future<void> showFindDialog(BuildContext context, WidgetRef ref) async {
+  final st = ref.read(homeStateProvider.notifier);
+  await showDialog(
+      context: context,
+      builder: (ctx) => FindDialog(
+            search: _RepoFindApi(ref),
+            onOpenServer: (hit) async {
+              await st.refresh();
+              if (ctx.mounted) {
+                await _openCommunity(ref, st, hit.communityId, ctx);
+              }
+            },
+            onOpenChannel: (hit) async {
+              await st.refresh();
+              if (hit.communityId != null) {
+                final comms = ref
+                    .read(homeStateProvider)
+                    .communities
+                    .where((c) => c.id == hit.communityId);
+                if (comms.isNotEmpty) {
+                  final chs = comms.first.channels
+                      .where((c) => c.id == hit.channelId);
+                  if (chs.isNotEmpty) {
+                    await st.selectChannel(comms.first, chs.first);
+                  }
+                }
+              } else {
+                final mine = ref
+                    .read(homeStateProvider)
+                    .myChannels
+                    .where((c) => c.id == hit.channelId);
+                if (mine.isNotEmpty) {
+                  await st.selectStandaloneChannel(mine.first);
+                } else {
+                  await st.selectStandaloneChannel(hit.toChannel());
+                }
+              }
+            },
+            onWriteUser: (nick) async {
+              final repo = ref.read(chatRepositoryProvider);
+              final dmId = await repo.openDm(nick);
+              await st.refresh();
+              final match = ref
+                  .read(homeStateProvider)
+                  .dms
+                  .where((d) => d.id == dmId);
+              if (match.isNotEmpty) await st.selectDm(match.first);
+            },
+            onJoinServer: (hit) async {
+              await ref
+                  .read(chatRepositoryProvider)
+                  .joinServer(hit.alias);
+              await st.refresh();
+              if (ctx.mounted) {
+                await _openCommunity(ref, st, hit.communityId, ctx);
+              }
+            },
+            onSubscribeChannel: (hit) async {
+              await ref
+                  .read(chatRepositoryProvider)
+                  .subscribeChannel(hit.alias);
+              await st.refresh();
+              final mine = ref
+                  .read(homeStateProvider)
+                  .myChannels
+                  .where((c) => c.id == hit.channelId);
+              if (mine.isNotEmpty) {
+                await st.selectStandaloneChannel(mine.first);
+              } else {
+                // Community-bound public channel: access via membership list.
+                final comms =
+                    ref.read(homeStateProvider).communities;
+                for (final comm in comms) {
+                  final chs = comm.channels
+                      .where((c) => c.id == hit.channelId);
+                  if (chs.isNotEmpty) {
+                    await st.selectChannel(comm, chs.first);
+                    return;
+                  }
+                }
+                await st.selectStandaloneChannel(hit.toChannel());
+              }
+            },
           ));
 }
 
 Future<void> showInviteDialog(BuildContext context, WidgetRef ref) async {
   final scope = ref.read(homeStateProvider).scope;
   if (scope is! ChannelScope) return;
+  final community = scope.community;
+  // Standalone channels have no community invites: grant by nick instead.
+  if (community == null) {
+    await showChannelGrantDialog(context, ref, scope.channel.id);
+    return;
+  }
   try {
     final code = await ref
         .read(chatRepositoryProvider)
-        .createInvite(scope.community.id);
+        .createInvite(community.id);
     if (!context.mounted) return;
     await showDialog(
         context: context,

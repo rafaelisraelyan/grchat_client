@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
+import '../../search/search_address.dart';
 import '../../settings/settings_screen.dart';
 import '../../voice/voice_state.dart';
 import '../../widgets/avatar.dart';
@@ -60,6 +62,16 @@ class ContextSidebar extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w700)),
               ),
+              if ((comm?.alias ?? '').isNotEmpty)
+                IconButton(
+                    tooltip: 'Копировать адрес сервера',
+                    icon: const Icon(Icons.link, size: 18),
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(
+                          text: addressOf(SearchTargetType.server,
+                              comm!.alias)));
+                      Toast.show(context, 'Адрес скопирован');
+                    }),
               IconButton(
                   tooltip: 'Найти пользователя',
                   icon: const Icon(Icons.search, size: 18),
@@ -120,6 +132,22 @@ class ContextSidebar extends ConsumerWidget {
                 onTap: () => st.selectDm(dm),
                 unread: data.unread['d:${dm.id}'],
               ),
+            if (data.myChannels.any((c) => c.type == 'text')) ...[
+              groupLabel('Каналы'),
+              for (final ch in data.myChannels
+                  .where((c) => c.type == 'text'))
+                ChannelTile(
+                    title: ch.name,
+                    selected: scope?.key == 'c:${ch.id}',
+                    onTap: () => st.selectStandaloneChannel(ch),
+                    unread: data.unread['c:${ch.id}']),
+            ],
+            if (data.myChannels.any((c) => c.type != 'text')) ...[
+              groupLabel('Голосовые каналы'),
+              for (final ch in data.myChannels
+                  .where((c) => c.type != 'text'))
+                VoiceTile(channel: ch, members: data.members),
+            ],
             ListTile(
                 dense: true,
                 leading: const Icon(Icons.add, size: 18),

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
+import '../../search/search_address.dart';
 import '../../widgets/avatar.dart';
 import '../chat_repository.dart';
 import '../home_state.dart';
@@ -75,7 +77,8 @@ class _MemberRowState extends ConsumerState<_MemberRow> {
     final data = ref.watch(homeStateProvider);
     final myId = ref.watch(sessionProvider)?.userId;
     final scope = data.scope;
-    final communityId = scope is ChannelScope ? scope.community.id : null;
+    final communityId =
+        scope is ChannelScope ? scope.community?.id : null;
     final myRole = scope is ChannelScope
         ? _roleOf(data.members, myId)
         : '';
@@ -104,16 +107,17 @@ class _MemberRowState extends ConsumerState<_MemberRow> {
                                 GrchatColors.of(context).textMuted)),
                 ]),
           ),
-          if (_hover &&
-              communityId != null &&
-              _actions(myRole, m, myId).isNotEmpty)
+          if (_hover)
             PopupMenuButton<_ModAction>(
               icon: const Icon(Icons.more_vert, size: 16),
-              tooltip: 'Модерация',
+              tooltip: 'Действия',
               onSelected: (a) =>
                   _run(context, ref, repo, communityId, m, a),
               itemBuilder: (ctx) => [
-                for (final a in _actions(myRole, m, myId))
+                for (final a in [
+                  ..._actions(myRole, m, myId),
+                  _ModAction.copy
+                ])
                   PopupMenuItem(value: a, child: Text(a.label)),
               ],
             ),
@@ -152,27 +156,37 @@ class _MemberRowState extends ConsumerState<_MemberRow> {
   }
 
   Future<void> _run(BuildContext context, WidgetRef ref,
-      ChatRepository repo, String cid, Member target, _ModAction a) async {
+      ChatRepository repo, String? cid, Member target, _ModAction a) async {
+    if (a == _ModAction.copy) {
+      await Clipboard.setData(ClipboardData(
+          text: addressOf(SearchTargetType.user, target.nick)));
+      if (context.mounted) Toast.show(context, 'Адрес скопирован');
+      return;
+    }
+    final id = cid;
+    if (id == null) return;
     try {
       switch (a) {
+        case _ModAction.copy:
+          return; // handled above, kept for exhaustiveness
         case _ModAction.kick:
-          await repo.kick(cid, target.userId);
+          await repo.kick(id, target.userId);
         case _ModAction.ban:
           final r = await _askMinutes(context, 'Бан (минут, пусто — навсегда)');
-          if (!r.abort) await repo.ban(cid, target.userId, untilMin: r.minutes);
+          if (!r.abort) await repo.ban(id, target.userId, untilMin: r.minutes);
         case _ModAction.unban:
-          await repo.unban(cid, target.userId);
+          await repo.unban(id, target.userId);
         case _ModAction.mute:
           final r = await _askMinutes(context, 'Мут (минут)', required: true);
           if (!r.abort) {
-            await repo.mute(cid, target.userId, r.minutes ?? 60);
+            await repo.mute(id, target.userId, r.minutes ?? 60);
           }
         case _ModAction.unmute:
-          await repo.unmute(cid, target.userId);
+          await repo.unmute(id, target.userId);
         case _ModAction.role:
           final role = await _askRole(context, target.nick);
           if (role != null) {
-            await repo.grantRole(cid, target.userId, role);
+            await repo.grantRole(id, target.userId, role);
           }
       }
     } catch (e) {
@@ -232,7 +246,8 @@ enum _ModAction {
   unban('Разбанить'),
   mute('Мут'),
   unmute('Размутить'),
-  role('Выдать роль');
+  role('Выдать роль'),
+  copy('Скопировать адрес');
 
   const _ModAction(this.label);
   final String label;
