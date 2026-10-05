@@ -26,6 +26,8 @@ class AuthRepository {
   AuthRepository(this._conn);
   final GrchatConnection _conn;
   Session? session;
+  String? _savedLogin;
+  String? _savedPassword;
 
   Future<bool> register(
       {required String nick, required String email, required String password}) async {
@@ -50,7 +52,39 @@ class AuthRepository {
       nick: r['nick'] as String,
       token: r['session_token'] as String,
     );
+    // Kept in memory only (never disk): lets reconnects re-auth silently.
+    _savedLogin = login;
+    _savedPassword = password;
     return session!;
+  }
+
+  /// True if the current session still works; re-logins with saved
+  /// credentials when the server dropped it (e.g. server restart).
+  /// Probes with a real authed call — unknown types bypass auth checks.
+  Future<bool> ensureSession() async {
+    final s = session;
+    if (s == null) return false;
+    try {
+      final r = await _conn.request('list_my_communities',
+          fields: {'session_token': s.token});
+      if (r['type'] != 'error') return true;
+      if (r['code']?.toString() != 'NOT_AUTHENTICATED') return true;
+    } catch (_) {
+      return false;
+    }
+    if (_savedLogin == null || _savedPassword == null) return false;
+    try {
+      await login(login: _savedLogin!, password: _savedPassword!);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void forget() {
+    session = null;
+    _savedLogin = null;
+    _savedPassword = null;
   }
 
   Future<void> forgot({required String email}) async {

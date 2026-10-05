@@ -158,6 +158,42 @@ class HomeState extends Notifier<HomeData> {
     state = state.copyWith(communities: comms, dms: dms);
   }
 
+  /// Called after the transport reconnects: re-auth if needed, then
+  /// reload lists and the current conversation. Returns false when
+  /// the session is dead with no saved credentials (caller logs out).
+  Future<bool> resync() async {
+    final auth = ref.read(authRepositoryProvider);
+    if (!await auth.ensureSession()) {
+      final s = auth.session;
+      if (s == null) return false;
+    }
+    final s = ref.read(authRepositoryProvider).session;
+    if (s != null) ref.read(sessionProvider.notifier).set(s);
+    try {
+      await refresh();
+    } catch (_) {
+      return true; // lists failed, scope reload below may still work
+    }
+    final scope = state.scope;
+    try {
+      if (scope is ChannelScope) {
+        final comms = state.communities
+            .where((c) => c.id == scope.community.id);
+        if (comms.isEmpty) return true;
+        final chs = comms.first.channels
+            .where((c) => c.id == scope.channel.id);
+        if (chs.isEmpty) return true;
+        await selectChannel(comms.first, chs.first);
+      } else if (scope is DmScope) {
+        final threads =
+            state.dms.where((d) => d.id == scope.thread.id);
+        if (threads.isEmpty) return true;
+        await selectDm(threads.first);
+      }
+    } catch (_) {}
+    return true;
+  }
+
   Future<void> selectChannel(Community community, Channel channel) async {
     if (channel.type != 'text') return;
     state = state.copyWith(

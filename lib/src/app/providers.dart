@@ -33,3 +33,7 @@ class ThemeModeState extends Notifier<ThemeMode> {
 
 final themeModeProvider =
     NotifierProvider<ThemeModeState, ThemeMode>(ThemeModeState.new);
+
+final connStatusProvider = StreamProvider<ConnStatus>((ref) {
+  return ref.watch(connectionProvider).status;
+});

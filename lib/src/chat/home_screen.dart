@@ -1,6 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app/providers.dart';
+import '../transport/grchat_connection.dart';
+import '../widgets/connection_banner.dart';
 import 'home_state.dart';
 import 'models.dart';
 import '../call/call_overlay.dart';
@@ -21,6 +26,8 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _membersOpen = true;
+  StreamSubscription<ConnStatus>? _connSub;
+  bool _wasDown = false;
 
   @override
   void initState() {
@@ -30,6 +37,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ref.read(callStateProvider.notifier).ensureListening();
       ref.read(voiceStateProvider.notifier).ensureListening();
     });
+    _connSub =
+        ref.read(connectionProvider).status.listen((s) async {
+      if (s != ConnStatus.connected) {
+        _wasDown = true;
+        return;
+      }
+      if (!_wasDown) return;
+      _wasDown = false;
+      final ok =
+          await ref.read(homeStateProvider.notifier).resync();
+      if (!ok && mounted) {
+        await ref.read(connectionProvider).dispose();
+        ref.read(sessionProvider.notifier).set(null);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _connSub?.cancel();
+    super.dispose();
   }
 
   @override
@@ -58,6 +86,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               )),
               if (showMembers) const MembersPanel(),
             ],
+          ),
+          const Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: ConnectionBanner(),
           ),
           const CallOverlay(),
         ]);

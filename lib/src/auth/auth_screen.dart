@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
 import '../widgets/code_input.dart';
+import '../widgets/connection_banner.dart';
 import 'auth_repository.dart';
 
 enum _Mode { login, register, code, reset }
@@ -96,13 +97,16 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
           ),
         ],
       ),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 380),
-          child: ListView(
-            shrinkWrap: true,
-            padding: const EdgeInsets.all(24),
-            children: [
+      body: Column(children: [
+        const ConnectionBanner(),
+        Expanded(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 380),
+              child: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.all(24),
+                children: [
               const Center(child: _Logo()),
               const SizedBox(height: 12),
               Text(_title(),
@@ -121,9 +125,12 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
               ),
               const SizedBox(height: 8),
               ..._switchLinks(),
-            ],
+                ],
+              ),
+            ),
           ),
         ),
+        ],
       ),
     );
   }
