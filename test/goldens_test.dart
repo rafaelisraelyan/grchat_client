@@ -228,8 +228,7 @@ class _FakeHomeEmpty extends HomeState {
   }
 }
 
-class _GoldenFindApi implements FindSearchApi {
-  _GoldenFindApi({this.hang = false, this.fail = false});
+class _GoldenFindApi implements FindSearchApi {  _GoldenFindApi({this.hang = false, this.fail = false});
   final bool hang;
   final bool fail;
 
@@ -290,6 +289,71 @@ FindDialog _findDialog(FindSearchApi api,
       onJoinServer: (_) async {},
       onSubscribeChannel: (_) async {},
     );
+
+class _FakeHomeBroadcast extends HomeState {
+  @override
+  HomeData build() {
+    final ch = Channel(
+        id: 'ch9',
+        name: 'Крутые вести',
+        type: 'broadcast',
+        alias: 'COOLNEWS',
+        description: 'Новости проекта',
+        role: 'owner',
+        subscribersCount: 124);
+    return HomeData(
+      myChannels: [ch],
+      scope: ChannelScope(null, ch),
+      messages: [
+        Message(
+            id: 'p1',
+            channelId: 'ch9',
+            authorId: 'u1',
+            authorNick: 'Rafael',
+            text: 'Выпустили новую версию приложения.',
+            createdAt: '2026-10-05T14:32:00Z',
+            kind: 'post',
+            attachments: [
+              Attachment(
+                  fileId: 'f9',
+                  filename: 'release_notes.pdf',
+                  sizeBytes: 2516582,
+                  mime: 'application/pdf')
+            ]),
+        Message(
+            id: 'p2',
+            channelId: 'ch9',
+            authorId: 'u1',
+            authorNick: 'Rafael',
+            text: 'Серверы обновятся ночью.',
+            createdAt: '2026-10-04T18:00:00Z',
+            editedAt: '2026-10-04T19:00:00Z',
+            kind: 'post'),
+      ],
+      loading: false,
+    );
+  }
+}
+
+class _FakeHomeBroadcastEmpty extends HomeState {
+  @override
+  HomeData build() {
+    final ch = Channel(
+        id: 'ch9',
+        name: 'Крутые вести',
+        type: 'broadcast',
+        alias: 'COOLNEWS',
+        description: 'Новости проекта',
+        role: 'member',
+        subscribersCount: 124);
+    return HomeData(
+      myChannels: [ch],
+      scope: ChannelScope(null, ch),
+      messages: const [],
+      loading: false,
+    );
+  }
+}
 
 void main() {
   testWidgets('auth screen', (t) async {
@@ -534,5 +598,44 @@ void main() {
     await t.pump();
     await expectLater(find.byType(FindDialog),
         matchesGoldenFile('goldens/find_loading.png'));
+  });
+
+  testWidgets('broadcast feed dark', (t) async {
+    t.view.physicalSize = const Size(1280, 720);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+          homeStateProvider.overrideWith(_FakeHomeBroadcast.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const HomeScreen())));
+    await t.pumpAndSettle();
+    await expectLater(find.byType(HomeScreen),
+        matchesGoldenFile('goldens/feed_dark.png'));
+  });
+
+  testWidgets('broadcast feed empty subscriber', (t) async {
+    t.view.physicalSize = const Size(1280, 720);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+          homeStateProvider.overrideWith(
+              _FakeHomeBroadcastEmpty.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const HomeScreen())));
+    await t.pumpAndSettle();
+    await expectLater(find.byType(HomeScreen),
+        matchesGoldenFile('goldens/feed_empty.png'));
   });
 }

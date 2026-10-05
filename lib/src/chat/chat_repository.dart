@@ -196,14 +196,15 @@ class ChatRepository {
     );
   }
 
-  /// Creates a channel. Without [communityId] it is standalone
-  /// (owns its access, not bound to a server).
+  /// Creates a channel. Without [communityId] it is a standalone
+  /// broadcast feed (server forces type `broadcast`).
   Future<({String channelId, String alias})> createChannel({
     String? communityId,
     required String name,
     required String type,
     String? alias,
     bool isPrivate = false,
+    String? description,
   }) async {
     final r = await _conn.request('create_channel', fields: {
       ..._auth,
@@ -212,6 +213,7 @@ class ChatRepository {
       'channel_type': type,
       if (alias case final a) 'alias': a,
       'is_private': isPrivate,
+      if (description case final d) 'description': d,
     });
     _throwIfError(r);
     return (
@@ -256,9 +258,19 @@ class ChatRepository {
     return r['channel_id'] as String;
   }
 
-  Future<void> channelGrant(String channelId, String nick) async {
-    _throwIfError(await _conn.request('channel_grant',
-        fields: {..._auth, 'channel_id': channelId, 'nick': nick}));
+  Future<void> unsubscribeChannel(String alias) async {
+    _throwIfError(await _conn.request('unsubscribe_channel',
+        fields: {..._auth, 'alias': alias}));
+  }
+
+  Future<void> channelGrant(String channelId, String nick,
+      {String role = 'member'}) async {
+    _throwIfError(await _conn.request('channel_grant', fields: {
+      ..._auth,
+      'channel_id': channelId,
+      'nick': nick,
+      'role': role,
+    }));
   }
 
   Future<String> createInvite(String communityId) async {

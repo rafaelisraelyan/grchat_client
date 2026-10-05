@@ -244,15 +244,24 @@ class HomeState extends Notifier<HomeData> {
 
   String _channelName(String? channelId) {
     if (channelId == null) return 'Чат';
+    String? name;
+    var broadcast = false;
     for (final comm in state.communities) {
       for (final ch in comm.channels) {
-        if (ch.id == channelId) return '#${ch.name}';
+        if (ch.id == channelId) {
+          name = ch.name;
+          broadcast = ch.isBroadcast;
+        }
       }
     }
     for (final ch in state.myChannels) {
-      if (ch.id == channelId) return '#${ch.name}';
+      if (ch.id == channelId) {
+        name = ch.name;
+        broadcast = true;
+      }
     }
-    return 'Чат';
+    if (name == null) return 'Чат';
+    return broadcast ? name : '#$name';
   }
 
   /// Jump to a conversation by scope key (notification tap).

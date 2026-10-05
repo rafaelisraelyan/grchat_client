@@ -140,7 +140,7 @@ Future<void> showCreateChannelDialog(
     BuildContext context, WidgetRef ref) async {
   final name = TextEditingController();
   final alias = TextEditingController();
-  var type = 'text';
+  final description = TextEditingController();
   var isPrivate = false;
   String? error;
   await showDialog(
@@ -159,17 +159,11 @@ Future<void> showCreateChannelDialog(
                     decoration: const InputDecoration(
                         hintText: 'Код, напр. NEWS (необязательно)')),
                 const SizedBox(height: 8),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(
-                        value: 'text', label: Text('Текст')),
-                    ButtonSegment(
-                        value: 'voice', label: Text('Голос')),
-                  ],
-                  selected: {type},
-                  onSelectionChanged: (s) =>
-                      setD(() => type = s.first),
-                ),
+                TextField(
+                    controller: description,
+                    maxLines: 2,
+                    decoration: const InputDecoration(
+                        hintText: 'Описание (необязательно)')),
                 Row(children: [
                   Checkbox(
                       value: isPrivate,
@@ -199,9 +193,12 @@ Future<void> showCreateChannelDialog(
                         final a = alias.text.trim();
                         final created = await repo.createChannel(
                             name: name.text.trim(),
-                            type: type,
+                            type: 'broadcast',
                             alias: a.isEmpty ? null : a,
-                            isPrivate: isPrivate);
+                            isPrivate: isPrivate,
+                            description: description.text.trim().isEmpty
+                                ? null
+                                : description.text.trim());
                         final st = ref
                             .read(homeStateProvider.notifier);
                         await st.refresh();
@@ -226,8 +223,10 @@ Future<void> showCreateChannelDialog(
 }
 
 Future<void> showChannelGrantDialog(
-    BuildContext context, WidgetRef ref, String channelId) async {
+    BuildContext context, WidgetRef ref, String channelId,
+    {bool adminChoice = false}) async {
   final nick = TextEditingController();
+  var role = 'member';
   String? error;
   await showDialog(
       context: context,
@@ -239,6 +238,22 @@ Future<void> showChannelGrantDialog(
                     controller: nick,
                     decoration: const InputDecoration(
                         hintText: 'Ник пользователя')),
+                if (adminChoice) ...[
+                  const SizedBox(height: 8),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(
+                          value: 'member',
+                          label: Text('Участник')),
+                      ButtonSegment(
+                          value: 'admin',
+                          label: Text('Админ')),
+                    ],
+                    selected: {role},
+                    onSelectionChanged: (s) =>
+                        setD(() => role = s.first),
+                  ),
+                ],
                 if (error != null) ...[
                   const SizedBox(height: 8),
                   Text(error!,
@@ -254,7 +269,8 @@ Future<void> showChannelGrantDialog(
                       try {
                         await ref
                             .read(chatRepositoryProvider)
-                            .channelGrant(channelId, nick.text.trim());
+                            .channelGrant(channelId, nick.text.trim(),
+                                role: role);
                       } catch (e) {
                         setD(() => error = searchErrorText(
                             SearchTargetType.channel, e));

@@ -132,22 +132,6 @@ class ContextSidebar extends ConsumerWidget {
                 onTap: () => st.selectDm(dm),
                 unread: data.unread['d:${dm.id}'],
               ),
-            if (data.myChannels.any((c) => c.type == 'text')) ...[
-              groupLabel('Каналы'),
-              for (final ch in data.myChannels
-                  .where((c) => c.type == 'text'))
-                ChannelTile(
-                    title: ch.name,
-                    selected: scope?.key == 'c:${ch.id}',
-                    onTap: () => st.selectStandaloneChannel(ch),
-                    unread: data.unread['c:${ch.id}']),
-            ],
-            if (data.myChannels.any((c) => c.type != 'text')) ...[
-              groupLabel('Голосовые каналы'),
-              for (final ch in data.myChannels
-                  .where((c) => c.type != 'text'))
-                VoiceTile(channel: ch, members: data.members),
-            ],
             ListTile(
                 dense: true,
                 leading: const Icon(Icons.add, size: 18),

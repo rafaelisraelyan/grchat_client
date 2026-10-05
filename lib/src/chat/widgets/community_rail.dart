@@ -52,6 +52,24 @@ class CommunityRail extends ConsumerWidget {
                 ),
               ),
             ),
+          // Standalone broadcast channels: top-level workspaces (§18).
+          for (var i = 0; i < data.myChannels.length; i++)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: InkWell(
+                onTap: () =>
+                    st.selectStandaloneChannel(data.myChannels[i]),
+                child: ServerTile(
+                  data.myChannels[i].name.isEmpty
+                      ? 'К'
+                      : data.myChannels[i].name[0].toUpperCase(),
+                  color: _chanColor(i),
+                  selected: scope is ChannelScope &&
+                      scope.community == null &&
+                      scope.channel.id == data.myChannels[i].id,
+                ),
+              ),
+            ),
           IconButton(
               tooltip: 'Создать сервер / войти по инвайту',
               onPressed: onAddServer,
@@ -67,6 +85,16 @@ class CommunityRail extends ConsumerWidget {
       Color(0xFF2E7D5B),
       Color(0xFFB5651D),
       Color(0xFF4A90D9),
+    ];
+    return palette[i % palette.length];
+  }
+
+  Color _chanColor(int i) {
+    const palette = [
+      Color(0xFF7A4FD0),
+      Color(0xFF1F8A70),
+      Color(0xFFC2571B),
+      Color(0xFF2F6FED),
     ];
     return palette[i % palette.length];
   }

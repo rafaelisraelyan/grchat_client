@@ -40,8 +40,11 @@ class ChannelHit {
     required this.alias,
     required this.type,
     required this.isPrivate,
+    this.description = '',
     required this.subscribersCount,
     required this.hasAccess,
+    this.isSubscribed = false,
+    this.myRole = '',
     this.communityId,
   });
   final String channelId;
@@ -49,20 +52,25 @@ class ChannelHit {
   final String alias;
   final String type;
   final bool isPrivate;
+  final String description;
   final int subscribersCount;
   final bool hasAccess;
+  final bool isSubscribed;
+  final String myRole;
   final String? communityId;
 
   String get address => addressOf(SearchTargetType.channel, alias);
 
-  Channel toChannel({String role = ''}) => Channel(
+  Channel toChannel() => Channel(
       id: channelId,
       name: name,
       type: type,
       alias: alias,
       isPrivate: isPrivate,
+      description: description,
       communityId: communityId,
-      role: role);
+      role: myRole,
+      subscribersCount: subscribersCount);
 
   factory ChannelHit.fromJson(Map<String, dynamic> j) => ChannelHit(
         channelId: j['channel_id'] as String,
@@ -70,8 +78,11 @@ class ChannelHit {
         alias: (j['alias'] ?? '') as String,
         type: (j['channel_type'] ?? j['type'] ?? 'text') as String,
         isPrivate: (j['is_private'] ?? false) as bool,
+        description: (j['description'] ?? '') as String,
         subscribersCount: (j['subscribers_count'] as num?)?.toInt() ?? 0,
         hasAccess: (j['has_access'] ?? false) as bool,
+        isSubscribed: (j['is_subscribed'] ?? false) as bool,
+        myRole: (j['my_role'] ?? '') as String,
         communityId: j['community_id'] as String?,
       );
 }
