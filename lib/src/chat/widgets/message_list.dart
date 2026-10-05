@@ -9,6 +9,7 @@ import '../../app/theme.dart';
 import '../../widgets/avatar.dart';
 import '../home_state.dart';
 import '../models.dart';
+import 'call_card.dart';
 
 const _months = [
   '',
@@ -77,6 +78,12 @@ class MessageList extends StatelessWidget {
           curDay = day;
           items.add(_DaySeparator(label: _dayLabel(day)));
         }
+      }
+      // Call records stand alone as centered system cards.
+      if (m.isCall) {
+        flush();
+        items.add(CallCard(message: m, myId: myId));
+        continue;
       }
       if (run.isNotEmpty &&
           (run.last.authorId != m.authorId || !_close(run.last, m))) {

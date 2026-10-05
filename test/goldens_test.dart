@@ -121,8 +121,7 @@ class _FakeHomeDm extends HomeState {
   }
 }
 
-class _FakeHomeHover extends HomeState {
-  @override
+class _FakeHomeHover extends HomeState {  @override
   HomeData build() {
     return HomeData(
       communities: const [],
@@ -142,6 +141,64 @@ class _FakeHomeHover extends HomeState {
             authorNick: 'Rafael',
             text: 'Моё сообщение',
             createdAt: '2026-09-02T12:41:00Z'),
+      ],
+      members: const [],
+    );
+  }
+}
+
+class _FakeHomeCalls extends HomeState {
+  @override
+  HomeData build() {
+    final thread = DmThread(id: 'd1', isGroup: false, members: [
+      DmMember(userId: 'u1', nick: 'Rafael'),
+      DmMember(userId: 'u2', nick: 'Second'),
+    ]);
+    return HomeData(
+      communities: const [],
+      activeCommunityId: null,
+      dms: [thread],
+      scope: DmScope(thread, 'u1'),
+      messages: [
+        Message(
+            id: 'c1',
+            dmId: 'd1',
+            authorId: 'u1',
+            authorNick: 'Rafael',
+            text: 'Видеозвонок · 02:05',
+            createdAt: '2026-09-02T12:40:00Z',
+            kind: 'call',
+            call: CallInfo(
+                status: 'completed',
+                durationSec: 125,
+                video: true)),
+        Message(
+            id: 'c2',
+            dmId: 'd1',
+            authorId: 'u2',
+            authorNick: 'Second',
+            text: 'Пропущенный звонок',
+            createdAt: '2026-09-02T12:50:00Z',
+            kind: 'call',
+            call: CallInfo(status: 'missed')),
+        Message(
+            id: 'c3',
+            dmId: 'd1',
+            authorId: 'u1',
+            authorNick: 'Rafael',
+            text: 'Звонок отклонён',
+            createdAt: '2026-09-02T13:00:00Z',
+            kind: 'call',
+            call: CallInfo(status: 'declined', endedBy: 'Second')),
+        Message(
+            id: 'c4',
+            dmId: 'd1',
+            authorId: 'u1',
+            authorNick: 'Rafael',
+            text: 'Звонок · абонент не в сети',
+            createdAt: '2026-09-02T13:10:00Z',
+            kind: 'call',
+            call: CallInfo(status: 'offline')),
       ],
       members: const [],
     );
@@ -193,6 +250,26 @@ void main() {
     await t.pumpAndSettle();
     await expectLater(
         find.byType(HomeScreen), matchesGoldenFile('goldens/home_dm.png'));
+  });
+
+  testWidgets('call records', (t) async {
+    t.view.physicalSize = const Size(1280, 720);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+          homeStateProvider.overrideWith(_FakeHomeCalls.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const HomeScreen())));
+    await t.pumpAndSettle();
+    await expectLater(
+        find.byType(HomeScreen),
+        matchesGoldenFile('goldens/call_records.png'));
   });
 
   testWidgets('home narrow hides members', (t) async {

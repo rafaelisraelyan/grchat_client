@@ -16,6 +16,7 @@ import 'widgets/community_rail.dart';
 import 'widgets/context_sidebar.dart';
 import 'widgets/dialogs.dart';
 import 'widgets/members_panel.dart';
+import 'widgets/missed_banner.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -91,7 +92,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             top: 0,
             left: 0,
             right: 0,
-            child: ConnectionBanner(),
+            child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [ConnectionBanner(), MissedBanner()]),
           ),
           const CallOverlay(),
         ]);

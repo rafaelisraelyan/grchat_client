@@ -63,6 +63,14 @@ class ChatRepository {
         .toList();
   }
 
+  Future<List<MissedCall>> missedCalls() async {
+    final r = await _conn.request('missed_calls', fields: _auth);
+    _throwIfError(r);
+    return ((r['missed'] as List?) ?? const [])
+        .map((m) => MissedCall.fromJson(m as Map<String, dynamic>))
+        .toList();
+  }
+
   Future<void> sendChannel(String channelId, String text) async {
     _throwIfError(await _conn.request('message_send',
         fields: {..._auth, 'channel_id': channelId, 'text': text}));

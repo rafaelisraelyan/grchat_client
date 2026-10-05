@@ -17,6 +17,50 @@ class Attachment {
       );
 }
 
+class CallInfo {
+  CallInfo(
+      {required this.status,
+      this.durationSec = 0,
+      this.video = false,
+      this.endedBy});
+  final String status; // completed|declined|missed|cancelled|offline
+  final int durationSec;
+  final bool video;
+  final String? endedBy;
+
+  factory CallInfo.fromJson(Map<String, dynamic> j) => CallInfo(
+        status: (j['status'] ?? 'missed') as String,
+        durationSec: (j['duration_sec'] as num?)?.toInt() ?? 0,
+        video: (j['video'] ?? false) as bool,
+        endedBy: j['ended_by'] as String?,
+      );
+}
+
+class MissedCall {
+  MissedCall(
+      {required this.messageId,
+      required this.dmId,
+      required this.fromNick,
+      required this.status,
+      required this.video,
+      required this.createdAt});
+  final String messageId;
+  final String dmId;
+  final String fromNick;
+  final String status;
+  final bool video;
+  final String createdAt;
+
+  factory MissedCall.fromJson(Map<String, dynamic> j) => MissedCall(
+        messageId: j['message_id'] as String,
+        dmId: j['dm_id'] as String,
+        fromNick: (j['from_nick'] ?? '?') as String,
+        status: (j['status'] ?? 'missed') as String,
+        video: (j['video'] ?? false) as bool,
+        createdAt: (j['created_at'] ?? '') as String,
+      );
+}
+
 class Message {
   Message(
       {required this.id,
@@ -27,7 +71,9 @@ class Message {
       required this.text,
       required this.createdAt,
       this.editedAt,
-      this.attachments = const []});
+      this.attachments = const [],
+      this.kind = 'text',
+      this.call});
   final String id;
   final String? channelId;
   final String? dmId;
@@ -37,20 +83,31 @@ class Message {
   final String createdAt;
   final String? editedAt;
   final List<Attachment> attachments;
+  final String kind;
+  final CallInfo? call;
 
-  factory Message.fromJson(Map<String, dynamic> j) => Message(
-        id: j['message_id'] as String,
-        channelId: j['channel_id'] as String?,
-        dmId: j['dm_id'] as String?,
-        authorId: (j['author_id'] ?? '') as String,
-        authorNick: (j['author_nick'] ?? '?') as String,
-        text: (j['text'] ?? '') as String,
-        createdAt: (j['created_at'] ?? '') as String,
-        editedAt: j['edited_at'] as String?,
-        attachments: ((j['attachments'] as List?) ?? const [])
-            .map((a) => Attachment.fromJson(a as Map<String, dynamic>))
-            .toList(),
-      );
+  bool get isCall => kind == 'call' && call != null;
+
+  factory Message.fromJson(Map<String, dynamic> j) {
+    final callJson = j['call'];
+    return Message(
+      id: j['message_id'] as String,
+      channelId: j['channel_id'] as String?,
+      dmId: j['dm_id'] as String?,
+      authorId: (j['author_id'] ?? '') as String,
+      authorNick: (j['author_nick'] ?? '?') as String,
+      text: (j['text'] ?? '') as String,
+      createdAt: (j['created_at'] ?? '') as String,
+      editedAt: j['edited_at'] as String?,
+      attachments: ((j['attachments'] as List?) ?? const [])
+          .map((a) => Attachment.fromJson(a as Map<String, dynamic>))
+          .toList(),
+      kind: (j['kind'] ?? 'text') as String,
+      call: callJson is Map<String, dynamic>
+          ? CallInfo.fromJson(callJson)
+          : null,
+    );
+  }
 }
 
 class Channel {

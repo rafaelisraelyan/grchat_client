@@ -47,6 +47,7 @@ class HomeData {
     this.members = const [],
     this.typing = const {},
     this.unread = const {},
+    this.missed = const [],
     this.loading = true,
     this.loadingOlder = false,
     this.hasMore = true,
@@ -63,6 +64,8 @@ class HomeData {
   final List<Member> members;
   final Set<String> typing;
   final Map<String, int> unread;
+  /// Missed calls accumulated while offline (server clears flags on read).
+  final List<MissedCall> missed;
   final bool loading;
   final bool loadingOlder;
   final bool hasMore;
@@ -77,6 +80,7 @@ class HomeData {
     List<Member>? members,
     Set<String>? typing,
     Map<String, int>? unread,
+    List<MissedCall>? missed,
     bool? loading,
     bool? loadingOlder,
     bool? hasMore,
@@ -93,6 +97,7 @@ class HomeData {
         members: members ?? this.members,
         typing: typing ?? this.typing,
         unread: unread ?? this.unread,
+        missed: missed ?? this.missed,
         loading: loading ?? this.loading,
         loadingOlder: loadingOlder ?? this.loadingOlder,
         hasMore: hasMore ?? this.hasMore,
@@ -146,9 +151,35 @@ class HomeState extends Notifier<HomeData> {
       } else if (dms.isNotEmpty) {
         await selectDm(dms.first);
       }
+      await checkMissed();
     } catch (e) {
       state = state.copyWith(loading: false, error: e.toString());
     }
+  }
+
+  /// Calls missed while offline. Server flags are one-shot: each record
+  /// is reported once, so repeats are safe.
+  Future<void> checkMissed() async {
+    try {
+      final missed = await ref.read(chatRepositoryProvider).missedCalls();
+      if (missed.isNotEmpty) {
+        state = state.copyWith(missed: [...state.missed, ...missed]);
+      }
+    } catch (_) {}
+  }
+
+  void clearMissed() {
+    if (state.missed.isNotEmpty) state = state.copyWith(missed: []);
+  }
+
+  /// Open the DM of the first missed call (banner action).
+  Future<void> openMissed() async {
+    final missed = state.missed;
+    if (missed.isEmpty) return;
+    final dmId = missed.first.dmId;
+    final threads = state.dms.where((d) => d.id == dmId);
+    state = state.copyWith(missed: []);
+    if (threads.isNotEmpty) await selectDm(threads.first);
   }
 
   Future<void> refresh() async {
@@ -191,6 +222,7 @@ class HomeState extends Notifier<HomeData> {
         await selectDm(threads.first);
       }
     } catch (_) {}
+    await checkMissed();
     return true;
   }
 
@@ -364,7 +396,9 @@ class HomeState extends Notifier<HomeData> {
                         text: (ev['text'] ?? m.text) as String,
                         createdAt: m.createdAt,
                         editedAt: ev['edited_at']?.toString(),
-                        attachments: m.attachments)
+                        attachments: m.attachments,
+                        kind: m.kind,
+                        call: m.call)
                     : m)
                 .toList());
       case 'message_deleted':
