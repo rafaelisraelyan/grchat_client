@@ -76,13 +76,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           (prev?.callId != next.callId)) {
         () async {
           await focusWindow();
+          final st = ref.read(callStateProvider.notifier);
           backend.showCall(
             tag: 'call:${next.callId}',
             title: next.video
                 ? 'Входящий видеозвонок'
                 : 'Входящий звонок',
             body: next.peerNick,
-            onTap: () => focusWindow(),
+            onOpen: () => focusWindow(),
+            onDecline: () => st.decline(),
           );
         }();
       }

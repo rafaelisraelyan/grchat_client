@@ -9,6 +9,7 @@ import 'src/app/theme.dart';
 import 'src/auth/auth_screen.dart';
 import 'src/chat/home_screen.dart';
 import 'src/desktop/autostart.dart';
+import 'src/desktop/desktop.dart';
 import 'src/desktop/tray_backend.dart';
 import 'src/desktop/window.dart';
 import 'src/notify/notify.dart';
@@ -52,6 +53,7 @@ class _GrchatAppState extends ConsumerState<GrchatApp> with WindowListener {
     try {
       await ref.read(notifyBackendProvider).init();
     } catch (_) {}
+    DesktopKit.notify = ref.read(notifyBackendProvider);
     if (!mounted) return;
     _tray = TrayBackend(
       onShow: () => focusWindow(),
@@ -61,6 +63,13 @@ class _GrchatAppState extends ConsumerState<GrchatApp> with WindowListener {
       },
       isAutostartOn: () => Autostart.isOn(),
       autostartSupported: Autostart.supported,
+      onToggleNotifications: () async {
+        final b = ref.read(notifyBackendProvider);
+        await b.setEnabled(!await b.enabled());
+        await _tray?.refreshMenu();
+      },
+      isNotificationsOn: () =>
+          ref.read(notifyBackendProvider).enabled(),
       onQuit: () async {
         try {
           await ref.read(connectionProvider).dispose();
@@ -70,6 +79,7 @@ class _GrchatAppState extends ConsumerState<GrchatApp> with WindowListener {
       },
     );
     await _tray!.init();
+    DesktopKit.tray = _tray;
   }
 
   @override

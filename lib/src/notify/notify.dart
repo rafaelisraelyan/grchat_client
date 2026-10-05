@@ -1,13 +1,15 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:nativeapi/nativeapi.dart';
+import 'package:local_notifier/local_notifier.dart';
 import 'package:riverpod/riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Per-platform system notifications.
 ///
-/// Windows/macOS: native toasts via nativeapi (tag = replace key, one
-/// "Открыть" button, click routes back through [onTap]).
+/// Windows/macOS: native toasts via local_notifier (it also owns the
+/// Start Menu shortcut Windows needs to deliver toasts at all).
+/// Calls carry [Открыть]/[Отклонить] buttons, messages a click-through.
 /// Linux: `notify-send` (fire-and-forget, no click routing).
 /// Android/iOS: stub — background push there means FCM/APNs, a separate
 /// project (client is desktop-first).
@@ -15,7 +17,10 @@ typedef NotifyTap = void Function();
 
 abstract class NotifyBackend {
   bool get supported;
+  String get status;
   Future<void> init();
+  Future<bool> enabled();
+  Future<void> setEnabled(bool on);
   void showMessage(
       {required String tag,
       required String title,
@@ -25,13 +30,14 @@ abstract class NotifyBackend {
       {required String tag,
       required String title,
       required String body,
-      NotifyTap? onTap});
+      NotifyTap? onOpen,
+      NotifyTap? onDecline});
   void cancel(String tag);
 }
 
 NotifyBackend createNotifyBackend() {
   if (Platform.isWindows || Platform.isMacOS) {
-    return _NativeNotify();
+    return _LocalNotifierBackend();
   }
   if (Platform.isLinux) return _LinuxNotify();
   return _StubNotify();
@@ -41,27 +47,51 @@ final notifyBackendProvider = Provider<NotifyBackend>((ref) {
   return createNotifyBackend();
 });
 
-class _NativeNotify implements NotifyBackend {
+class _LocalNotifierBackend implements NotifyBackend {
   final _taps = <String, NotifyTap>{};
-  var _ready = false;
+  final _declines = <String, NotifyTap>{};
+  final _live = <String, LocalNotification>{};
+  var _status = 'не готов';
 
   @override
   bool get supported =>
       Platform.isWindows || Platform.isMacOS;
 
   @override
+  String get status => _status;
+
+  @override
   Future<void> init() async {
-    if (!supported) return;
+    if (!supported) {
+      _status = 'платформа без тостов';
+      return;
+    }
     try {
-      if (!NotificationManager.instance.isSupported()) return;
-      NotificationManager.instance.initialize();
-      NotificationManager.instance.addListener((ev) {
-        if (ev is NotificationActivatedEvent && ev.argument != null) {
-          final tap = _taps.remove(ev.argument);
-          if (tap != null) Future.microtask(tap);
-        }
-      });
-      _ready = true;
+      await localNotifier.setup(
+        appName: 'GRChat',
+        shortcutPolicy: ShortcutPolicy.requireCreate,
+      );
+      _status = 'ок';
+    } catch (e) {
+      _status = 'ошибка: $e';
+    }
+  }
+
+  @override
+  Future<bool> enabled() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool('notifications_enabled') ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  @override
+  Future<void> setEnabled(bool on) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('notifications_enabled', on);
     } catch (_) {}
   }
 
@@ -71,7 +101,31 @@ class _NativeNotify implements NotifyBackend {
       required String title,
       required String body,
       NotifyTap? onTap}) {
-    _show(tag: tag, title: title, body: body, onTap: onTap);
+    () async {
+      try {
+        if (!await enabled()) return;
+        await cancel(tag);
+        final n = LocalNotification(
+          identifier: tag,
+          title: title,
+          body: body,
+          silent: false,
+        );
+        if (onTap != null) {
+          _taps[tag] = onTap;
+          n.onClick = () {
+            final tap = _taps.remove(tag);
+            if (tap != null) Future.microtask(tap);
+          };
+        }
+        n.onClose = (_) {
+          _taps.remove(tag);
+          _live.remove(tag);
+        };
+        _live[tag] = n;
+        await n.show();
+      } catch (_) {}
+    }();
   }
 
   @override
@@ -79,32 +133,61 @@ class _NativeNotify implements NotifyBackend {
       {required String tag,
       required String title,
       required String body,
-      NotifyTap? onTap}) {
-    _show(tag: tag, title: title, body: body, onTap: onTap);
-  }
-
-  void _show(
-      {required String tag,
-      required String title,
-      required String body,
-      NotifyTap? onTap}) {
-    if (!_ready) return;
-    try {
-      if (onTap != null) {
-        _taps[tag] = onTap;
-      } else {
-        _taps.remove(tag);
-      }
-      NotificationManager.instance.show(title, body, tag, 'Открыть');
-    } catch (_) {}
+      NotifyTap? onOpen,
+      NotifyTap? onDecline}) {
+    () async {
+      try {
+        if (!await enabled()) return;
+        await cancel(tag);
+        final n = LocalNotification(
+          identifier: tag,
+          title: title,
+          body: body,
+          silent: false,
+          actions: [
+            LocalNotificationAction(text: 'Открыть'),
+            LocalNotificationAction(text: 'Отклонить'),
+          ],
+        );
+        if (onOpen != null) {
+          _taps[tag] = onOpen;
+          n.onClick = () {
+            final tap = _taps.remove(tag);
+            if (tap != null) Future.microtask(tap);
+          };
+        }
+        if (onDecline != null) {
+          _declines[tag] = onDecline;
+          n.onClickAction = (i) {
+            if (i == 1) {
+              final d = _declines.remove(tag);
+              _taps.remove(tag);
+              if (d != null) Future.microtask(d);
+            } else {
+              final tap = _taps.remove(tag);
+              if (tap != null) Future.microtask(tap);
+            }
+          };
+        }
+        n.onClose = (_) {
+          _taps.remove(tag);
+          _declines.remove(tag);
+          _live.remove(tag);
+        };
+        _live[tag] = n;
+        await n.show();
+      } catch (_) {}
+    }();
   }
 
   @override
-  void cancel(String tag) {
+  Future<void> cancel(String tag) async {
     _taps.remove(tag);
-    if (!_ready) return;
+    _declines.remove(tag);
+    final n = _live.remove(tag);
+    if (n == null) return;
     try {
-      NotificationManager.instance.remove(tag);
+      await n.close();
     } catch (_) {}
   }
 }
@@ -114,7 +197,28 @@ class _LinuxNotify implements NotifyBackend {
   bool get supported => Platform.isLinux;
 
   @override
+  String get status => 'notify-send';
+
+  @override
   Future<void> init() async {}
+
+  @override
+  Future<bool> enabled() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool('notifications_enabled') ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  @override
+  Future<void> setEnabled(bool on) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('notifications_enabled', on);
+    } catch (_) {}
+  }
 
   @override
   void showMessage(
@@ -122,7 +226,10 @@ class _LinuxNotify implements NotifyBackend {
       required String title,
       required String body,
       NotifyTap? onTap}) {
-    _send(title, body);
+    () async {
+      if (!await enabled()) return;
+      _send(title, body);
+    }();
   }
 
   @override
@@ -130,8 +237,12 @@ class _LinuxNotify implements NotifyBackend {
       {required String tag,
       required String title,
       required String body,
-      NotifyTap? onTap}) {
-    _send(title, body);
+      NotifyTap? onOpen,
+      NotifyTap? onDecline}) {
+    () async {
+      if (!await enabled()) return;
+      _send(title, body);
+    }();
   }
 
   void _send(String title, String body) {
@@ -144,7 +255,7 @@ class _LinuxNotify implements NotifyBackend {
   }
 
   @override
-  void cancel(String tag) {}
+  Future<void> cancel(String tag) async {}
 }
 
 class _StubNotify implements NotifyBackend {
@@ -152,7 +263,16 @@ class _StubNotify implements NotifyBackend {
   bool get supported => false;
 
   @override
+  String get status => 'FCM/APNs — отдельный проект';
+
+  @override
   Future<void> init() async {}
+
+  @override
+  Future<bool> enabled() async => false;
+
+  @override
+  Future<void> setEnabled(bool on) async {}
 
   @override
   void showMessage(
@@ -166,8 +286,9 @@ class _StubNotify implements NotifyBackend {
       {required String tag,
       required String title,
       required String body,
-      NotifyTap? onTap}) {}
+      NotifyTap? onOpen,
+      NotifyTap? onDecline}) {}
 
   @override
-  void cancel(String tag) {}
+  Future<void> cancel(String tag) async {}
 }

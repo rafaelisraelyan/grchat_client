@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../app/providers.dart';
 import '../app/theme.dart';
 import '../desktop/autostart.dart';
+import '../desktop/desktop.dart';
 import '../update/update_service.dart';
 
 final storageUsageProvider = FutureProvider<Map<String, int>>((ref) async {
@@ -89,6 +90,15 @@ class SettingsScreen extends ConsumerWidget {
               if (Autostart.supported)
                 _section(context, 'Система', [
                   const _AutostartRow(),
+                  _row(context,
+                      icon: Icons.notifications,
+                      title:
+                          'Уведомления: ${DesktopKit.notify?.status ?? '—'}',
+                      subtitle: 'Системные тосты'),
+                  _row(context,
+                      icon: Icons.web_asset,
+                      title: 'Трей: ${DesktopKit.tray?.status ?? '—'}',
+                      subtitle: 'Иконка и меню'),
                 ]),
               _section(context, 'Обновления', [
                 _updateRows(context, ref),

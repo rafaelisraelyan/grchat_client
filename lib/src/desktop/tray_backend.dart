@@ -12,13 +12,19 @@ class TrayBackend {
       required this.onToggleAutostart,
       required this.onQuit,
       required this.isAutostartOn,
+      required this.onToggleNotifications,
+      required this.isNotificationsOn,
       this.autostartSupported = true});
 
   final void Function() onShow;
   final Future<void> Function() onToggleAutostart;
   final Future<bool> Function() isAutostartOn;
+  final Future<void> Function() onToggleNotifications;
+  final Future<bool> Function() isNotificationsOn;
   final void Function() onQuit;
   final bool autostartSupported;
+
+  String status = 'не готов';
 
   TrayIcon? _tray;
 
@@ -26,22 +32,38 @@ class TrayBackend {
       Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
   Future<void> init() async {
-    if (!supported) return;
+    if (!supported) {
+      status = 'платформа без трея';
+      return;
+    }
     try {
       final icon = TrayIcon.create();
-      if (icon == null) return;
+      if (icon == null) {
+        status = 'не создан (native)';
+        return;
+      }
       final img = await _loadIcon();
-      if (img != null) icon.icon = img;
+      if (img == null) {
+        status = 'иконка не загрузилась';
+        return;
+      }
+      icon.icon = img;
       icon.setTooltip('GRChat');
       icon.setContextMenuTrigger(ContextMenuTrigger.rightClicked);
       icon.addListener((ev) {
         // Left click shows the window; right click opens the menu natively.
         if (ev is TrayIconClickedEvent) onShow();
       });
-      await _rebuildMenu();
-      icon.setVisible(true);
       _tray = icon;
-    } catch (_) {}
+      await _rebuildMenu();
+      if (!icon.setVisible(true)) {
+        status = 'не показался';
+        return;
+      }
+      status = 'ок';
+    } catch (e) {
+      status = 'ошибка: $e';
+    }
   }
 
   Future<void> refreshMenu() async {
@@ -74,6 +96,26 @@ class TrayBackend {
       if (ev is MenuItemClickedEvent) onShow();
     });
     if (open != null) menu.addItem(open);
+    final nto = MenuItem.createWithLabelAndType(
+        'Уведомления', MenuItemType.checkbox);
+    if (nto != null) {
+      try {
+        nto.state = await isNotificationsOn()
+            ? MenuItemState.checked
+            : MenuItemState.unchecked;
+      } catch (_) {}
+      nto.addListener((ev) async {
+        if (ev is MenuItemClickedEvent) {
+          await onToggleNotifications();
+          try {
+            nto.state = await isNotificationsOn()
+                ? MenuItemState.checked
+                : MenuItemState.unchecked;
+          } catch (_) {}
+        }
+      });
+      menu.addItem(nto);
+    }
     if (autostartSupported) {
       final auto = MenuItem.createWithLabelAndType(
           'Запускать вместе с системой', MenuItemType.checkbox);
