@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../app/providers.dart';
 import '../widgets/code_input.dart';
@@ -31,17 +32,32 @@ class AuthScreen extends ConsumerStatefulWidget {
 
 class _AuthScreenState extends ConsumerState<AuthScreen> {
   _Mode _mode = _Mode.login;
-  // Server address lives here for now; a settings screen comes later.
-  static const _host = '127.0.0.1';
-  static const _port = 8181;
   final _login = TextEditingController();
   final _nick = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
   final _code = TextEditingController();
+  final _host = TextEditingController(text: '127.0.0.1');
+  final _port = TextEditingController(text: '8181');
   String? _error;
   bool _busy = false;
   DateTime? _resendAt;
+
+  @override
+  void initState() {
+    super.initState();
+    () async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final h = prefs.getString('server_host');
+        final p = prefs.getInt('server_port');
+        if (!mounted) return;
+        if (h != null && h.isNotEmpty) _host.text = h;
+        if (p != null) _port.text = p.toString();
+        setState(() {});
+      } catch (_) {}
+    }();
+  }
 
   @override
   void dispose() {
@@ -50,14 +66,25 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     _email.dispose();
     _password.dispose();
     _code.dispose();
+    _host.dispose();
+    _port.dispose();
     super.dispose();
   }
+
+  String get _hostValue =>
+      _host.text.trim().isEmpty ? '127.0.0.1' : _host.text.trim();
+  int get _portValue => int.tryParse(_port.text.trim()) ?? 8181;
 
   Future<void> _connect() async {
     final conn = ref.read(connectionProvider);
     if (!conn.isOpen) {
-      await conn.connect(_host, _port);
+      await conn.connect(_hostValue, _portValue);
     }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('server_host', _hostValue);
+      await prefs.setInt('server_port', _portValue);
+    } catch (_) {}
   }
 
   void _startCooldown() {
@@ -118,6 +145,18 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                 const SizedBox(height: 8),
                 Text(_error!, style: const TextStyle(color: Colors.red)),
               ],
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(
+                    flex: 3,
+                    child: _field(_host, 'сервер',
+                        keyboard: TextInputType.url)),
+                const SizedBox(width: 8),
+                Expanded(
+                    flex: 1,
+                    child: _field(_port, 'порт',
+                        keyboard: TextInputType.number)),
+              ]),
               const SizedBox(height: 12),
               FilledButton(
                 onPressed: _busy ? null : _submit,

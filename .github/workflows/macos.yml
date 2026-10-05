@@ -1,0 +1,45 @@
+name: macos build
+
+# Test build for macOS (Apple toolchain only exists on Mac hardware).
+# Run by hand from the Actions tab or `gh workflow run macos`.
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build configuration'
+        required: true
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Debug
+
+jobs:
+  build-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter --version
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+      - run: flutter build macos --${{ inputs.configuration }}
+
+      - name: Pack .app
+        run: |
+          cd build/macos/Build/Products/${{ inputs.configuration }}
+          APP=$(ls -d *.app | head -1)
+          echo "APP=$APP"
+          zip -r -y "$GITHUB_WORKSPACE/grchat_client-macos.zip" "$APP"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grchat_client-macos-${{ inputs.configuration }}
+          path: grchat_client-macos.zip
