@@ -111,37 +111,81 @@ class Message {
 }
 
 class Channel {
-  Channel({required this.id, required this.name, required this.type});
+  Channel({
+    required this.id,
+    required this.name,
+    required this.type,
+    this.alias = '',
+    this.isPrivate = false,
+    this.communityId,
+    this.role = '',
+  });
   final String id;
   final String name;
   final String type; // text | voice
+  /// Public address part: `channel/<alias>`. Empty when the server is old.
+  final String alias;
+  final bool isPrivate;
+  /// Null = standalone channel (owns its access, not bound to a community).
+  final String? communityId;
+  /// My role in a standalone channel (owner/admin/member), '' if unknown.
+  final String role;
 
   factory Channel.fromJson(Map<String, dynamic> j) => Channel(
         id: j['channel_id'] as String,
-        name: j['name'] as String,
+        name: (j['name'] ?? '') as String,
         type: (j['channel_type'] ?? j['type'] ?? 'text') as String,
+        alias: (j['alias'] ?? '') as String,
+        isPrivate: (j['is_private'] ?? false) as bool,
+        communityId: j['community_id'] as String?,
+        role: (j['role'] ?? '') as String,
       );
 }
 
 class Community {
-  Community(
-      {required this.id,
-      required this.name,
-      required this.role,
-      required this.channels});
+  Community({
+    required this.id,
+    required this.name,
+    required this.role,
+    required this.channels,
+    this.alias = '',
+    this.isPrivate = false,
+  });
   final String id;
   final String name;
   final String role;
   final List<Channel> channels;
+  /// Public address part: `server/<alias>`. Empty when the server is old.
+  final String alias;
+  final bool isPrivate;
 
-  factory Community.fromJson(Map<String, dynamic> j) => Community(
-        id: j['community_id'] as String,
-        name: j['name'] as String,
-        role: (j['role'] ?? 'member') as String,
-        channels: ((j['channels'] as List?) ?? const [])
-            .map((c) => Channel.fromJson(c as Map<String, dynamic>))
-            .toList(),
-      );
+  factory Community.fromJson(Map<String, dynamic> j) {
+    final id = j['community_id'] as String;
+    return Community(
+      id: id,
+      name: (j['name'] ?? '') as String,
+      role: (j['role'] ?? 'member') as String,
+      channels: ((j['channels'] as List?) ?? const [])
+          .map((c) {
+            final ch = Channel.fromJson(c as Map<String, dynamic>);
+            // Channels arriving inside a community inherit its id, so the
+            // client can tell bound from standalone ones.
+            return ch.communityId == null
+                ? Channel(
+                    id: ch.id,
+                    name: ch.name,
+                    type: ch.type,
+                    alias: ch.alias,
+                    isPrivate: ch.isPrivate,
+                    communityId: id,
+                    role: ch.role)
+                : ch;
+          })
+          .toList(),
+      alias: (j['alias'] ?? '') as String,
+      isPrivate: (j['is_private'] ?? false) as bool,
+    );
+  }
 }
 
 class DmMember {
