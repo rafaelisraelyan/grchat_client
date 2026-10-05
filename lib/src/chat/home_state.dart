@@ -341,7 +341,7 @@ class HomeState extends Notifier<HomeData> {
   }
 
   Future<void> selectChannel(Community? community, Channel channel) async {
-    if (channel.type != 'text') return;
+    if (channel.type != 'text' && channel.type != 'broadcast') return;
     state = state.copyWith(
         activeCommunityId: () => community?.id,
         scope: ChannelScope(community, channel),
