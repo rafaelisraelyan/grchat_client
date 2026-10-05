@@ -18,7 +18,7 @@ jobs:
   build-macos:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: subosito/flutter-action@v2
         with:
@@ -28,7 +28,9 @@ jobs:
       - run: flutter --version
       - run: flutter pub get
       - run: flutter analyze
-      - run: flutter test
+      # Hermetic tests only: goldens are Windows pixel-exact and the
+      # connection/signaling tests need a live dev server + Postgres.
+      - run: flutter test test/reconnect_test.dart test/logo_asset_test.dart
 
       - run: flutter build macos --${{ inputs.configuration }}
 
