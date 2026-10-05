@@ -8,11 +8,11 @@ on:
       configuration:
         description: 'Build configuration'
         required: true
-        default: Release
+        default: release
         type: choice
         options:
-          - Release
-          - Debug
+          - release
+          - debug
 
 jobs:
   build-macos:
