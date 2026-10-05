@@ -159,7 +159,7 @@ class CallCard extends ConsumerWidget {
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Не вышло позвонить: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyCallError(e))));
       }
     }
   }

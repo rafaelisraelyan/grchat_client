@@ -4,6 +4,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:riverpod/riverpod.dart';
 
 import '../app/providers.dart';
+import '../auth/auth_repository.dart';
 import 'call_api.dart';
 enum CallPhase { ringing, active }
 
@@ -451,6 +452,19 @@ class CallState extends Notifier<ActiveCall?> {
 
 final callStateProvider =
     NotifierProvider<CallState, ActiveCall?>(CallState.new);
+
+/// Raw server codes must never reach the UI.
+String friendlyCallError(Object e) {
+  if (e is GrchatException) {
+    return switch (e.code) {
+      'USER_OFFLINE' => 'Пользователь не в сети',
+      'NOT_FOUND' => 'Пользователь не найден',
+      'NOT_IN_CALL' => 'Звонок уже завершён',
+      _ => 'Не вышло позвонить',
+    };
+  }
+  return 'Не вышло позвонить';
+}
 
 /// One-shot UI notices ("Нет ответа", "Пропущенный звонок от X").
 /// Overlay shows each via SnackBar and clears it.

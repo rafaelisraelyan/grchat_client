@@ -6,7 +6,6 @@ import '../home_state.dart';
 import '../models.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
-import '../../auth/auth_repository.dart';
 import '../../call/call_state.dart';
 import 'message_list.dart';
 
@@ -234,11 +233,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
       }
     } catch (e) {
       if (mounted) {
-        final msg = e is GrchatException && e.code == 'USER_OFFLINE'
-            ? 'Пользователь не в сети'
-            : 'Не вышло позвонить: $e';
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(msg)));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(friendlyCallError(e))));
       }
     }
   }
