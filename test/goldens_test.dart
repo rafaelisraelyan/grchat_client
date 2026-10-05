@@ -231,6 +231,13 @@ void main() {
     addTearDown(t.view.resetPhysicalSize);
     await t.pumpWidget(const ProviderScope(
         child: MaterialApp(home: AuthScreen())));
+    // Real decode, not fake-async: otherwise the logo may not be ready.
+    await t.runAsync(() async {
+      final el =
+          t.element(find.byType(Image).first);
+      await precacheImage(
+          const AssetImage('assets/logo-icon.png'), el);
+    });
     await t.pumpAndSettle();
     await expectLater(
         find.byType(AuthScreen), matchesGoldenFile('goldens/auth.png'));

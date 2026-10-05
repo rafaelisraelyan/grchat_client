@@ -28,5 +28,9 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Голосовые и видеозвонки</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Видеозвонки и демонстрация экрана</string>
 </dict>
 </plist>

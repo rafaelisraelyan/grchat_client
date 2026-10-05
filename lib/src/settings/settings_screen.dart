@@ -3,6 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
 import '../app/theme.dart';
+import '../desktop/autostart.dart';
+import '../desktop/desktop.dart';
+import '../desktop/desktop_log.dart';
+import '../notify/notify.dart';
 import '../update/update_service.dart';
 
 final storageUsageProvider = FutureProvider<Map<String, int>>((ref) async {
@@ -22,8 +26,86 @@ final storageUsageProvider = FutureProvider<Map<String, int>>((ref) async {
   }
 });
 
-class SettingsScreen extends ConsumerWidget {
-  const SettingsScreen({super.key});
+class _AutostartRow extends StatefulWidget {
+  const _AutostartRow();
+
+  @override
+  State<_AutostartRow> createState() => _AutostartRowState();
+}
+
+class _AutostartRowState extends State<_AutostartRow> {
+  bool? _on;
+
+  @override
+  void initState() {
+    super.initState();
+    Autostart.isOn().then((v) {
+      if (mounted) setState(() => _on = v);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: const Icon(Icons.rocket_launch),
+      title: const Text('Запускать вместе с системой'),
+      trailing: Switch(
+        value: _on ?? false,
+        onChanged: _on == null
+            ? null
+            : (_) async {
+                await Autostart.toggle();
+                if (mounted) {
+                  setState(() => _on = !(_on ?? false));
+                }
+              },
+      ),
+    );
+  }
+}
+
+class _NotificationsRow extends ConsumerStatefulWidget {
+  const _NotificationsRow();
+
+  @override
+  ConsumerState<_NotificationsRow> createState() =>
+      _NotificationsRowState();
+}
+
+class _NotificationsRowState
+    extends ConsumerState<_NotificationsRow> {
+  bool? _on;
+
+  @override
+  void initState() {
+    super.initState();
+    ref.read(notifyBackendProvider).enabled().then((v) {
+      if (mounted) setState(() => _on = v);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: const Icon(Icons.notifications),
+      title: const Text('Уведомления'),
+      trailing: Switch(
+        value: _on ?? true,
+        onChanged: _on == null
+            ? null
+            : (_) async {
+                final next = !(_on ?? true);
+                await ref
+                    .read(notifyBackendProvider)
+                    .setEnabled(next);
+                if (mounted) setState(() => _on = next);
+              },
+      ),
+    );
+  }
+}
+
+class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -47,6 +129,24 @@ class SettingsScreen extends ConsumerWidget {
               _section(context, 'Хранилище', [
                 _storageRow(ref),
               ]),
+              if (Autostart.supported)
+                _section(context, 'Система', [
+                  const _AutostartRow(),
+                  const _NotificationsRow(),
+                  _row(context,
+                      icon: Icons.notifications,
+                      title:
+                          'Уведомления: ${DesktopKit.notify?.status ?? '—'}',
+                      subtitle: 'Системные тосты'),
+                  _row(context,
+                      icon: Icons.web_asset,
+                      title: 'Трей: ${DesktopKit.tray?.status ?? '—'}',
+                      subtitle: 'Иконка и меню'),
+                  _row(context,
+                      icon: Icons.description,
+                      title: 'Лог трея и тостов',
+                      subtitle: DesktopLog.path),
+                ]),
               _section(context, 'Обновления', [
                 _updateRows(context, ref),
               ]),
