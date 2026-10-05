@@ -41,7 +41,21 @@ jobs:
           echo "APP=$APP"
           zip -r -y "$GITHUB_WORKSPACE/grchat_client-macos.zip" "$APP"
 
+      - name: Make DMG
+        run: |
+          cd build/macos/Build/Products/${{ inputs.configuration }}
+          APP=$(ls -d *.app | head -1)
+          STAGE="$GITHUB_WORKSPACE/dmg_stage"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname GRChat \
+            -srcfolder "$STAGE" -ov -format UDZO \
+            "$GITHUB_WORKSPACE/grchat_client-macos.dmg"
+
       - uses: actions/upload-artifact@v4
         with:
           name: grchat_client-macos-${{ inputs.configuration }}
-          path: grchat_client-macos.zip
+          path: |
+            grchat_client-macos.zip
+            grchat_client-macos.dmg
