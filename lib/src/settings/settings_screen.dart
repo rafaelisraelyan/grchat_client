@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
 import '../app/theme.dart';
+import '../update/update_service.dart';
 
 final storageUsageProvider = FutureProvider<Map<String, int>>((ref) async {
   final s = ref.watch(sessionProvider);
@@ -45,6 +46,9 @@ class SettingsScreen extends ConsumerWidget {
               ]),
               _section(context, 'Хранилище', [
                 _storageRow(ref),
+              ]),
+              _section(context, 'Обновления', [
+                _updateRows(context, ref),
               ]),
               const SizedBox(height: 8),
               OutlinedButton.icon(
@@ -149,4 +153,100 @@ class SettingsScreen extends ConsumerWidget {
   String _size(int b) => b < 1048576
       ? '${(b / 1024).toStringAsFixed(1)} КБ'
       : '${(b / 1048576).toStringAsFixed(1)} МБ';
+
+  Widget _updateRows(BuildContext context, WidgetRef ref) {
+    final channel = ref.watch(updateChannelProvider);
+    final upd = ref.watch(updateCenterProvider);
+    final center = ref.read(updateCenterProvider.notifier);
+    // Transparent Material: tappable ListTiles below need a Material
+    // ancestor inside the section's background container for ink.
+    return Material(
+      color: Colors.transparent,
+      child:
+          Column(mainAxisSize: MainAxisSize.min, children: [
+      FutureBuilder<String>(
+        future: center.currentVersion(),
+        builder: (ctx, snap) => ListTile(
+          leading: const Icon(Icons.system_update),
+          title: Text('Версия ${snap.data ?? '…'}'),
+          subtitle: channel.when(
+            data: (c) => Text(
+                c == UpdateChannel.beta ? 'Канал: бета' : 'Канал: релиз'),
+            loading: () => const Text('Канал: …'),
+            error: (_, _) => const Text('Канал: релиз'),
+          ),
+          trailing: SegmentedButton<UpdateChannel>(
+            segments: const [
+              ButtonSegment(
+                  value: UpdateChannel.release,
+                  label: Text('Релиз')),
+              ButtonSegment(
+                  value: UpdateChannel.beta, label: Text('Бета')),
+            ],
+            selected: {
+              channel.value ?? UpdateChannel.release
+            },
+            onSelectionChanged: (s) => center.setChannel(s.first),
+          ),
+        ),
+      ),
+      _updateStatus(context, ref, upd),
+          ]),
+    );
+  }
+
+  Widget _updateStatus(
+      BuildContext context, WidgetRef ref, UpdateUiState upd) {
+    final center = ref.read(updateCenterProvider.notifier);
+    switch (upd.status) {
+      case UpdateStatus.idle:
+        return ListTile(
+          leading: const Icon(Icons.refresh),
+          title: const Text('Проверить обновления'),
+          onTap: () => center.check(),
+        );
+      case UpdateStatus.checking:
+        return const ListTile(
+          leading: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2)),
+          title: Text('Проверяем…'),
+        );
+      case UpdateStatus.uptodate:
+        return ListTile(
+          leading:
+              Icon(Icons.check, color: GrchatColors.of(context).success),
+          title: const Text('Установлена последняя версия'),
+          onTap: () => center.check(),
+        );
+      case UpdateStatus.available:
+        final info = upd.info!;
+        return ListTile(
+          leading: const Icon(Icons.download),
+          title: Text(
+              'Доступна ${info.version}${info.prerelease ? ' (бета)' : ''}'),
+          subtitle: Text(
+              '${(info.sizeBytes / 1048576).toStringAsFixed(1)} МБ — скачивание закроет приложение и установит обновление'),
+          onTap: () => center.downloadAndInstall(),
+        );
+      case UpdateStatus.downloading:
+        return ListTile(
+          leading: const Icon(Icons.download),
+          title: const Text('Скачиваем обновление…'),
+          subtitle: Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child:
+                LinearProgressIndicator(value: upd.progress ?? 0),
+          ),
+        );
+      case UpdateStatus.error:
+        return ListTile(
+          leading:
+              Icon(Icons.error_outline, color: GrchatColors.of(context).danger),
+          title: Text(upd.message ?? 'Ошибка'),
+          onTap: () => center.check(),
+        );
+    }
+  }
 }
