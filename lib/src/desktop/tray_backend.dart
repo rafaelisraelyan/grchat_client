@@ -90,12 +90,27 @@ class TrayBackend {
     if (tray == null) return;
     final menu = Menu.create();
     if (menu == null) return;
+    // Clicks are routed at menu level by item id: item-level listeners
+    // are unreliable across backends.
+    final actions = <int, Future<void> Function()>{};
+    menu.addListener((ev) {
+      if (ev is MenuItemClickedEvent) {
+        final fn = actions[ev.itemId];
+        if (fn != null) {
+          () async {
+            try {
+              await fn();
+            } catch (_) {}
+          }();
+        }
+      }
+    });
     final open =
         MenuItem.createWithLabelAndType('Открыть', MenuItemType.normal);
-    open?.addListener((ev) {
-      if (ev is MenuItemClickedEvent) onShow();
-    });
-    if (open != null) menu.addItem(open);
+    if (open != null) {
+      actions[open.id] = () async => onShow();
+      menu.addItem(open);
+    }
     final nto = MenuItem.createWithLabelAndType(
         'Уведомления', MenuItemType.checkbox);
     if (nto != null) {
@@ -104,16 +119,14 @@ class TrayBackend {
             ? MenuItemState.checked
             : MenuItemState.unchecked;
       } catch (_) {}
-      nto.addListener((ev) async {
-        if (ev is MenuItemClickedEvent) {
-          await onToggleNotifications();
-          try {
-            nto.state = await isNotificationsOn()
-                ? MenuItemState.checked
-                : MenuItemState.unchecked;
-          } catch (_) {}
-        }
-      });
+      actions[nto.id] = () async {
+        await onToggleNotifications();
+        try {
+          nto.state = await isNotificationsOn()
+              ? MenuItemState.checked
+              : MenuItemState.unchecked;
+        } catch (_) {}
+      };
       menu.addItem(nto);
     }
     if (autostartSupported) {
@@ -125,26 +138,24 @@ class TrayBackend {
               ? MenuItemState.checked
               : MenuItemState.unchecked;
         } catch (_) {}
-        auto.addListener((ev) async {
-          if (ev is MenuItemClickedEvent) {
-            await onToggleAutostart();
-            try {
-              auto.state = await isAutostartOn()
-                  ? MenuItemState.checked
-                  : MenuItemState.unchecked;
-            } catch (_) {}
-          }
-        });
+        actions[auto.id] = () async {
+          await onToggleAutostart();
+          try {
+            auto.state = await isAutostartOn()
+                ? MenuItemState.checked
+                : MenuItemState.unchecked;
+          } catch (_) {}
+        };
         menu.addItem(auto);
       }
     }
     menu.addSeparator();
     final quit =
         MenuItem.createWithLabelAndType('Выйти', MenuItemType.normal);
-    quit?.addListener((ev) {
-      if (ev is MenuItemClickedEvent) onQuit();
-    });
-    if (quit != null) menu.addItem(quit);
+    if (quit != null) {
+      actions[quit.id] = () async => onQuit();
+      menu.addItem(quit);
+    }
     tray.setContextMenu(menu);
   }
 }
