@@ -27,6 +27,13 @@ class TrayBackend {
   String status = 'не готов';
 
   TrayIcon? _tray;
+  // Retain every native-backed wrapper: GC runs their finalizers and
+  // frees the handles, which silently kills clicks on a visible menu.
+  // ignore: unused_field
+  Menu? _menu;
+  final _items = <MenuItem>[];
+  // ignore: unused_field
+  Image? _iconImage;
 
   bool get supported =>
       Platform.isWindows || Platform.isMacOS || Platform.isLinux;
@@ -47,6 +54,7 @@ class TrayBackend {
         status = 'иконка не загрузилась';
         return;
       }
+      _iconImage = img;
       icon.icon = img;
       icon.setTooltip('GRChat');
       icon.setContextMenuTrigger(ContextMenuTrigger.rightClicked);
@@ -90,6 +98,9 @@ class TrayBackend {
     if (tray == null) return;
     final menu = Menu.create();
     if (menu == null) return;
+    // Retain: see fields.
+    _menu = menu;
+    _items.clear();
     // Clicks are routed at menu level by item id: item-level listeners
     // are unreliable across backends.
     final actions = <int, Future<void> Function()>{};
@@ -110,6 +121,7 @@ class TrayBackend {
     if (open != null) {
       actions[open.id] = () async => onShow();
       menu.addItem(open);
+      _items.add(open);
     }
     final nto = MenuItem.createWithLabelAndType(
         'Уведомления', MenuItemType.checkbox);
@@ -128,6 +140,7 @@ class TrayBackend {
         } catch (_) {}
       };
       menu.addItem(nto);
+      _items.add(nto);
     }
     if (autostartSupported) {
       final auto = MenuItem.createWithLabelAndType(
@@ -147,6 +160,7 @@ class TrayBackend {
           } catch (_) {}
         };
         menu.addItem(auto);
+        _items.add(auto);
       }
     }
     menu.addSeparator();
@@ -155,6 +169,7 @@ class TrayBackend {
     if (quit != null) {
       actions[quit.id] = () async => onQuit();
       menu.addItem(quit);
+      _items.add(quit);
     }
     tray.setContextMenu(menu);
   }
