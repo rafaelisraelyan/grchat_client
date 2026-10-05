@@ -5,7 +5,6 @@ import 'package:riverpod/riverpod.dart';
 
 import '../app/providers.dart';
 import 'call_api.dart';
-
 enum CallPhase { ringing, active }
 
 /// One live call. Null state = idle.
@@ -18,6 +17,7 @@ class ActiveCall {
     required this.phase,
     this.muted = false,
     this.cameraOff = false,
+    this.sharingScreen = false,
   });
 
   final String callId;
@@ -27,11 +27,13 @@ class ActiveCall {
   final CallPhase phase;
   final bool muted;
   final bool cameraOff;
+  final bool sharingScreen;
 
   ActiveCall copyWith({
     CallPhase? phase,
     bool? muted,
     bool? cameraOff,
+    bool? sharingScreen,
   }) =>
       ActiveCall(
         callId: callId,
@@ -41,6 +43,7 @@ class ActiveCall {
         phase: phase ?? this.phase,
         muted: muted ?? this.muted,
         cameraOff: cameraOff ?? this.cameraOff,
+        sharingScreen: sharingScreen ?? this.sharingScreen,
       );
 }
 
@@ -55,6 +58,9 @@ class CallState extends Notifier<ActiveCall?> {
   MediaStream? _local;
   RTCVideoRenderer? _localR;
   RTCVideoRenderer? _remoteR;
+  RTCRtpSender? _videoSender;
+  MediaStream? _screen;
+  Timer? _ringTimer;
   StreamSubscription<Map<String, dynamic>>? _pushSub;
   final _pendingIce = <Map<String, String?>>[];
   String? _callId;
@@ -119,7 +125,8 @@ class CallState extends Notifier<ActiveCall?> {
     _local = await navigator.mediaDevices
         .getUserMedia({'audio': true, 'video': video});
     for (final t in _local!.getTracks()) {
-      await pc.addTrack(t, _local!);
+      final sender = await pc.addTrack(t, _local!);
+      if (t.kind == 'video') _videoSender = sender;
     }
     if (video) {
       _localR = RTCVideoRenderer();
@@ -166,6 +173,18 @@ class CallState extends Notifier<ActiveCall?> {
             video: cur.video,
             outgoing: true,
             phase: CallPhase.ringing);
+        // Unanswered outgoing: stop ringing before the server sweep (60s).
+        _ringTimer?.cancel();
+        _ringTimer = Timer(const Duration(seconds: 50), () async {
+          final c = state;
+          if (c == null ||
+              c.callId != callId ||
+              c.phase != CallPhase.ringing) {
+            return;
+          }
+          _notice('Нет ответа');
+          await hangup();
+        });
       }
     } catch (e) {
       await _cleanup();
@@ -182,6 +201,7 @@ class CallState extends Notifier<ActiveCall?> {
       await _pc!.setLocalDescription(answer);
       final sdp = (await _pc!.getLocalDescription())?.sdp ?? '';
       await api.answer(callId: cur.callId, accept: true, sdp: sdp);
+      _ringTimer?.cancel();
       state = cur.copyWith(phase: CallPhase.active);
     } catch (e) {
       await decline();
@@ -223,22 +243,124 @@ class CallState extends Notifier<ActiveCall?> {
     state = cur.copyWith(cameraOff: off);
   }
 
+  /// Screen share replaces the camera track in place (no renegotiation:
+  /// same video m-line, so the remote side just sees the new picture).
+  /// Desktop-only button: active video calls.
+  Future<void> toggleScreenShare() async {
+    final cur = state;
+    final pc = _pc;
+    if (cur == null ||
+        !cur.video ||
+        cur.phase != CallPhase.active ||
+        pc == null) {
+      return;
+    }
+    try {
+      if (_screen == null) {
+        final stream =
+            await navigator.mediaDevices.getDisplayMedia({'video': true});
+        if (stream.getVideoTracks().isEmpty) {
+          await stream.dispose();
+          return;
+        }
+        final sender = _videoSender;
+        if (sender == null) {
+          await stream.dispose();
+          return;
+        }
+        await sender
+            .replaceTrack(stream.getVideoTracks().first);
+        _screen = stream;
+        _localR?.srcObject = stream;
+        state = cur.copyWith(sharingScreen: true);
+      } else {
+        final cam = _local?.getVideoTracks();
+        final sender = _videoSender;
+        if (sender != null && cam != null && cam.isNotEmpty) {
+          await sender.replaceTrack(cam.first);
+        }
+        for (final t in _screen!.getTracks()) {
+          try {
+            await t.stop();
+          } catch (_) {}
+        }
+        try {
+          await _screen!.dispose();
+        } catch (_) {}
+        _screen = null;
+        if (_localR != null) _localR!.srcObject = _local;
+        state = state?.copyWith(sharingScreen: false);
+      }
+    } catch (_) {
+      // User closed the picker or capture failed: stay on camera.
+    }
+  }
+
+  void _notice(String text) {
+    ref.read(callNoticeProvider.notifier).show(text);
+  }
+
   void _onPush(Map<String, dynamic> ev) {
     switch (ev['type']?.toString()) {
       case 'call_incoming':
-        if (state != null) return; // busy: ignore
+        if (state != null) {
+          // Busy: decline so the caller hears it instead of ringing 60s.
+          final id = ev['call_id']?.toString();
+          if (id != null) {
+            ref
+                .read(callApiProvider)
+                .answer(callId: id, accept: false)
+                .catchError((_) {});
+          }
+          return;
+        }
         _prepareIncoming(ev);
       case 'call_accepted':
-        if (state != null && ev['call_id'] == state!.callId) {
-          state = state!.copyWith(phase: CallPhase.active);
-        }
+        _onAccepted(ev);
       case 'ice':
         _onRemoteIce(ev);
       case 'call_ended':
-        if (state != null && ev['call_id'] == state!.callId) {
-          _cleanup();
-        }
+        _onEnded(ev);
     }
+  }
+
+  /// Caller side: the answer SDP must become the remote description,
+  /// otherwise signaling completes but no media flows.
+  Future<void> _onAccepted(Map<String, dynamic> ev) async {
+    final cur = state;
+    if (cur == null ||
+        !cur.outgoing ||
+        ev['call_id'] != cur.callId) {
+      return;
+    }
+    try {
+      final sdp = (ev['sdp'] ?? '').toString();
+      if (sdp.isNotEmpty) {
+        await _pc?.setRemoteDescription(
+            RTCSessionDescription(sdp, 'answer'));
+      }
+      _ringTimer?.cancel();
+      state = cur.copyWith(phase: CallPhase.active);
+    } catch (_) {
+      await hangup();
+    }
+  }
+
+  void _onEnded(Map<String, dynamic> ev) {
+    final cur = state;
+    if (cur == null || ev['call_id'] != cur.callId) return;
+    final reason = ev['reason']?.toString() ?? '';
+    final by = (ev['by_nick'] ?? cur.peerNick).toString();
+    if (cur.phase == CallPhase.ringing) {
+      if (cur.outgoing) {
+        _notice(reason == 'declined'
+            ? '$by отклонил звонок'
+            : 'Нет ответа');
+      } else {
+        _notice('Пропущенный звонок от ${cur.peerNick}');
+      }
+    }
+    _cleanup();
   }
 
   Future<void> _prepareIncoming(Map<String, dynamic> ev) async {
@@ -257,6 +379,18 @@ class CallState extends Notifier<ActiveCall?> {
           video: video,
           outgoing: false,
           phase: CallPhase.ringing);
+      // Safety net if the caller never hangs up (old client / no sweep).
+      _ringTimer?.cancel();
+      _ringTimer = Timer(const Duration(seconds: 58), () async {
+        final c = state;
+        if (c == null ||
+            c.callId != callId ||
+            c.phase != CallPhase.ringing) {
+          return;
+        }
+        _notice('Пропущенный звонок от ${c.peerNick}');
+        await decline();
+      });
     } catch (_) {
       await _cleanup();
     }
@@ -281,6 +415,20 @@ class CallState extends Notifier<ActiveCall?> {
   Future<void> _cleanup() async {
     _callId = null;
     _pendingIce.clear();
+    _ringTimer?.cancel();
+    _ringTimer = null;
+    _videoSender = null;
+    if (_screen != null) {
+      for (final t in _screen!.getTracks()) {
+        try {
+          await t.stop();
+        } catch (_) {}
+      }
+      try {
+        await _screen!.dispose();
+      } catch (_) {}
+      _screen = null;
+    }
     try {
       await _pc?.close();
     } catch (_) {}
@@ -303,3 +451,16 @@ class CallState extends Notifier<ActiveCall?> {
 
 final callStateProvider =
     NotifierProvider<CallState, ActiveCall?>(CallState.new);
+
+/// One-shot UI notices ("Нет ответа", "Пропущенный звонок от X").
+/// Overlay shows each via SnackBar and clears it.
+class CallNotice extends Notifier<String?> {
+  @override
+  String? build() => null;
+
+  void show(String text) => state = text;
+  void clear() => state = null;
+}
+
+final callNoticeProvider =
+    NotifierProvider<CallNotice, String?>(CallNotice.new);

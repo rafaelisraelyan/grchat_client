@@ -43,6 +43,13 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
   Widget build(BuildContext context) {
     final call = ref.watch(callStateProvider);
     final st = ref.read(callStateProvider.notifier);
+    ref.listen<String?>(callNoticeProvider, (prev, next) {
+      if (next != null && next.isNotEmpty) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(next)));
+        ref.read(callNoticeProvider.notifier).clear();
+      }
+    });
     _track(call);
     if (call == null) return const SizedBox.shrink();
     final incoming =
@@ -68,7 +75,9 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
                     ? (call.video ? 'Входящий видеозвонок…' : 'Входящий звонок…')
                     : call.phase == CallPhase.ringing
                         ? 'Вызов…'
-                        : _fmt(_secs),
+                        : call.sharingScreen
+                            ? 'Демонстрация экрана · ${_fmt(_secs)}'
+                            : _fmt(_secs),
                 style:
                     const TextStyle(fontSize: 12, color: Colors.grey)),
             const SizedBox(height: 10),
@@ -96,6 +105,15 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
                           : Icons.videocam,
                       () => st.toggleCamera()),
                 if (call.video) const SizedBox(width: 12),
+                if (call.video && call.phase == CallPhase.active)
+                  _roundBtn(
+                      call.sharingScreen ? Colors.blue : null,
+                      call.sharingScreen
+                          ? Icons.stop_screen_share
+                          : Icons.screen_share,
+                      () => st.toggleScreenShare()),
+                if (call.video && call.phase == CallPhase.active)
+                  const SizedBox(width: 12),
                 _roundBtn(Colors.red, Icons.call_end, () => st.hangup()),
               ]),
           ]),
