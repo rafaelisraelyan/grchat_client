@@ -190,7 +190,16 @@ class HomeState extends Notifier<HomeData> {
   }
 
   /// System notification unless the user is already looking at it.
+  /// Call records never toast: they arrive after the fact (the ringing
+  /// toast, banner and chat card already cover the call), so notifying
+  /// them looks like stale spam. Same for belated pushes.
   void _maybeNotify(Message msg, String key) {
+    if (msg.isCall) return;
+    final created =
+        DateTime.tryParse(msg.createdAt)?.toLocal() ?? DateTime.now();
+    if (DateTime.now().difference(created) > const Duration(minutes: 3)) {
+      return;
+    }
     () async {
       try {
         if (await windowEngaged() && state.scope?.key == key) return;
