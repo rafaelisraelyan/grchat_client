@@ -40,7 +40,7 @@ class UpdateUiState {
 
 class UpdateCenter extends Notifier<UpdateUiState> {
   static const _releasesApi =
-      'https://api.github.com/rafaelisraelyan/grchat-releases/releases';
+      'https://api.github.com/repos/rafaelisraelyan/grchat-releases/releases';
   static const _assetName = 'grchat_client-windows.zip';
   static const _channelKey = 'update_channel';
 
