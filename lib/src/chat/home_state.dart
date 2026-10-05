@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:riverpod/riverpod.dart';
 
 import '../app/providers.dart';
+import '../desktop/window.dart';
+import '../notify/notify.dart';
 import '../voice/voice_state.dart';
 import 'chat_repository.dart';
 import 'file_api.dart';
@@ -185,6 +187,62 @@ class HomeState extends Notifier<HomeData> {
     final threads = state.dms.where((d) => d.id == dmId);
     state = state.copyWith(missed: []);
     if (threads.isNotEmpty) await selectDm(threads.first);
+  }
+
+  /// System notification unless the user is already looking at it.
+  void _maybeNotify(Message msg, String key) {
+    () async {
+      try {
+        if (await windowEngaged() && state.scope?.key == key) return;
+        final backend = ref.read(notifyBackendProvider);
+        if (!backend.supported) return;
+        final title = msg.dmId != null
+            ? msg.authorNick
+            : '${_channelName(msg.channelId)} · ${msg.authorNick}';
+        var body = msg.text.trim();
+        if (body.isEmpty) {
+          body = msg.attachments.isEmpty ? 'Новое сообщение' : 'Вложение';
+        }
+        if (body.length > 120) body = '${body.substring(0, 120)}…';
+        backend.showMessage(
+          tag: 'chat:$key',
+          title: title,
+          body: body,
+          onTap: () async {
+            await focusWindow();
+            openByKey(key);
+          },
+        );
+      } catch (_) {}
+    }();
+  }
+
+  String _channelName(String? channelId) {
+    if (channelId == null) return 'Чат';
+    for (final comm in state.communities) {
+      for (final ch in comm.channels) {
+        if (ch.id == channelId) return '#${ch.name}';
+      }
+    }
+    return 'Чат';
+  }
+
+  /// Jump to a conversation by scope key (notification tap).
+  Future<void> openByKey(String key) async {
+    if (key.startsWith('d:')) {
+      final id = key.substring(2);
+      final threads = state.dms.where((d) => d.id == id);
+      if (threads.isNotEmpty) await selectDm(threads.first);
+    } else if (key.startsWith('c:')) {
+      final id = key.substring(2);
+      for (final comm in state.communities) {
+        final chs = comm.channels.where((c) => c.id == id);
+        if (chs.isNotEmpty) {
+          await selectChannel(comm, chs.first);
+          return;
+        }
+      }
+    }
   }
 
   Future<void> refresh() async {
@@ -388,6 +446,7 @@ class HomeState extends Notifier<HomeData> {
             ..update(key, (v) => v + 1, ifAbsent: () => 1));
         }
         if (msg.dmId != null) _refreshDms();
+        _maybeNotify(msg, key);
       case 'message_edited':
         state = state.copyWith(
             messages: state.messages

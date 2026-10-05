@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
+import '../desktop/window.dart';
+import '../notify/notify.dart';
 import '../transport/grchat_connection.dart';
 import '../widgets/connection_banner.dart';
 import 'home_state.dart';
@@ -64,6 +66,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Incoming call: bring the window forward + system notification.
+    // The overlay handles accept/decline; the toast covers tray mode.
+    ref.listen<ActiveCall?>(callStateProvider, (prev, next) {
+      final backend = ref.read(notifyBackendProvider);
+      if (next != null &&
+          !next.outgoing &&
+          next.phase == CallPhase.ringing &&
+          (prev?.callId != next.callId)) {
+        () async {
+          await focusWindow();
+          backend.showCall(
+            tag: 'call:${next.callId}',
+            title: next.video
+                ? 'Входящий видеозвонок'
+                : 'Входящий звонок',
+            body: next.peerNick,
+            onTap: () => focusWindow(),
+          );
+        }();
+      }
+      if (next == null && prev != null) {
+        backend.cancel('call:${prev.callId}');
+      }
+    });
     return Scaffold(
       body: LayoutBuilder(builder: (ctx, constraints) {
         // Plan §62: full layout above 1250px, members auto-hidden below.

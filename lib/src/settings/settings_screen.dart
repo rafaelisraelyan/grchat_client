@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
 import '../app/theme.dart';
+import '../desktop/autostart.dart';
 import '../update/update_service.dart';
 
 final storageUsageProvider = FutureProvider<Map<String, int>>((ref) async {
@@ -21,6 +22,44 @@ final storageUsageProvider = FutureProvider<Map<String, int>>((ref) async {
     return {'used_bytes': 0, 'quota_bytes': 0};
   }
 });
+
+class _AutostartRow extends StatefulWidget {
+  const _AutostartRow();
+
+  @override
+  State<_AutostartRow> createState() => _AutostartRowState();
+}
+
+class _AutostartRowState extends State<_AutostartRow> {
+  bool? _on;
+
+  @override
+  void initState() {
+    super.initState();
+    Autostart.isOn().then((v) {
+      if (mounted) setState(() => _on = v);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: const Icon(Icons.rocket_launch),
+      title: const Text('Запускать вместе с системой'),
+      trailing: Switch(
+        value: _on ?? false,
+        onChanged: _on == null
+            ? null
+            : (_) async {
+                await Autostart.toggle();
+                if (mounted) {
+                  setState(() => _on = !(_on ?? false));
+                }
+              },
+      ),
+    );
+  }
+}
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -47,6 +86,10 @@ class SettingsScreen extends ConsumerWidget {
               _section(context, 'Хранилище', [
                 _storageRow(ref),
               ]),
+              if (Autostart.supported)
+                _section(context, 'Система', [
+                  const _AutostartRow(),
+                ]),
               _section(context, 'Обновления', [
                 _updateRows(context, ref),
               ]),
