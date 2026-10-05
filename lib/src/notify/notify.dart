@@ -5,6 +5,8 @@ import 'package:local_notifier/local_notifier.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../desktop/desktop_log.dart';
+
 /// Per-platform system notifications.
 ///
 /// Windows/macOS: native toasts via local_notifier (it also owns the
@@ -114,6 +116,7 @@ class _LocalNotifierBackend implements NotifyBackend {
         if (onTap != null) {
           _taps[tag] = onTap;
           n.onClick = () {
+            DesktopLog.write('notify: message tapped $tag');
             final tap = _taps.remove(tag);
             if (tap != null) Future.microtask(tap);
           };
@@ -152,6 +155,7 @@ class _LocalNotifierBackend implements NotifyBackend {
         if (onOpen != null) {
           _taps[tag] = onOpen;
           n.onClick = () {
+            DesktopLog.write('notify: call opened $tag');
             final tap = _taps.remove(tag);
             if (tap != null) Future.microtask(tap);
           };
@@ -160,10 +164,12 @@ class _LocalNotifierBackend implements NotifyBackend {
           _declines[tag] = onDecline;
           n.onClickAction = (i) {
             if (i == 1) {
+              DesktopLog.write('notify: call declined $tag');
               final d = _declines.remove(tag);
               _taps.remove(tag);
               if (d != null) Future.microtask(d);
             } else {
+              DesktopLog.write('notify: call opened $tag');
               final tap = _taps.remove(tag);
               if (tap != null) Future.microtask(tap);
             }

@@ -5,6 +5,7 @@ import '../app/providers.dart';
 import '../app/theme.dart';
 import '../desktop/autostart.dart';
 import '../desktop/desktop.dart';
+import '../desktop/desktop_log.dart';
 import '../notify/notify.dart';
 import '../update/update_service.dart';
 
@@ -141,6 +142,10 @@ class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key})
                       icon: Icons.web_asset,
                       title: 'Трей: ${DesktopKit.tray?.status ?? '—'}',
                       subtitle: 'Иконка и меню'),
+                  _row(context,
+                      icon: Icons.description,
+                      title: 'Лог трея и тостов',
+                      subtitle: DesktopLog.path),
                 ]),
               _section(context, 'Обновления', [
                 _updateRows(context, ref),

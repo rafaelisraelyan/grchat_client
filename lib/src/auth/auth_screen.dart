@@ -341,17 +341,10 @@ class _Logo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: 64,
-      height: 64,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(18),
-        gradient: const LinearGradient(
-            colors: [Color(0xFF574CC9), Color(0xFF8AB4FF)]),
-      ),
-      alignment: Alignment.center,
-      child: const Text('G',
-          style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: Image.asset('assets/logo-icon.png',
+          width: 64, height: 64, fit: BoxFit.cover),
     );
   }
 }

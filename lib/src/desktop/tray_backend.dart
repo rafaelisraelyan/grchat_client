@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:nativeapi/nativeapi.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'desktop_log.dart';
+
 /// Windows/macOS/Linux tray icon: show on click, menu with autostart
 /// toggle and quit. Mobile: no-op stub.
 class TrayBackend {
@@ -60,7 +62,10 @@ class TrayBackend {
       icon.setContextMenuTrigger(ContextMenuTrigger.rightClicked);
       icon.addListener((ev) {
         // Left click shows the window; right click opens the menu natively.
-        if (ev is TrayIconClickedEvent) onShow();
+        if (ev is TrayIconClickedEvent) {
+          DesktopLog.write('tray: icon clicked');
+          onShow();
+        }
       });
       _tray = icon;
       await _rebuildMenu();
@@ -82,15 +87,18 @@ class TrayBackend {
   }
 
   Future<Image?> _loadIcon() async {
-    try {
-      final data = await rootBundle.load('assets/tray.ico');
-      final dir = await getTemporaryDirectory();
-      final f = File('${dir.path}/grchat_tray.ico');
-      await f.writeAsBytes(data.buffer.asUint8List(), flush: true);
-      return Image.fromFile(f.path);
-    } catch (_) {
-      return null;
+    for (final name in ['assets/tray.png', 'assets/tray.ico']) {
+      try {
+        final data = await rootBundle.load(name);
+        final dir = await getTemporaryDirectory();
+        final ext = name.endsWith('.png') ? 'png' : 'ico';
+        final f = File('${dir.path}/grchat_tray.$ext');
+        await f.writeAsBytes(data.buffer.asUint8List(), flush: true);
+        final img = Image.fromFile(f.path);
+        if (img != null) return img;
+      } catch (_) {}
     }
+    return null;
   }
 
   Future<void> _rebuildMenu() async {
@@ -101,25 +109,17 @@ class TrayBackend {
     // Retain: see fields.
     _menu = menu;
     _items.clear();
-    // Clicks are routed at menu level by item id: item-level listeners
-    // are unreliable across backends.
-    final actions = <int, Future<void> Function()>{};
-    menu.addListener((ev) {
-      if (ev is MenuItemClickedEvent) {
-        final fn = actions[ev.itemId];
-        if (fn != null) {
-          () async {
-            try {
-              await fn();
-            } catch (_) {}
-          }();
-        }
-      }
-    });
+    // Per-item listeners (the documented mechanism): each item emits its
+    // own MenuItemClickedEvent. The menu itself only emits opened/closed.
     final open =
         MenuItem.createWithLabelAndType('Открыть', MenuItemType.normal);
     if (open != null) {
-      actions[open.id] = () async => onShow();
+      open.addListener((ev) {
+        if (ev is MenuItemClickedEvent) {
+          DesktopLog.write('tray: open clicked');
+          onShow();
+        }
+      });
       menu.addItem(open);
       _items.add(open);
     }
@@ -131,14 +131,19 @@ class TrayBackend {
             ? MenuItemState.checked
             : MenuItemState.unchecked;
       } catch (_) {}
-      actions[nto.id] = () async {
-        await onToggleNotifications();
-        try {
-          nto.state = await isNotificationsOn()
-              ? MenuItemState.checked
-              : MenuItemState.unchecked;
-        } catch (_) {}
-      };
+      nto.addListener((ev) {
+        if (ev is MenuItemClickedEvent) {
+          DesktopLog.write('tray: notifications clicked');
+          () async {
+            try {
+              await onToggleNotifications();
+              nto.state = await isNotificationsOn()
+                  ? MenuItemState.checked
+                  : MenuItemState.unchecked;
+            } catch (_) {}
+          }();
+        }
+      });
       menu.addItem(nto);
       _items.add(nto);
     }
@@ -151,14 +156,19 @@ class TrayBackend {
               ? MenuItemState.checked
               : MenuItemState.unchecked;
         } catch (_) {}
-        actions[auto.id] = () async {
-          await onToggleAutostart();
-          try {
-            auto.state = await isAutostartOn()
-                ? MenuItemState.checked
-                : MenuItemState.unchecked;
-          } catch (_) {}
-        };
+        auto.addListener((ev) {
+          if (ev is MenuItemClickedEvent) {
+            DesktopLog.write('tray: autostart clicked');
+            () async {
+              try {
+                await onToggleAutostart();
+                auto.state = await isAutostartOn()
+                    ? MenuItemState.checked
+                    : MenuItemState.unchecked;
+              } catch (_) {}
+            }();
+          }
+        });
         menu.addItem(auto);
         _items.add(auto);
       }
@@ -167,7 +177,12 @@ class TrayBackend {
     final quit =
         MenuItem.createWithLabelAndType('Выйти', MenuItemType.normal);
     if (quit != null) {
-      actions[quit.id] = () async => onQuit();
+      quit.addListener((ev) {
+        if (ev is MenuItemClickedEvent) {
+          DesktopLog.write('tray: quit clicked');
+          onQuit();
+        }
+      });
       menu.addItem(quit);
       _items.add(quit);
     }

@@ -10,6 +10,7 @@ import 'src/auth/auth_screen.dart';
 import 'src/chat/home_screen.dart';
 import 'src/desktop/autostart.dart';
 import 'src/desktop/desktop.dart';
+import 'src/desktop/desktop_log.dart';
 import 'src/desktop/tray_backend.dart';
 import 'src/desktop/window.dart';
 import 'src/notify/notify.dart';
@@ -80,6 +81,8 @@ class _GrchatAppState extends ConsumerState<GrchatApp> with WindowListener {
     );
     await _tray!.init();
     DesktopKit.tray = _tray;
+    DesktopLog.write(
+        'desktop: tray=${_tray!.status} notify=${DesktopKit.notify?.status}');
   }
 
   @override
