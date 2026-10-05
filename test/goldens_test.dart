@@ -205,6 +205,25 @@ class _FakeHomeCalls extends HomeState {
   }
 }
 
+class _FakeHomeEmpty extends HomeState {
+  @override
+  HomeData build() {
+    final thread = DmThread(id: 'd1', isGroup: false, members: [
+      DmMember(userId: 'u1', nick: 'Rafael'),
+      DmMember(userId: 'u2', nick: 'Second'),
+    ]);
+    return HomeData(
+      communities: const [],
+      activeCommunityId: null,
+      dms: [thread],
+      scope: DmScope(thread, 'u1'),
+      messages: const [],
+      members: const [],
+      loading: false,
+    );
+  }
+}
+
 void main() {
   testWidgets('auth screen', (t) async {
     t.view.physicalSize = const Size(1280, 720);
@@ -252,8 +271,7 @@ void main() {
         find.byType(HomeScreen), matchesGoldenFile('goldens/home_dm.png'));
   });
 
-  testWidgets('call records', (t) async {
-    t.view.physicalSize = const Size(1280, 720);
+  testWidgets('call records', (t) async {    t.view.physicalSize = const Size(1280, 720);
     t.view.devicePixelRatio = 1.0;
     addTearDown(t.view.resetPhysicalSize);
     await t.pumpWidget(ProviderScope(
@@ -270,6 +288,26 @@ void main() {
     await expectLater(
         find.byType(HomeScreen),
         matchesGoldenFile('goldens/call_records.png'));
+  });
+
+  testWidgets('empty chat', (t) async {
+    t.view.physicalSize = const Size(1280, 720);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+          homeStateProvider.overrideWith(_FakeHomeEmpty.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const HomeScreen())));
+    await t.pumpAndSettle();
+    await expectLater(
+        find.byType(HomeScreen),
+        matchesGoldenFile('goldens/empty_chat.png'));
   });
 
   testWidgets('home narrow hides members', (t) async {

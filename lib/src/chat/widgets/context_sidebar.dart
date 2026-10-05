@@ -7,6 +7,7 @@ import '../../settings/settings_screen.dart';
 import '../../voice/voice_state.dart';
 import '../../widgets/avatar.dart';
 import '../home_state.dart';
+import '../../widgets/toast.dart';
 import '../models.dart';
 
 /// Middle column: community channels or DM list, depending on rail context.
@@ -225,10 +226,7 @@ class VoiceTile extends ConsumerWidget {
             await notifier.join(channel.id);
           }
         } catch (e) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(SnackBar(content: Text('$e')));
-          }
+          if (context.mounted) Toast.show(context, '$e');
         }
       },
       child: Container(

@@ -7,6 +7,7 @@ import '../app/providers.dart';
 import '../transport/grchat_connection.dart';
 import '../widgets/connection_banner.dart';
 import 'home_state.dart';
+import '../widgets/toast.dart';
 import 'models.dart';
 import '../call/call_overlay.dart';
 import '../call/call_state.dart';
@@ -103,7 +104,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _voiceStub(Channel channel) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Войс «${channel.name}» — звонки следующим шагом')));
+    Toast.show(context, 'Войс «${channel.name}» — звонки следующим шагом');
   }
 }

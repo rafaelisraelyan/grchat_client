@@ -6,6 +6,7 @@ import '../../app/theme.dart';
 import '../../widgets/avatar.dart';
 import '../chat_repository.dart';
 import '../home_state.dart';
+import '../../widgets/toast.dart';
 import '../models.dart';
 
 int _rank(String role) => switch (role) {
@@ -175,10 +176,7 @@ class _MemberRowState extends ConsumerState<_MemberRow> {
           }
       }
     } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
-      }
+      if (context.mounted) Toast.show(context, '$e');
     }
   }
 

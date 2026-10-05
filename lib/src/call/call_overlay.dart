@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'call_state.dart';
+import '../widgets/toast.dart';
 
 /// Floating call panel: incoming (accept/decline) + active (video, controls).
 class CallOverlay extends ConsumerStatefulWidget {
@@ -45,8 +46,7 @@ class _CallOverlayState extends ConsumerState<CallOverlay> {
     final st = ref.read(callStateProvider.notifier);
     ref.listen<String?>(callNoticeProvider, (prev, next) {
       if (next != null && next.isNotEmpty) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(next)));
+        Toast.show(context, next);
         ref.read(callNoticeProvider.notifier).clear();
       }
     });

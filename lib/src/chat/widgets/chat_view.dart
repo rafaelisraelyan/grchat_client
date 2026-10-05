@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home_state.dart';
+import '../../widgets/toast.dart';
+import 'empty_chat.dart';
 import '../models.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
@@ -120,11 +122,18 @@ class _ChatViewState extends ConsumerState<ChatView> {
             ? const Center(child: CircularProgressIndicator())
             : data.scope == null
                 ? const Center(child: Text('Выбери канал или личку слева'))
-                : MessageList(
-                    controller: _scroll,
-                    messages: data.messages,
-                    myId: ref.watch(sessionProvider)?.userId ?? '',
-                  ),
+                : data.messages.isEmpty
+                    ? EmptyChat(
+                        scope: data.scope!,
+                        myId:
+                            ref.watch(sessionProvider)?.userId ?? '',
+                      )
+                    : MessageList(
+                        controller: _scroll,
+                        messages: data.messages,
+                        myId:
+                            ref.watch(sessionProvider)?.userId ?? '',
+                      ),
       ),
       if (scope != null)
         Padding(
@@ -232,10 +241,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
             .startCall(dmId: scope.thread.id, video: video);
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(friendlyCallError(e))));
-      }
+      if (mounted) Toast.show(context, friendlyCallError(e));
     }
   }
 
@@ -293,10 +299,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
             });
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Не отправлено: $e')));
-      }
+      if (mounted) Toast.show(context, 'Не удалось отправить сообщение');
     } finally {
       if (mounted) setState(() => _uploading = null);
     }

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home_state.dart';
+import '../../widgets/toast.dart';
 
 Future<void> showServerDialog(BuildContext context, WidgetRef ref) async {
   final name = TextEditingController();
@@ -28,7 +29,6 @@ Future<void> showServerDialog(BuildContext context, WidgetRef ref) async {
                   child: const Text('Отмена')),
               TextButton(
                   onPressed: () async {
-                    final messenger = ScaffoldMessenger.of(context);
                     final repo = ref.read(chatRepositoryProvider);
                     try {
                       if (code.text.trim().isNotEmpty) {
@@ -40,7 +40,7 @@ Future<void> showServerDialog(BuildContext context, WidgetRef ref) async {
                           .read(homeStateProvider.notifier)
                           .refresh();
                     } catch (e) {
-                      messenger.showSnackBar(SnackBar(content: Text('$e')));
+                      if (context.mounted) Toast.show(context, '$e');
                     }
                     if (ctx.mounted) Navigator.pop(ctx);
                   },
@@ -69,15 +69,13 @@ Future<void> showInviteDialog(BuildContext context, WidgetRef ref) async {
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: code));
                       Navigator.pop(ctx);
+                      Toast.show(context, 'Код скопирован');
                     },
                     child: const Text('Копировать')),
               ],
             ));
   } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('$e')));
-    }
+    if (context.mounted) Toast.show(context, '$e');
   }
 }
 
@@ -97,14 +95,13 @@ Future<void> showNewDmDialog(BuildContext context, WidgetRef ref) async {
                   child: const Text('Отмена')),
               TextButton(
                   onPressed: () async {
-                    final messenger = ScaffoldMessenger.of(context);
                     try {
                       final dmId = await ref
                           .read(chatRepositoryProvider)
                           .openDm(nick.text.trim());
                       if (ctx.mounted) Navigator.pop(ctx, dmId);
                     } catch (e) {
-                      messenger.showSnackBar(SnackBar(content: Text('$e')));
+                      if (context.mounted) Toast.show(context, '$e');
                     }
                   },
                   child: const Text('Открыть')),
@@ -185,10 +182,7 @@ Future<void> showSearchDialog(BuildContext context, WidgetRef ref) async {
         await ref.read(homeStateProvider.notifier).selectDm(match.first);
       }
     } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
-      }
+      if (context.mounted) Toast.show(context, '$e');
     }
   }
 }

@@ -8,6 +8,7 @@ import 'package:video_player/video_player.dart';
 import '../../app/theme.dart';
 import '../../widgets/avatar.dart';
 import '../home_state.dart';
+import '../../widgets/toast.dart';
 import '../models.dart';
 import 'call_card.dart';
 
@@ -289,10 +290,7 @@ class _MessageRowState extends State<_MessageRow> {
             .read(homeStateProvider.notifier)
             .editMessage(widget.message.id, tc.text.trim());
       } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('$e')));
-        }
+        if (context.mounted) Toast.show(context, '$e');
       }
     }
   }
@@ -318,10 +316,7 @@ class _MessageRowState extends State<_MessageRow> {
             .read(homeStateProvider.notifier)
             .deleteMessage(widget.message.id);
       } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('$e')));
-        }
+        if (context.mounted) Toast.show(context, '$e');
       }
     }
   }
@@ -423,9 +418,7 @@ Future<void> _editDialog(BuildContext context, WidgetRef ref, Message message) a
     try {
       await ref.read(homeStateProvider.notifier).editMessage(message.id, tc.text.trim());
     } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-      }
+      if (context.mounted) Toast.show(context, '$e');
     }
   }
 }
@@ -444,9 +437,7 @@ Future<void> _deleteConfirm(BuildContext context, WidgetRef ref, Message message
     try {
       await ref.read(homeStateProvider.notifier).deleteMessage(message.id);
     } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-      }
+      if (context.mounted) Toast.show(context, '$e');
     }
   }
 }

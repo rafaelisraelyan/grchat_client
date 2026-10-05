@@ -214,6 +214,32 @@ ThemeData _base(Brightness brightness, GrchatColors c) {
     scaffoldBackgroundColor: c.bgApp,
     dividerColor: c.borderSubtle,
     extensions: [c],
+    // §79: thin desktop scrollbar, ghost until hover/drag.
+    scrollbarTheme: ScrollbarThemeData(
+      thickness: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.hovered) ? 8 : 5),
+      thumbVisibility: WidgetStateProperty.all(false),
+      trackVisibility: WidgetStateProperty.resolveWith(
+          (s) => s.contains(WidgetState.hovered)),
+      interactive: true,
+      radius: const Radius.circular(4),
+      minThumbLength: 40,
+      thumbColor: WidgetStateProperty.resolveWith((s) =>
+          s.contains(WidgetState.hovered) ||
+                  s.contains(WidgetState.dragged)
+              ? c.textMuted.withValues(alpha: 0.65)
+              : c.textMuted.withValues(alpha: 0.22)),
+      trackColor: WidgetStateProperty.resolveWith((s) =>
+          s.contains(WidgetState.hovered)
+              ? c.borderSubtle.withValues(alpha: 0.5)
+              : Colors.transparent),
+    ),
+    // §77 backs the single Toast helper.
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10)),
+    ),
   );
 }
 

@@ -143,7 +143,9 @@ class HomeState extends Notifier<HomeData> {
     final repo = ref.read(chatRepositoryProvider);
     try {
       final comms = await repo.myCommunities();
+      if (!ref.mounted) return;
       final dms = await repo.dmList();
+      if (!ref.mounted) return;
       state = state.copyWith(communities: comms, dms: dms, loading: false);
       _pushSub ??= ref.read(connectionProvider).pushes.listen(_onPush);
       if (comms.isNotEmpty && comms.first.channels.isNotEmpty) {
@@ -151,9 +153,12 @@ class HomeState extends Notifier<HomeData> {
       } else if (dms.isNotEmpty) {
         await selectDm(dms.first);
       }
+      if (!ref.mounted) return;
       await checkMissed();
     } catch (e) {
-      state = state.copyWith(loading: false, error: e.toString());
+      if (ref.mounted) {
+        state = state.copyWith(loading: false, error: e.toString());
+      }
     }
   }
 

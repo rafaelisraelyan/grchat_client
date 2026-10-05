@@ -5,6 +5,7 @@ import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../call/call_state.dart';
 import '../home_state.dart';
+import '../../widgets/toast.dart';
 import '../models.dart';
 
 String _mmss(int totalSec) {
@@ -137,8 +138,7 @@ class CallCard extends ConsumerWidget {
 
   Future<void> _callback(BuildContext context, WidgetRef ref) async {
     if (ref.read(callStateProvider) != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Уже в звонке')));
+      Toast.show(context, 'Уже в звонке');
       return;
     }
     final scope = ref.read(homeStateProvider).scope;
@@ -157,10 +157,7 @@ class CallCard extends ConsumerWidget {
             dmId: scope.thread.id, video: message.call!.video);
       }
     } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(friendlyCallError(e))));
-      }
+      if (context.mounted) Toast.show(context, friendlyCallError(e));
     }
   }
 }
