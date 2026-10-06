@@ -3,8 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:crypto/crypto.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../call/call_diagnostics.dart';
 
 /// Self-update from the public grchat-releases repo (anonymous GitHub API).
 /// Stable channel tracks full releases, beta also takes prereleases.
@@ -16,12 +19,17 @@ class UpdateInfo {
       required this.tag,
       required this.url,
       required this.sizeBytes,
-      required this.prerelease});
+      required this.prerelease,
+      this.sha256Url});
   final String version;
   final String tag;
   final String url;
   final int sizeBytes;
   final bool prerelease;
+
+  /// URL of the `<asset>.sha256` sidecar, if the release published one.
+  /// Absent on older releases — verification is skipped, not failed.
+  final String? sha256Url;
 }
 
 enum UpdateStatus { idle, checking, available, downloading, uptodate, error }
@@ -43,6 +51,10 @@ class UpdateCenter extends Notifier<UpdateUiState> {
       'https://api.github.com/repos/rafaelisraelyan/grchat-releases/releases';
   static const _assetName = 'grchat_client-windows.zip';
   static const _channelKey = 'update_channel';
+
+  /// In-place install only exists on Windows (PowerShell + Expand-Archive).
+  /// Other platforms see the version notice and fetch the dmg by hand.
+  static bool get supportsInstall => Platform.isWindows;
 
   @override
   UpdateUiState build() => const UpdateUiState();
@@ -84,14 +96,17 @@ class UpdateCenter extends Notifier<UpdateUiState> {
         state = const UpdateUiState(status: UpdateStatus.uptodate);
       }
     } catch (e) {
-      state = UpdateUiState(
-          status: UpdateStatus.error, message: 'Не вышло проверить: $e');
+      // Raw exceptions never reach the UI; the detail goes to the log.
+      dlog('update check failed: $e');
+      state = const UpdateUiState(
+          status: UpdateStatus.error,
+          message: 'Не вышло проверить обновление');
     }
   }
 
   Future<void> downloadAndInstall() async {
     final info = state.info;
-    if (info == null) return;
+    if (info == null || !supportsInstall) return;
     state = UpdateUiState(
         status: UpdateStatus.downloading, info: info, progress: 0);
     try {
@@ -101,6 +116,13 @@ class UpdateCenter extends Notifier<UpdateUiState> {
         state = UpdateUiState(
             status: UpdateStatus.downloading, info: info, progress: p);
       });
+      if (!await _verify(zip, info)) {
+        state = UpdateUiState(
+            status: UpdateStatus.error,
+            info: info,
+            message: 'Файл обновления повреждён');
+        return;
+      }
       await _apply(zip);
       // _apply exits the process; if we are still here it failed.
       state = UpdateUiState(
@@ -108,10 +130,11 @@ class UpdateCenter extends Notifier<UpdateUiState> {
           info: info,
           message: 'Не вышло запустить установку');
     } catch (e) {
+      dlog('update download failed: $e');
       state = UpdateUiState(
           status: UpdateStatus.error,
           info: info,
-          message: 'Не вышло скачать: $e');
+          message: 'Не вышло скачать обновление');
     }
   }
 
@@ -130,12 +153,15 @@ class UpdateCenter extends Notifier<UpdateUiState> {
         final pre = (m['prerelease'] ?? false) as bool;
         if (ch == UpdateChannel.release && pre) continue;
         String? url;
+        String? shaUrl;
         var size = 0;
         for (final a in (m['assets'] as List? ?? const [])) {
           final am = a as Map<String, dynamic>;
           if (am['name'] == _assetName) {
             url = am['browser_download_url'] as String?;
             size = (am['size'] as num?)?.toInt() ?? 0;
+          } else if (am['name'] == '$_assetName.sha256') {
+            shaUrl = am['browser_download_url'] as String?;
           }
         }
         if (url == null) continue;
@@ -146,6 +172,7 @@ class UpdateCenter extends Notifier<UpdateUiState> {
           'url': url,
           'size': size,
           'pre': pre,
+          'sha256': shaUrl,
         };
       }
       return null;
@@ -162,7 +189,40 @@ class UpdateCenter extends Notifier<UpdateUiState> {
         tag: m['tag'] as String,
         url: m['url'] as String,
         sizeBytes: m['size'] as int,
-        prerelease: m['pre'] as bool);
+        prerelease: m['pre'] as bool,
+        sha256Url: m['sha256'] as String?);
+  }
+
+  /// Integrity gate before executing anything: the zip is unpacked over the
+  /// install dir and relaunched, so a corrupt or swapped file is a code-exec
+  /// vector. Releases without a sidecar (older than 1.1.1) skip the check.
+  Future<bool> _verify(File zip, UpdateInfo info) async {
+    final shaUrl = info.sha256Url;
+    if (shaUrl == null || shaUrl.isEmpty) return true;
+    final expected = (await _fetchText(shaUrl)).split(RegExp(r'\s+')).first;
+    if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(expected)) {
+      dlog('update sha sidecar malformed');
+      return false;
+    }
+    final digest = sha256.convert(await zip.readAsBytes()).toString();
+    final ok = digest.toLowerCase() == expected.toLowerCase();
+    if (!ok) dlog('update sha mismatch');
+    return ok;
+  }
+
+  Future<String> _fetchText(String url) async {
+    final client = HttpClient();
+    try {
+      final req = await client.getUrl(Uri.parse(url));
+      req.headers.set('User-Agent', 'grchat-client');
+      final resp = await req.close().timeout(const Duration(seconds: 15));
+      if (resp.statusCode != 200) {
+        throw HttpException('HTTP ${resp.statusCode}');
+      }
+      return (await resp.transform(utf8.decoder).join()).trim();
+    } finally {
+      client.close();
+    }
   }
 
   Future<void> _download(
@@ -216,6 +276,13 @@ class UpdateCenter extends Notifier<UpdateUiState> {
     final m = RegExp(r'(\d+)\.(\d+)\.(\d+)').firstMatch(tag);
     return m == null ? '0.0.0' : '${m[1]}.${m[2]}.${m[3]}';
   }
+
+  /// Test seam for the release gate (see test/update_service_test.dart).
+  static String numbersForTest(String tag) => _numbers(tag);
+
+  /// Test seam for the release gate (see test/update_service_test.dart).
+  static bool isNewerForTest(String remote, String current) =>
+      _isNewer(remote, current);
 
   static bool _isNewer(String remote, String current) {
     List<int> parts(String v) =>
