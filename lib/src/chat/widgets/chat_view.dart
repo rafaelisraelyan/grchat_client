@@ -1,5 +1,4 @@
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -608,11 +607,11 @@ class _ChatViewState extends ConsumerState<ChatView> {
       return;
     }
     final file = picked.first;
-    DesktopLog.write(
-        'picker: selected ${picked.length} first=${file.name} size=${file.size}');
+    DesktopLog.write('picker: selected ${picked.length} first=${file.name}');
     late final Uint8List bytes;
     try {
       bytes = await file.xFile.readAsBytes();
+      DesktopLog.write('picker: read ${bytes.length} bytes');
     } catch (e) {
       DesktopLog.write('picker: read failed $e');
       if (mounted) Toast.show(context, 'Не удалось прочитать файл.');
