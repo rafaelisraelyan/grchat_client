@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../widgets/avatar.dart';
+import '../../widgets/esc_pop.dart';
 import '../../widgets/toast.dart';
 import '../home_state.dart';
 import '../models.dart';
@@ -61,11 +62,17 @@ class _PostCardState extends ConsumerState<PostCard> {
                       ]),
                 ),
                 if (_hover)
-                  PopupMenuButton<String>(
-                    icon: const Icon(Icons.more_horiz, size: 18),
-                    tooltip: 'Действия',
-                    onSelected: (a) => _run(a),
-                    itemBuilder: (ctx) => [
+                  IgnorePointer(
+                    ignoring: !_hover,
+                    child: AnimatedOpacity(
+                      duration:
+                          const Duration(milliseconds: 120),
+                      opacity: _hover ? 1 : 0,
+                      child: PopupMenuButton<String>(
+                        icon: const Icon(Icons.more_horiz, size: 18),
+                        tooltip: 'Действия',
+                        onSelected: (a) => _run(a),
+                        itemBuilder: (ctx) => [
                       if (widget.canModerate) ...[
                         const PopupMenuItem(
                             value: 'edit',
@@ -77,6 +84,8 @@ class _PostCardState extends ConsumerState<PostCard> {
                           value: 'copy',
                           child: Text('Копировать текст')),
                     ],
+                  ),
+                    ),
                   ),
               ]),
               if (m.text.isNotEmpty) ...[
@@ -105,8 +114,9 @@ class _PostCardState extends ConsumerState<PostCard> {
         if (mounted) Toast.show(context, 'Текст скопирован');
       case 'edit':
         final tc = TextEditingController(text: m.text);
-        final ok = await showDialog<bool>(
+        final ok = await showEscDialog<bool>(
             context: context,
+            autofocus: false,
             builder: (ctx) => AlertDialog(
                   title: const Text('Редактировать публикацию'),
                   content: TextField(
@@ -135,7 +145,7 @@ class _PostCardState extends ConsumerState<PostCard> {
         }
       case 'delete':
         final hasFiles = m.attachments.isNotEmpty;
-        final ok = await showDialog<bool>(
+        final ok = await showEscDialog<bool>(
             context: context,
             builder: (ctx) => AlertDialog(
                   title: const Text('Удалить публикацию?'),

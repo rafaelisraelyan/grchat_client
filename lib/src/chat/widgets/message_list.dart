@@ -8,6 +8,7 @@ import 'package:video_player/video_player.dart';
 import '../../app/theme.dart';
 import '../../widgets/avatar.dart';
 import '../home_state.dart';
+import '../../widgets/esc_pop.dart';
 import '../../widgets/toast.dart';
 import '../models.dart';
 import 'call_card.dart';
@@ -234,11 +235,18 @@ class _MessageRowState extends State<_MessageRow> {
                 AttachmentView(attachment: a),
             ],
           ),
-          if (_hover && widget.mine)
+          if (widget.mine)
             Positioned(
               right: 4,
               top: 0,
-              child: _HoverActions(message: m),
+              child: IgnorePointer(
+                ignoring: !_hover,
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 120),
+                  opacity: _hover ? 1 : 0,
+                  child: _HoverActions(message: m),
+                ),
+              ),
             ),
         ]),
       ),
@@ -404,8 +412,9 @@ class _HoverBtn extends ConsumerWidget {
 
 Future<void> _editDialog(BuildContext context, WidgetRef ref, Message message) async {
   final tc = TextEditingController(text: message.text);
-  final ok = await showDialog<bool>(
+  final ok = await showEscDialog<bool>(
       context: context,
+      autofocus: false,
       builder: (ctx) => AlertDialog(
             title: const Text('Изменить сообщение'),
             content: TextField(controller: tc, autofocus: true, maxLines: 4, decoration: const InputDecoration(border: OutlineInputBorder())),
@@ -424,7 +433,7 @@ Future<void> _editDialog(BuildContext context, WidgetRef ref, Message message) a
 }
 
 Future<void> _deleteConfirm(BuildContext context, WidgetRef ref, Message message) async {
-  final ok = await showDialog<bool>(
+  final ok = await showEscDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
             title: const Text('Удалить сообщение?'),

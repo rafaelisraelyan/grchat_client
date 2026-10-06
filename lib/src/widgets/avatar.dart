@@ -61,7 +61,8 @@ class ServerTile extends StatelessWidget {
               ),
             ),
           ),
-        Container(
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
           width: 44,
           height: 44,
           decoration: BoxDecoration(
@@ -109,7 +110,8 @@ class HomeTile extends StatelessWidget {
                 ),
               ),
             ),
-          Container(
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
             width: 44,
             height: 44,
             decoration: BoxDecoration(

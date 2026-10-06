@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../search/search_address.dart';
+import '../../widgets/esc_pop.dart';
 import '../../widgets/avatar.dart';
 import '../chat_repository.dart';
 import '../home_state.dart';
@@ -108,18 +109,25 @@ class _MemberRowState extends ConsumerState<_MemberRow> {
                 ]),
           ),
           if (_hover)
-            PopupMenuButton<_ModAction>(
-              icon: const Icon(Icons.more_vert, size: 16),
-              tooltip: 'Действия',
-              onSelected: (a) =>
-                  _run(context, ref, repo, communityId, m, a),
-              itemBuilder: (ctx) => [
-                for (final a in [
-                  ..._actions(myRole, m, myId),
-                  _ModAction.copy
-                ])
-                  PopupMenuItem(value: a, child: Text(a.label)),
-              ],
+            IgnorePointer(
+              ignoring: !_hover,
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 120),
+                opacity: _hover ? 1 : 0,
+                child: PopupMenuButton<_ModAction>(
+                  icon: const Icon(Icons.more_vert, size: 16),
+                  tooltip: 'Действия',
+                  onSelected: (a) =>
+                      _run(context, ref, repo, communityId, m, a),
+                  itemBuilder: (ctx) => [
+                    for (final a in [
+                      ..._actions(myRole, m, myId),
+                      _ModAction.copy
+                    ])
+                      PopupMenuItem(value: a, child: Text(a.label)),
+                  ],
+                ),
+              ),
             ),
         ]),
       ),
@@ -198,8 +206,9 @@ class _MemberRowState extends ConsumerState<_MemberRow> {
       BuildContext context, String title,
       {bool required = false}) async {
     final tc = TextEditingController();
-    final ok = await showDialog<bool>(
+    final ok = await showEscDialog<bool>(
         context: context,
+        autofocus: false,
         builder: (ctx) => AlertDialog(
               title: Text(title),
               content: TextField(
@@ -226,7 +235,7 @@ class _MemberRowState extends ConsumerState<_MemberRow> {
 
   Future<String?> _askRole(BuildContext context, String nick) {
     const roles = ['admin', 'mod', 'member'];
-    return showDialog<String>(
+    return showEscDialog<String>(
         context: context,
         builder: (ctx) => SimpleDialog(
               title: Text('Роль для $nick'),

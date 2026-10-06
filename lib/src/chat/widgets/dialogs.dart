@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../search/find_dialog.dart';
 import '../../search/search_address.dart';
 import '../../search/search_results.dart';
+import '../../widgets/esc_pop.dart';
 import '../home_state.dart';
 import '../../widgets/toast.dart';
 
@@ -14,7 +15,7 @@ Future<void> showServerDialog(BuildContext context, WidgetRef ref) async {
   final code = TextEditingController();
   var isPrivate = false;
   String? error;
-  await showDialog(
+  await showEscDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
             builder: (ctx, setD) => AlertDialog(
@@ -106,7 +107,7 @@ Future<void> _openCommunity(WidgetRef ref, HomeState st, String communityId,
 
 /// The "+" menu in the rail: find first, create second. Never mixed.
 Future<void> showAddMenu(BuildContext context, WidgetRef ref) async {
-  final pick = await showDialog<String>(
+  final pick = await showEscDialog<String>(
       context: context,
       builder: (ctx) => SimpleDialog(
             title: const Text('Добавить'),
@@ -143,7 +144,7 @@ Future<void> showCreateChannelDialog(
   final description = TextEditingController();
   var isPrivate = false;
   String? error;
-  await showDialog(
+  await showEscDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
             builder: (ctx, setD) => AlertDialog(
@@ -228,7 +229,7 @@ Future<void> showChannelGrantDialog(
   final nick = TextEditingController();
   var role = 'member';
   String? error;
-  await showDialog(
+  await showEscDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
             builder: (ctx, setD) => AlertDialog(
@@ -304,7 +305,7 @@ class _RepoFindApi implements FindSearchApi {
 /// Unified find dialog wired to the live backend + navigation.
 Future<void> showFindDialog(BuildContext context, WidgetRef ref) async {
   final st = ref.read(homeStateProvider.notifier);
-  await showDialog(
+  await showEscDialog(
       context: context,
       builder: (ctx) => FindDialog(
             search: _RepoFindApi(ref),
@@ -402,7 +403,7 @@ Future<void> showInviteDialog(BuildContext context, WidgetRef ref) async {
         .read(chatRepositoryProvider)
         .createInvite(community.id);
     if (!context.mounted) return;
-    await showDialog(
+    await showEscDialog(
         context: context,
         builder: (ctx) => AlertDialog(
               title: const Text('Инвайт-код'),
@@ -426,7 +427,7 @@ Future<void> showInviteDialog(BuildContext context, WidgetRef ref) async {
 
 Future<void> showNewDmDialog(BuildContext context, WidgetRef ref) async {
   final nick = TextEditingController();
-  final id = await showDialog<String>(
+  final id = await showEscDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
             title: const Text('Новая личка'),
@@ -466,7 +467,7 @@ Future<void> showSearchDialog(BuildContext context, WidgetRef ref) async {
   final nick = TextEditingController();
   String? found;
   String? error;
-  await showDialog(
+  await showEscDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
             builder: (ctx, setD) => AlertDialog(
