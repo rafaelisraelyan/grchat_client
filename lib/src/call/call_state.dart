@@ -25,6 +25,7 @@ class ActiveCall {
     this.remoteVideo = false,
     this.linkDown = false,
     this.minimized = false,
+    this.dmId,
   });
 
   final String callId;
@@ -44,6 +45,10 @@ class ActiveCall {
 
   /// Presentation only: mini overlay vs centered window (§46–§48).
   final bool minimized;
+
+  /// DM this call belongs to, if dialed by dm (group redial needs it:
+  /// group calls have no peer nick).
+  final String? dmId;
 
   ActiveCall copyWith({
     CallPhase? phase,
@@ -66,6 +71,7 @@ class ActiveCall {
         remoteVideo: remoteVideo ?? this.remoteVideo,
         linkDown: linkDown ?? this.linkDown,
         minimized: minimized ?? this.minimized,
+        dmId: dmId,
       );
 }
 
@@ -269,6 +275,8 @@ class CallState extends Notifier<ActiveCall?> {
   Future<void> startCall(
       {String? peerNick, String? dmId, required bool video}) async {
     if (state != null) return;
+    // A pending redial belongs to the previous attempt.
+    ref.read(callRedialProvider.notifier).clear();
     final api = ref.read(callApiProvider);
     final name = peerNick ?? 'Группа';
     state = ActiveCall(
@@ -302,8 +310,10 @@ class CallState extends Notifier<ActiveCall?> {
             peerNick: cur.peerNick,
             video: cur.video,
             outgoing: true,
+            dmId: dmId,
             phase: CallPhase.ringing);
         // Unanswered outgoing: stop ringing before the server sweep (60s).
+        // Offer redial (§94) instead of a dead-end toast.
         _ringTimer?.cancel();
         _ringTimer = Timer(const Duration(seconds: 50), () async {
           final c = state;
@@ -312,7 +322,11 @@ class CallState extends Notifier<ActiveCall?> {
               c.phase != CallPhase.ringing) {
             return;
           }
-          _notice('Нет ответа');
+          ref.read(callRedialProvider.notifier).offer(CallRedial(
+              reason: 'Нет ответа',
+              peerNick: peerNick,
+              dmId: dmId,
+              video: video));
           await hangup();
         });
       }
@@ -325,6 +339,7 @@ class CallState extends Notifier<ActiveCall?> {
   Future<void> acceptIncoming() async {
     final cur = state;
     if (cur == null || cur.outgoing) return;
+    ref.read(callRedialProvider.notifier).clear();
     final api = ref.read(callApiProvider);
     try {
       final answer = await _pc!.createAnswer({});
@@ -584,9 +599,13 @@ class CallState extends Notifier<ActiveCall?> {
     final by = (ev['by_nick'] ?? cur.peerNick).toString();
     if (cur.phase == CallPhase.ringing) {
       if (cur.outgoing) {
-        _notice(reason == 'declined'
-            ? '$by отклонил звонок'
-            : 'Нет ответа');
+        // Unanswered either way (decline or timeout race): redial §94.
+        // Group dials redial by dm; 1-1 by nick ('Группа' is a label).
+        ref.read(callRedialProvider.notifier).offer(CallRedial(
+            reason: reason == 'declined' ? '$by отклонил звонок' : 'Нет ответа',
+            peerNick: cur.dmId == null ? cur.peerNick : null,
+            dmId: cur.dmId,
+            video: cur.video));
       } else {
         _notice('Пропущенный звонок от ${cur.peerNick}');
       }
@@ -596,6 +615,7 @@ class CallState extends Notifier<ActiveCall?> {
 
   Future<void> _prepareIncoming(Map<String, dynamic> ev) async {
     try {
+      ref.read(callRedialProvider.notifier).clear();
       final callId = ev['call_id'] as String;
       final sdp = (ev['sdp'] ?? '') as String;
       final video = sdp.contains('m=video');
@@ -749,3 +769,29 @@ class CallNotice extends Notifier<String?> {
 
 final callNoticeProvider =
     NotifierProvider<CallNotice, String?>(CallNotice.new);
+
+/// Redial offer after an unanswered outgoing call (§94): the ringing call
+/// ended (local timeout or peer decline) and the user gets the reason plus a
+/// "Позвонить снова" action instead of a dead-end toast.
+class CallRedial {
+  const CallRedial(
+      {required this.reason,
+      required this.peerNick,
+      required this.dmId,
+      required this.video});
+  final String reason;
+  final String? peerNick;
+  final String? dmId;
+  final bool video;
+}
+
+class CallRedialStack extends Notifier<CallRedial?> {
+  @override
+  CallRedial? build() => null;
+
+  void offer(CallRedial r) => state = r;
+  void clear() => state = null;
+}
+
+final callRedialProvider =
+    NotifierProvider<CallRedialStack, CallRedial?>(CallRedialStack.new);
