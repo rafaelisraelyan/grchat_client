@@ -10,8 +10,6 @@ import '../notify/notify.dart';
 import '../transport/grchat_connection.dart';
 import '../widgets/connection_banner.dart';
 import 'home_state.dart';
-import '../widgets/toast.dart';
-import 'models.dart';
 import '../call/call_surface.dart';
 import '../call/group_call.dart';
 import '../call/group_call_window.dart';
@@ -124,14 +122,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ContextSidebar(
                   onSearch: () => showSearchDialog(context, ref),
                   onNewDm: () => showNewDmDialog(context, ref),
-                  onVoice: _voiceStub,
                 ),
               Expanded(
                   child: ChatView(
                 onToggleMembers: () =>
                     setState(() => _membersOpen = !_membersOpen),
                 onInvite: () => showInviteDialog(context, ref),
-                onVoice: _voiceStub,
               )),
               if (showMembers)
                 isBroadcast
@@ -156,9 +152,5 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
       ),
     );
-  }
-
-  void _voiceStub(Channel channel) {
-    Toast.show(context, 'Войс «${channel.name}» — звонки следующим шагом');
   }
 }

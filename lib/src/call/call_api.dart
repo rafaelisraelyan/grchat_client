@@ -78,4 +78,17 @@ class CallApi {
       room: r['room'] as String
     );
   }
+
+  /// LiveKit SFU join token for a voice channel I may enter (audio-only).
+  Future<({String url, String token, String room})> voiceToken(
+      String channelId) async {
+    final r = await _conn.request('voice_token',
+        fields: {..._auth, 'channel_id': channelId});
+    _throwIfError(r);
+    return (
+      url: r['url'] as String,
+      token: r['token'] as String,
+      room: r['room'] as String
+    );
+  }
 }
