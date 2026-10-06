@@ -36,12 +36,46 @@ void main() {
     });
 
     test('self comes first with own flags', () {
-      final peers =
-          merge(selfMuted: true, selfSpeaking: true);
+      final peers = merge(selfMuted: false, selfSpeaking: true);
       expect(peers.first.id, 'u1');
       expect(peers.first.self, isTrue);
-      expect(peers.first.muted, isTrue);
+      expect(peers.first.muted, isFalse);
       expect(peers.first.speaking, isTrue);
+    });
+
+    test('muted mic never shows a speaking ring', () {
+      // A muted mic transmits nothing: lighting the ring would promise
+      // audible speech. Same for a server mute and a local deafen.
+      final self = merge(selfMuted: true, selfSpeaking: true);
+      expect(self.first.speaking, isFalse);
+      final sm = mergeVoicePeers(
+          signalingIds: const {'u1', 'u2'},
+          nicks: const {'u1': 'Rafael', 'u2': 'Second'},
+          room: const {
+            'u2': (name: 'Second', speaking: true, muted: false),
+          },
+          myId: 'u1',
+          myNick: 'Rafael',
+          selfMuted: false,
+          selfSpeaking: false,
+          serverMuted: const {'u2'});
+      final second = sm.firstWhere((p) => p.id == 'u2');
+      expect(second.serverMuted, isTrue);
+      expect(second.muted, isTrue);
+      expect(second.speaking, isFalse);
+      final df = mergeVoicePeers(
+          signalingIds: const {'u1', 'u2'},
+          nicks: const {'u1': 'Rafael', 'u2': 'Second'},
+          room: const {
+            'u2': (name: 'Second', speaking: true, muted: false),
+          },
+          myId: 'u1',
+          myNick: 'Rafael',
+          selfMuted: false,
+          selfSpeaking: false,
+          deafened: true);
+      expect(df.firstWhere((p) => p.id == 'u2').muted, isTrue);
+      expect(df.firstWhere((p) => p.id == 'u2').localMuted, isTrue);
     });
 
     test('between join and room connect shows silent, not ghost', () {
@@ -94,9 +128,30 @@ void main() {
           'Это не голосовой канал');
       expect(friendlyVoiceError(GrchatException('NOT_FOUND')),
           'Канал не найден');
+      expect(friendlyVoiceError(GrchatException('CHANNEL_FULL')),
+          'Канал полон');
+      expect(friendlyVoiceError(GrchatException('NO_PERMISSION')),
+          'Нет прав');
+      expect(friendlyVoiceError(GrchatException('MUTED_BY_SERVER')),
+          'Тебя замутили — микрофон заблокирован');
       expect(friendlyVoiceError(GrchatException('NOPE')),
           'Не вышло зайти в войс');
       expect(friendlyVoiceError(StateError('x')), 'Не вышло зайти в войс');
+    });
+  });
+
+  group('VoiceSession model', () {
+    test('deafen and limit survive copyWith', () {
+      const s = VoiceSession(
+          channelId: 'c1', title: 'Pit', room: 'grchat_vc_c1');
+      expect(s.deafened, isFalse);
+      expect(s.serverMutedMe, isFalse);
+      expect(s.userLimit, 0);
+      final d = s.copyWith(deafened: true, muted: true, userLimit: 5);
+      expect(d.deafened, isTrue);
+      expect(d.muted, isTrue);
+      expect(d.userLimit, 5);
+      expect(d.channelId, 'c1');
     });
   });
 }

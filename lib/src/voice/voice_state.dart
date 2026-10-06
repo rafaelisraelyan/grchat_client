@@ -93,12 +93,20 @@ class VoicePeer {
       required this.nick,
       required this.speaking,
       required this.muted,
-      required this.self});
+      required this.self,
+      this.serverMuted = false,
+      this.localMuted = false});
   final String id;
   final String nick;
   final bool speaking;
+
+  /// Effective mute (icon): self mic, remote track, server, local or deafen.
   final bool muted;
   final bool self;
+
+  /// Muted by a moderator (lock + label), vs muted locally by me.
+  final bool serverMuted;
+  final bool localMuted;
 }
 
 /// Merge signaling roster (authoritative membership + nicks) with room
@@ -114,6 +122,9 @@ List<VoicePeer> mergeVoicePeers({
   required String myNick,
   required bool selfMuted,
   required bool selfSpeaking,
+  Set<String> mutedPeers = const {},
+  Set<String> serverMuted = const {},
+  bool deafened = false,
 }) {
   final peers = <VoicePeer>[];
   final ids = {...signalingIds};
@@ -122,14 +133,21 @@ List<VoicePeer> mergeVoicePeers({
     final self = id == myId;
     final r = room[id];
     final fallback = id.length > 8 ? id.substring(0, 8) : id;
+    final sm = !self && serverMuted.contains(id);
+    final lm = !self && (mutedPeers.contains(id) || deafened);
+    final effectiveMuted =
+        self ? selfMuted : (r?.muted ?? true) || sm || lm;
     peers.add(VoicePeer(
         id: id,
         nick: self
             ? myNick
             : (nicks[id] ?? r?.name ?? fallback),
-        speaking: self ? selfSpeaking : (r?.speaking ?? false),
-        muted: self ? selfMuted : (r?.muted ?? true),
-        self: self));
+        speaking: (self ? selfSpeaking : (r?.speaking ?? false)) &&
+            !effectiveMuted,
+        muted: effectiveMuted,
+        self: self,
+        serverMuted: sm,
+        localMuted: lm));
   }
   peers.sort((a, b) {
     if (a.self != b.self) return a.self ? -1 : 1;
@@ -141,12 +159,15 @@ List<VoicePeer> mergeVoicePeers({
 /// A joined voice channel: persistent SFU room, audio-only, no ringing.
 /// Separate from the signaling roster (VoiceState): this is the media session.
 class VoiceSession {
-  VoiceSession(
+  const VoiceSession(
       {required this.channelId,
       required this.title,
       required this.room,
       this.peers = const [],
-      this.muted = false});
+      this.muted = false,
+      this.deafened = false,
+      this.serverMutedMe = false,
+      this.userLimit = 0});
 
   final String channelId;
   final String title;
@@ -154,12 +175,30 @@ class VoiceSession {
   final List<VoicePeer> peers;
   final bool muted;
 
-  VoiceSession copyWith({List<VoicePeer>? peers, bool? muted}) => VoiceSession(
-      channelId: channelId,
-      title: title,
-      room: room,
-      peers: peers ?? this.peers,
-      muted: muted ?? this.muted);
+  /// Deaf: mic off + every remote publication unsubscribed (self-only).
+  final bool deafened;
+
+  /// A moderator muted me: my mic stays locked until they unmute.
+  final bool serverMutedMe;
+
+  /// Channel cap from voice_members, 0 = unlimited.
+  final int userLimit;
+
+  VoiceSession copyWith(
+          {List<VoicePeer>? peers,
+          bool? muted,
+          bool? deafened,
+          bool? serverMutedMe,
+          int? userLimit}) =>
+      VoiceSession(
+          channelId: channelId,
+          title: title,
+          room: room,
+          peers: peers ?? this.peers,
+          muted: muted ?? this.muted,
+          deafened: deafened ?? this.deafened,
+          serverMutedMe: serverMutedMe ?? this.serverMutedMe,
+          userLimit: userLimit ?? this.userLimit);
 }
 
 final voiceSessionApiProvider = Provider<CallApi>((ref) {
@@ -171,6 +210,17 @@ final voiceSessionApiProvider = Provider<CallApi>((ref) {
 class VoiceSessionState extends Notifier<VoiceSession?> {
   Room? _room;
   EventsListener<RoomEvent>? _roomEvents;
+  StreamSubscription<Map<String, dynamic>>? _pushSub;
+
+  /// Local-only mutes (deafen one person for myself). Never leaves the device.
+  final Set<String> mutedPeers = {};
+
+  /// Moderator mutes for my channel (signaling). Enforced on every sync.
+  final Set<String> serverMuted = {};
+
+  /// Last applied remote subscription per user: resubscribe only on change,
+  /// never spam the SFU on every speaker event.
+  final Map<String, bool> _appliedSubs = {};
 
   @override
   VoiceSession? build() {
@@ -179,9 +229,49 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     ref.listen(voiceStateProvider, (_, _) {
       final cur = state;
       if (cur == null) return;
-      _refreshNicks(cur.channelId).then((_) => _syncPeers());
+      _refreshRoster(cur.channelId).then((_) => _syncPeers());
     });
+    _pushSub ??=
+        ref.read(connectionProvider).pushes.listen(_onPush);
+    ref.onDispose(() => _pushSub?.cancel());
     return null;
+  }
+
+  void ensureListening() {
+    _pushSub ??=
+        ref.read(connectionProvider).pushes.listen(_onPush);
+  }
+
+  void _onPush(Map<String, dynamic> ev) {
+    final type = ev['type']?.toString();
+    if (type != 'voice_muted' && type != 'voice_unmuted') return;
+    final cur = state;
+    if (cur == null || ev['channel_id'] != cur.channelId) return;
+    final uid = (ev['user_id'] ?? '').toString();
+    if (uid.isEmpty) return;
+    if (type == 'voice_muted') {
+      serverMuted.add(uid);
+    } else {
+      serverMuted.remove(uid);
+    }
+    final myId = ref.read(sessionProvider)?.userId ?? '';
+    if (uid == myId) {
+      if (type == 'voice_muted') {
+        // Locked immediately, even mid-sentence.
+        _lockMic();
+      }
+      state = state?.copyWith(serverMutedMe: type == 'voice_muted');
+    }
+    _syncPeers();
+  }
+
+  /// Moderator locked my mic: force it off now, keep it locked.
+  Future<void> _lockMic() async {
+    try {
+      await _room?.localParticipant?.setMicrophoneEnabled(false);
+    } catch (_) {}
+    final live = state;
+    if (live != null) state = live.copyWith(muted: true);
   }
 
   /// Click a voice channel: signaling presence first, then the SFU room with
@@ -231,6 +321,9 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     dlog('voice left');
     await _leaveRoom();
     state = null;
+    mutedPeers.clear();
+    serverMuted.clear();
+    _appliedSubs.clear();
     try {
       await ref.read(voiceStateProvider.notifier).leave();
     } catch (_) {}
@@ -240,6 +333,10 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     final cur = state;
     if (cur == null) return;
     final muted = !cur.muted;
+    if (!muted && cur.serverMutedMe) {
+      // Locked by a moderator: unmute is refused, not silently dropped.
+      throw GrchatException('MUTED_BY_SERVER');
+    }
     try {
       await _room?.localParticipant?.setMicrophoneEnabled(!muted);
     } catch (_) {}
@@ -247,6 +344,102 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     if (live == null || live.channelId != cur.channelId) return;
     state = live.copyWith(muted: muted);
     _syncPeers();
+  }
+
+  /// Deafen: mic off + stop hearing everyone (self-only). Undeafen restores
+  /// hearing; the mic stays off until unmuted separately (Discord behaviour).
+  Future<void> toggleDeafen() async {
+    final cur = state;
+    if (cur == null) return;
+    final deaf = !cur.deafened;
+    try {
+      if (deaf) {
+        await _room?.localParticipant?.setMicrophoneEnabled(false);
+      }
+    } catch (_) {}
+    final live = state;
+    if (live == null || live.channelId != cur.channelId) return;
+    state = live.copyWith(deafened: deaf, muted: deaf ? true : live.muted);
+    await _enforceSubscriptions();
+    _syncPeers();
+  }
+
+  /// Mute one person for myself only (no slider in SDK 2.13: binary on/off).
+  Future<void> setPeerMuted(String userId, bool muted) async {
+    final cur = state;
+    if (cur == null || userId.isEmpty) return;
+    if (muted) {
+      mutedPeers.add(userId);
+    } else {
+      mutedPeers.remove(userId);
+    }
+    await _enforceSubscriptions();
+    _syncPeers();
+  }
+
+  /// Moderator mute in a channel. Works without joining it; when it targets
+  /// my own channel the lock applies immediately, otherwise the roster
+  /// refresh picks it up. Returns a confirmation line for the toast.
+  Future<String?> serverMute(
+      {required String channelId,
+      required String userId,
+      required bool muted}) async {
+    final s = ref.read(sessionProvider);
+    if (s == null || userId.isEmpty) return null;
+    final r = await ref.read(connectionProvider).request('voice_mute',
+        fields: {
+          'session_token': s.token,
+          'channel_id': channelId,
+          'user_id': userId,
+          'muted': muted,
+        });
+    if (r['type'] == 'error') {
+      throw GrchatException(r['code']?.toString() ?? 'UNKNOWN');
+    }
+    final nick = _nicks[channelId]?[userId] ?? 'Участник';
+    if (state?.channelId == channelId) {
+      if (muted) {
+        serverMuted.add(userId);
+      } else {
+        serverMuted.remove(userId);
+      }
+      final myId = s.userId;
+      if (userId == myId) {
+        if (muted) {
+          _lockMic();
+          state = state?.copyWith(serverMutedMe: true);
+        } else {
+          state = state?.copyWith(serverMutedMe: false);
+        }
+      }
+      _syncPeers();
+    }
+    return muted ? '$nick замучен' : '$nick размучен';
+  }
+
+  /// Owner/admin: cap occupants (0 = unlimited). Applies to future joins.
+  Future<void> setLimit(int limit) async {
+    final cur = state;
+    if (cur == null) return;
+    final s = ref.read(sessionProvider);
+    if (s == null) return;
+    final r = await ref.read(connectionProvider).request('voice_limit',
+        fields: {
+          'session_token': s.token,
+          'channel_id': cur.channelId,
+          'user_limit': limit
+        });
+    if (r['type'] == 'error') {
+      throw GrchatException(r['code']?.toString() ?? 'UNKNOWN');
+    }
+    state = cur.copyWith(userLimit: (r['user_limit'] as num?)?.toInt() ?? limit);
+  }
+
+  /// Resolve nicks/mutes/limit for a channel without joining (limit display).
+  Future<void> refreshChannel(String channelId) async {
+    await _refreshRoster(channelId);
+    final cur = state;
+    if (cur != null) _syncPeers();
   }
 
   void _attach(Room room) {
@@ -294,13 +487,50 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
             myNick: s?.nick ?? '?',
             selfMuted: cur.muted,
             selfSpeaking:
-                room?.localParticipant?.isSpeaking ?? false));
+                room?.localParticipant?.isSpeaking ?? false,
+            mutedPeers: mutedPeers,
+            serverMuted: serverMuted,
+            deafened: cur.deafened));
+    _enforceSubscriptions();
+  }
+
+  /// Enforce who I actually hear: server mutes, my local mutes and deafen
+  /// win over the published state. Unsubscribing (not just local gain)
+  /// also stops the media flow. Resubscribes only on change.
+  Future<void> _enforceSubscriptions() async {
+    final cur = state;
+    final room = _room;
+    if (cur == null || room == null) return;
+    for (final p in room.remoteParticipants.values) {
+      final hear = !serverMuted.contains(p.identity) &&
+          !mutedPeers.contains(p.identity) &&
+          !cur.deafened;
+      if (_appliedSubs[p.identity] == hear) continue;
+      _appliedSubs[p.identity] = hear;
+      for (final pub in p.audioTrackPublications) {
+        try {
+          if (hear) {
+            await pub.subscribe();
+          } else {
+            await pub.unsubscribe();
+          }
+        } catch (_) {}
+      }
+    }
   }
 
   /// userId → nick per channel, from voice_members (room names back it up).
   final Map<String, Map<String, String>> _nicks = {};
 
+  /// Channel caps from voice_members, 0 = unlimited.
+  final Map<String, int> limits = {};
+
   Future<void> _refreshNicks(String channelId) async {
+    await _refreshRoster(channelId);
+  }
+
+  /// Roster truth from signaling: nicks, moderator mutes and the user limit.
+  Future<void> _refreshRoster(String channelId) async {
     final s = ref.read(sessionProvider);
     if (s == null) return;
     try {
@@ -308,13 +538,24 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
           fields: {'session_token': s.token, 'channel_id': channelId});
       if (r['type'] == 'error') return;
       final m = <String, String>{};
+      final sm = <String>{};
       for (final e in ((r['members'] as List?) ?? const [])) {
         final mm = e as Map;
         final id = (mm['user_id'] ?? '').toString();
         final nick = (mm['nick'] ?? '').toString();
         if (id.isNotEmpty && nick.isNotEmpty) m[id] = nick;
+        if (id.isNotEmpty && (mm['muted'] as bool? ?? false)) sm.add(id);
       }
       _nicks[channelId] = m;
+      // Server mutes only ever apply to the channel I'm actually in:
+      // resolving another channel's roster (limit display) must not
+      // inherit its locks.
+      if (state?.channelId == channelId) {
+        serverMuted
+          ..clear()
+          ..addAll(sm);
+      }
+      limits[channelId] = (r['user_limit'] as num?)?.toInt() ?? 0;
     } catch (_) {}
   }
 
@@ -344,6 +585,9 @@ String friendlyVoiceError(Object e) {
       'NOT_IN_VOICE' => 'Ты не в войсе',
       'BAD_TYPE' => 'Это не голосовой канал',
       'NOT_FOUND' => 'Канал не найден',
+      'CHANNEL_FULL' => 'Канал полон',
+      'NO_PERMISSION' => 'Нет прав',
+      'MUTED_BY_SERVER' => 'Тебя замутили — микрофон заблокирован',
       _ => 'Не вышло зайти в войс',
     };
   }
