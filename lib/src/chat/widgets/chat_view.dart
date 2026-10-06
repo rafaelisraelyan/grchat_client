@@ -1,9 +1,11 @@
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home_state.dart';
+import '../../desktop/desktop_log.dart';
 import '../../search/search_address.dart';
 import '../../widgets/avatar.dart';
 import '../../widgets/toast.dart';
@@ -592,10 +594,30 @@ class _ChatViewState extends ConsumerState<ChatView> {
   Future<void> _pickAndSend() async {
     final scope = ref.read(homeStateProvider).scope;
     if (scope == null) return;
-    final picked = await FilePicker.pickFiles();
-    if (picked.isEmpty) return;
+    DesktopLog.write('picker: requested');
+    List<PlatformFile> picked;
+    try {
+      picked = await FilePicker.pickFiles();
+    } catch (e) {
+      DesktopLog.write('picker: open failed $e');
+      if (mounted) Toast.show(context, 'Не удалось открыть выбор файла.');
+      return;
+    }
+    if (picked.isEmpty) {
+      DesktopLog.write('picker: cancelled by user');
+      return;
+    }
     final file = picked.first;
-    final bytes = await file.xFile.readAsBytes();
+    DesktopLog.write(
+        'picker: selected ${picked.length} first=${file.name} size=${file.size}');
+    late final Uint8List bytes;
+    try {
+      bytes = await file.xFile.readAsBytes();
+    } catch (e) {
+      DesktopLog.write('picker: read failed $e');
+      if (mounted) Toast.show(context, 'Не удалось прочитать файл.');
+      return;
+    }
     if (!mounted) return;
     setState(() => _uploading = 0);
     try {
