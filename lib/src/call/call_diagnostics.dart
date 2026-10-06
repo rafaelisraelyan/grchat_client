@@ -224,3 +224,18 @@ String buildDebugSummary({
       'video=${stats.inboundVideoBytes}B/${stats.inboundVideoPackets}p\n'
       'Selected ICE: ${stats.selectedCandidateType}';
 }
+
+/// Short ICE candidate digest: protocol + type + family. No credentials.
+String iceDigest(String? candidate) {
+  final c = candidate ?? '';
+  final typ =
+      RegExp(r'typ\s+(\S+)').firstMatch(c)?.group(1) ?? '?';
+  final proto =
+      RegExp(r'^\S+\s+\d+\s+(\S+)').firstMatch(c)?.group(1) ?? '?';
+  final ip = RegExp(r'\s(\d+\.\d+\.\d+\.\d+|[0-9a-fA-F:]+:[0-9a-fA-F:]+)\s')
+          .firstMatch(c)
+          ?.group(1) ??
+      '?';
+  final family = ip.contains(':') ? 'v6' : 'v4';
+  return '$proto/$typ/$family';
+}
