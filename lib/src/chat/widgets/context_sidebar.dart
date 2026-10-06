@@ -169,7 +169,11 @@ class ChannelTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = GrchatColors.of(context);
-    return InkWell(
+    return Semantics(
+      button: true,
+      excludeSemantics: true,
+      label: 'Канал $title',
+      child: InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,
       child: AnimatedContainer(
@@ -202,6 +206,7 @@ class ChannelTile extends StatelessWidget {
                 decoration: BoxDecoration(
                     color: c.accent, shape: BoxShape.circle)),
         ]),
+      ),
       ),
     );
   }
@@ -315,7 +320,11 @@ class DmRow extends StatelessWidget {
         thread.members.where((m) => m.userId != myId).toList();
     final name = thread.title(myId);
     final hasUnread = (unread ?? 0) > 0;
-    return InkWell(
+    return Semantics(
+      button: true,
+      excludeSemantics: true,
+      label: name,
+      child: InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,
       child: AnimatedContainer(
@@ -366,6 +375,7 @@ class DmRow extends StatelessWidget {
                       fontSize: 11, color: Colors.white)),
             ),
         ]),
+      ),
       ),
     );
   }

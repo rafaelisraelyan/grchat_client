@@ -119,6 +119,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       appBar: AppBar(
         actions: [
           IconButton(
+            tooltip: 'Переключить тему',
             icon: const Icon(Icons.brightness_6),
             onPressed: () => ref.read(themeModeProvider.notifier).toggle(),
           ),

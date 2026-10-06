@@ -34,6 +34,7 @@ class MissedBanner extends ConsumerWidget {
             child: const Text('Открыть',
                 style: TextStyle(color: Colors.white))),
         IconButton(
+          tooltip: 'Скрыть',
           iconSize: 16,
           color: Colors.white,
           icon: const Icon(Icons.close),

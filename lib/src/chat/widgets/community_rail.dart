@@ -24,7 +24,12 @@ class CommunityRail extends ConsumerWidget {
         color: GrchatColors.of(context).bgRail,
         child: Column(children: [
           const SizedBox(height: 10),
-          HomeTile(selected: homeOn, onTap: st.goHome),
+          Semantics(
+            button: true,
+            excludeSemantics: true,
+            label: 'Личные сообщения',
+            child: HomeTile(selected: homeOn, onTap: st.goHome),
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Container(
@@ -35,7 +40,12 @@ class CommunityRail extends ConsumerWidget {
           for (var i = 0; i < data.communities.length; i++)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
-              child: InkWell(
+              child: Semantics(
+                button: true,
+                excludeSemantics: true,
+                label:
+                    'Сервер ${data.communities[i].name}',
+                child: InkWell(
                 onTap: () {
                   final c = data.communities[i];
                   if (c.channels.any((ch) => ch.type == 'text')) {
@@ -50,13 +60,18 @@ class CommunityRail extends ConsumerWidget {
                   color: _srvColor(i),
                   selected: data.communities[i].id == curId,
                 ),
+                ),
               ),
             ),
           // Standalone broadcast channels: top-level workspaces (§18).
           for (var i = 0; i < data.myChannels.length; i++)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
-              child: InkWell(
+              child: Semantics(
+                button: true,
+                excludeSemantics: true,
+                label: 'Канал ${data.myChannels[i].name}',
+                child: InkWell(
                 onTap: () =>
                     st.selectStandaloneChannel(data.myChannels[i]),
                 child: ServerTile(
@@ -67,6 +82,7 @@ class CommunityRail extends ConsumerWidget {
                   selected: scope is ChannelScope &&
                       scope.community == null &&
                       scope.channel.id == data.myChannels[i].id,
+                ),
                 ),
               ),
             ),

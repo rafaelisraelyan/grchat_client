@@ -394,7 +394,7 @@ class _HoverBtn extends ConsumerWidget {
             ? _deleteConfirm(context, ref, message)
             : beginInlineEdit(context, message),
         child: Padding(
-          padding: const EdgeInsets.all(7),
+          padding: const EdgeInsets.all(9),
           child: Icon(icon,
               size: 18, color: isDelete ? c.danger : c.textPrimary),
         ),
