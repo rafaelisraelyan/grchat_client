@@ -237,5 +237,6 @@ String iceDigest(String? candidate) {
           ?.group(1) ??
       '?';
   final family = ip.contains(':') ? 'v6' : 'v4';
+  if (typ == '?' && proto == '?') return '?/?/?';
   return '$proto/$typ/$family';
 }
