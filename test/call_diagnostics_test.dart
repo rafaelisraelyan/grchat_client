@@ -101,7 +101,11 @@ void main() {
       expect(
           iceDigest(
               'candidate:1 1 udp 2122260223 192.168.31.21 50001 typ host generation 0'),
-          'udp/host/v4');
+          'udp/host/192.168.31.21');
+      expect(
+          iceDigest(
+              'candidate:1 1 udp 2122260223 abc123.local 50001 typ host generation 0'),
+          'udp/host/abc123.local');
       expect(
           iceDigest(
               'candidate:2 1 udp 1685987071 93.184.216.34 50002 typ srflx raddr 192.168.31.21 rport 50001'),
