@@ -504,7 +504,8 @@ void main() {
     final g = await t.createGesture(kind: ui.PointerDeviceKind.mouse);
     await g.addPointer();
     await g.moveTo(t.getCenter(find.text('Моё сообщение')));
-    await t.pump(const Duration(seconds: 2));
+    // Settle, not a single pump: the hover fade-in needs ticker frames.
+    await t.pumpAndSettle();
     await expectLater(
         find.byType(HomeScreen), matchesGoldenFile('goldens/hover.png'));
     // hover toolbar with visible icons; taps open real dialogs
