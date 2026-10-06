@@ -14,6 +14,12 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- Keep in sync with Release.entitlements: macOS hides LAN addresses
+	     behind <uuid>.local, which only resolves with multicast. A debug build
+	     that works while the release build does not is exactly the trap that
+	     hid the ICE failure - see Release.entitlements for the full story. -->
+	<key>com.apple.security.network.multicast</key>
+	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 </dict>

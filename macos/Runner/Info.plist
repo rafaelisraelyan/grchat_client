@@ -32,5 +32,7 @@
 	<string>Голосовые и видеозвонки</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Видеозвонки и демонстрация экрана</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Голосовые и видеозвонки с пользователями в вашей локальной сети</string>
 </dict>
 </plist>
