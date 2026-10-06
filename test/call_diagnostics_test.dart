@@ -96,6 +96,25 @@ void main() {
     });
   });
 
+  group('iceDigest', () {
+    test('parses protocol, type and family', () {
+      expect(
+          iceDigest(
+              'candidate:1 1 udp 2122260223 192.168.31.21 50001 typ host generation 0'),
+          'udp/host/v4');
+      expect(
+          iceDigest(
+              'candidate:2 1 udp 1685987071 93.184.216.34 50002 typ srflx raddr 192.168.31.21 rport 50001'),
+          'udp/srflx/v4');
+      expect(
+          iceDigest(
+              'candidate:3 1 udp 418199 produce 203.0.113.10 3478 typ relay raddr 93.184.216.34 rport 50002'),
+          'udp/relay/v4');
+      expect(iceDigest(null), '?/?/?');
+      expect(iceDigest('garbage'), '?/?/?');
+    });
+  });
+
   group('buildDebugSummary', () {
     test('contains the key lines, no credentials', () {
       final stats = StatsSummary.summarize(const []);

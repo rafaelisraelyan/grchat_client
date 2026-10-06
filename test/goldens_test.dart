@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grchat_client/src/app/providers.dart';
@@ -881,8 +884,7 @@ void main() {
         matchesGoldenFile('goldens/group_active.png'));
   });
 
-  testWidgets('dm profile panel dark', (t) async {
-    t.view.physicalSize = const Size(1280, 720);
+  testWidgets('dm profile panel dark', (t) async {    t.view.physicalSize = const Size(1280, 720);
     t.view.devicePixelRatio = 1.0;
     addTearDown(t.view.resetPhysicalSize);
     await t.pumpWidget(ProviderScope(
@@ -898,5 +900,38 @@ void main() {
     await t.pumpAndSettle();
     await expectLater(find.byType(HomeScreen),
         matchesGoldenFile('goldens/dm_profile.png'));
+  });
+
+  testWidgets('quick nav palette dark', (t) async {
+    t.view.physicalSize = const Size(1280, 720);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+          homeStateProvider.overrideWith(_FakeHome.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const HomeScreen())));
+    await t.pumpAndSettle();
+    await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await t.sendKeyEvent(LogicalKeyboardKey.keyK);
+    await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await t.pumpAndSettle();
+    if (find.text('Перейти').evaluate().isEmpty) {
+      // Key-event dispatch can be flaky: retry once.
+      await t.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await t.sendKeyEvent(LogicalKeyboardKey.keyK);
+      await t.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await t.pumpAndSettle();
+    }
+    expect(find.text('Перейти'), findsOneWidget);
+    // Capture the whole app: the dialog lives in the Overlay,
+    // outside HomeScreen's render tree.
+    await expectLater(find.byType(MaterialApp),
+        matchesGoldenFile('goldens/quick_nav.png'));
   });
 }

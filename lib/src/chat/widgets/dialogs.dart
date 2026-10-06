@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/providers.dart';
 import '../../search/find_dialog.dart';
 import '../../search/search_address.dart';
 import '../../search/search_results.dart';
@@ -300,6 +301,103 @@ class _RepoFindApi implements FindSearchApi {
   @override
   Future<({String userId, String nick})> findUser(String nick) =>
       ref.read(chatRepositoryProvider).findUser(nick);
+}
+
+/// Quick navigation palette (§81, future Ctrl+K): DMs, servers, channels.
+/// Enter jumps to the first match, Esc closes.
+Future<void> showQuickNav(BuildContext context, WidgetRef ref) async {
+  final st = ref.read(homeStateProvider.notifier);
+  final data = ref.read(homeStateProvider);
+  final myId = ref.read(sessionProvider)?.userId ?? '';
+  final query = TextEditingController();
+  final entries = <_NavEntry>[];
+  for (final d in data.dms) {
+    entries.add(_NavEntry(
+        label: d.title(myId),
+        hint: d.isGroup ? 'Группа' : 'Личка',
+        open: () => st.selectDm(d)));
+  }
+  for (final c in data.communities) {
+    for (final ch in c.channels) {
+      if (ch.type != 'text') continue;
+      entries.add(_NavEntry(
+          label: '# ${ch.name}',
+          hint: c.name,
+          open: () => st.selectChannel(c, ch)));
+    }
+  }
+  for (final ch in data.myChannels) {
+    entries.add(_NavEntry(
+        label: ch.name, hint: 'Канал', open: () => st.selectStandaloneChannel(ch)));
+  }
+  if (entries.isEmpty) return;
+  await showEscDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+            builder: (ctx, setD) {
+              final q = query.text.trim().toLowerCase();
+              final shown = q.isEmpty
+                  ? entries
+                  : entries
+                      .where((e) =>
+                          e.label.toLowerCase().contains(q) ||
+                          e.hint.toLowerCase().contains(q))
+                      .toList();
+              return AlertDialog(
+                title: const Text('Перейти'),
+                content: SizedBox(
+                  width: 360,
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    TextField(
+                      controller: query,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                          hintText: 'Чат, сервер, канал…'),
+                      onChanged: (_) => setD(() {}),
+                      onSubmitted: (_) {
+                        if (shown.isNotEmpty) {
+                          Navigator.pop(ctx);
+                          shown.first.open();
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    Flexible(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: shown.length,
+                        itemBuilder: (c2, i) => ListTile(
+                          dense: true,
+                          title: Text(shown[i].label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis),
+                          subtitle: Text(shown[i].hint,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis),
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            shown[i].open();
+                          },
+                        ),
+                      ),
+                    ),
+                  ]),
+                ),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('Закрыть')),
+                ],
+              );
+            },
+          ));
+}
+
+class _NavEntry {
+  _NavEntry({required this.label, required this.hint, required this.open});
+  final String label;
+  final String hint;
+  final Future<void> Function() open;
 }
 
 /// Unified find dialog wired to the live backend + navigation.

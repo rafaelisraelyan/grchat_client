@@ -129,8 +129,8 @@ class CallState extends Notifier<ActiveCall?> {
     _remoteIce.clear();
     pc.onIceCandidate = (c) {
       if (c.candidate == null || c.candidate!.isEmpty) return;
-      dlog('ice local candidate sdpMid=${c.sdpMid} '
-          'mline=${c.sdpMLineIndex}');
+      dlog('ice local candidate ${iceDigest(c.candidate)} '
+          'sdpMid=${c.sdpMid} mline=${c.sdpMLineIndex}');
       final payload = {
         'candidate': c.candidate!,
         'sdpMid': c.sdpMid,
@@ -627,7 +627,8 @@ class CallState extends Notifier<ActiveCall?> {
             ? 0
             : int.tryParse(p['sdpMLineIndex'].toString()) ?? 0,
       ));
-      dlog('ice remote added mid=${p['sdpMid']}');
+      dlog('ice remote added ${iceDigest(p['candidate'])} '
+          'mid=${p['sdpMid']}');
     } catch (e) {
       dlog('ice remote add failed: $e');
     }

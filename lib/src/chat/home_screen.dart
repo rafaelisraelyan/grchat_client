@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/providers.dart';
@@ -98,7 +99,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
     });
     return Scaffold(
-      body: LayoutBuilder(builder: (ctx, constraints) {
+      body: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.keyK, control: true):
+              () => showQuickNav(context, ref),
+        },
+        child: Focus(
+          autofocus: true,
+          child: LayoutBuilder(builder: (ctx, constraints) {
         // Plan §62: full layout above 1250px, members auto-hidden below.
         final showMembers =
             _membersOpen && constraints.maxWidth > 1250;
@@ -144,7 +152,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const CallOverlayHost(),
           const GroupCallHost(),
         ]);
-      }),
+          }),
+        ),
+      ),
     );
   }
 

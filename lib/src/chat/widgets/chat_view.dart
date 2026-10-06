@@ -555,7 +555,30 @@ class _ChatViewState extends ConsumerState<ChatView> {
       _cancelEdit();
       return KeyEventResult.handled;
     }
+    // Up in an empty composer edits my last message (§81).
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.arrowUp &&
+        _input.text.isEmpty &&
+        ref.read(editingMessageProvider) == null) {
+      final last = _lastOwnMessage();
+      if (last != null) {
+        ref.read(editingMessageProvider.notifier).begin(last);
+        return KeyEventResult.handled;
+      }
+    }
     return _enterToSend(event, _send);
+  }
+
+  Message? _lastOwnMessage() {
+    final myId = ref.read(sessionProvider)?.userId;
+    if (myId == null) return null;
+    final messages = ref.read(homeStateProvider).messages;
+    for (var i = messages.length - 1; i >= 0; i--) {
+      final m = messages[i];
+      // Only plain text messages I authored (posts live in their dialog).
+      if (m.authorId == myId && m.kind == 'text') return m;
+    }
+    return null;
   }
 
   void _send() {
