@@ -144,7 +144,9 @@ class _ChatViewState extends ConsumerState<ChatView> {
                 onPressed: () => _startCall(video: true)),
           ],
           IconButton(
-              tooltip: 'Участники',
+              tooltip: scope is DmScope && !scope.thread.isGroup
+                  ? 'Профиль'
+                  : 'Участники',
               icon: const Icon(Icons.people, size: 20),
               onPressed: widget.onToggleMembers),
         ]),
