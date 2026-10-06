@@ -15,7 +15,7 @@ workflows:
       # Hermetic tests only: goldens are Windows pixel-exact and the
       # connection/signaling tests need a live dev server + Postgres.
       - name: Hermetic tests
-        script: flutter test test/reconnect_test.dart test/logo_asset_test.dart
+        script: flutter test test/reconnect_test.dart test/logo_asset_test.dart test/macos_entitlements_test.dart
       - name: Build macOS
         script: flutter build macos --release
       - name: Pack .app and DMG

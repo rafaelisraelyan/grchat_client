@@ -10,6 +10,17 @@
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- WebRTC/ICE: connectivity checks need an inbound UDP socket
+	     (network.server), and macOS hides LAN addresses behind <uuid>.local,
+	     which only resolves with multicast (network.multicast). Without both
+	     the sandbox silently drops every candidate pair: candidates still
+	     exchange and onTrack still fires, but iceConnection goes straight to
+	     Failed with "Selected ICE: unknown". DebugProfile.entitlements must
+	     stay in sync with this file - that drift is what hid the bug. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<key>com.apple.security.network.multicast</key>
+	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 </dict>

@@ -30,7 +30,7 @@ jobs:
       - run: flutter analyze
       # Hermetic tests only: goldens are Windows pixel-exact and the
       # connection/signaling tests need a live dev server + Postgres.
-      - run: flutter test test/reconnect_test.dart test/logo_asset_test.dart
+      - run: flutter test test/reconnect_test.dart test/logo_asset_test.dart test/macos_entitlements_test.dart
 
       - run: flutter build macos --${{ inputs.configuration }}
 
