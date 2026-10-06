@@ -75,6 +75,27 @@ final callApiProvider = Provider<CallApi>((ref) {
   return CallApi(ref.watch(connectionProvider), s);
 });
 
+/// Ringing state for the callee.
+///
+/// [remoteVideoArrived] must be carried in explicitly: onTrack fires while
+/// `setRemoteDescription` runs, i.e. *before* this state is published, and a
+/// freshly built [ActiveCall] would default `remoteVideo` back to false. The
+/// result is a callee that stays on "Подключение видео…" even though the
+/// remote camera track is right there in the renderer.
+ActiveCall incomingRingingCall({
+  required String callId,
+  required String peerNick,
+  required bool video,
+  required bool remoteVideoArrived,
+}) =>
+    ActiveCall(
+        callId: callId,
+        peerNick: peerNick,
+        video: video,
+        outgoing: false,
+        remoteVideo: remoteVideoArrived,
+        phase: CallPhase.ringing);
+
 class CallState extends Notifier<ActiveCall?> {
   RTCPeerConnection? _pc;
   MediaStream? _local;
@@ -92,6 +113,13 @@ class CallState extends Notifier<ActiveCall?> {
   final _remoteIce = IceBuffer<Map<String, String?>>();
   MediaStream? _remoteStream;
   bool _remoteDescSet = false;
+
+  /// A remote video track has arrived at least once. Tracked separately from
+  /// [ActiveCall.remoteVideo] because _prepareIncoming rebuilds the ringing
+  /// state from scratch *after* setRemoteDescription, and onTrack has already
+  /// fired by then - a fresh object would silently drop the flag and leave
+  /// the callee staring at "Подключение видео…" forever.
+  bool _remoteVideoArrived = false;
 
   RTCVideoRenderer? get localRenderer => _localR;
   RTCVideoRenderer? get remoteRenderer => _remoteR;
@@ -127,6 +155,7 @@ class CallState extends Notifier<ActiveCall?> {
     final pc = await createPeerConnection(await _rtcConfig(), {});
     _remoteDescSet = false;
     _remoteIce.clear();
+    _remoteVideoArrived = false;
     pc.onIceCandidate = (c) {
       if (c.candidate == null || c.candidate!.isEmpty) return;
       dlog('ice local candidate ${iceDigest(c.candidate)} '
@@ -205,6 +234,7 @@ class CallState extends Notifier<ActiveCall?> {
       }
       _remoteR?.srcObject ??= remote;
       if (track.kind == 'video') {
+        _remoteVideoArrived = true;
         state = state?.copyWith(remoteVideo: true);
       } else {
         state = state?.copyWith();
@@ -303,7 +333,9 @@ class CallState extends Notifier<ActiveCall?> {
       dlog('answer ${SdpSummary.parse(sdp)}');
       await api.answer(callId: cur.callId, accept: true, sdp: sdp);
       _ringTimer?.cancel();
-      state = cur.copyWith(phase: CallPhase.active);
+      // Patch the live state instead of writing back the pre-await snapshot:
+      // onTrack may have delivered a remote video track meanwhile.
+      state = state?.copyWith(phase: CallPhase.active);
     } catch (e) {
       await decline();
       rethrow;
@@ -529,7 +561,8 @@ class CallState extends Notifier<ActiveCall?> {
         await _flushRemoteIce();
       }
       _ringTimer?.cancel();
-      state = cur.copyWith(phase: CallPhase.active);
+      // Patch the live state, not the pre-await snapshot (see acceptIncoming).
+      state = state?.copyWith(phase: CallPhase.active);
     } catch (_) {
       await hangup();
     }
@@ -565,12 +598,12 @@ class CallState extends Notifier<ActiveCall?> {
           RTCSessionDescription(sdp, 'offer'));
       _remoteDescSet = true;
       await _flushRemoteIce();
-      state = ActiveCall(
+      state = incomingRingingCall(
           callId: callId,
           peerNick: (ev['from_nick'] ?? '?') as String,
           video: video,
-          outgoing: false,
-          phase: CallPhase.ringing);
+          // onTrack already ran during setRemoteDescription above.
+          remoteVideoArrived: _remoteVideoArrived);
       // Safety net if the caller never hangs up (old client / no sweep).
       _ringTimer?.cancel();
       _ringTimer = Timer(const Duration(seconds: 58), () async {
@@ -639,6 +672,7 @@ class CallState extends Notifier<ActiveCall?> {
     _pendingIce.clear();
     _remoteIce.clear();
     _remoteDescSet = false;
+    _remoteVideoArrived = false;
     _ringTimer?.cancel();
     _ringTimer = null;
     _videoSender = null;
