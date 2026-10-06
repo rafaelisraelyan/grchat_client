@@ -365,8 +365,13 @@ class HomeState extends Notifier<HomeData> {
       }
       if (community != null) {
         final voice = ref.read(voiceStateProvider.notifier);
+        final session = ref.read(voiceSessionProvider.notifier);
         for (final ch in community.channels) {
           if (ch.type != 'text') voice.refresh(ch.id).catchError((_) {});
+          // Voice caps for the roster header (nicks/mutes/limit, no join).
+          if (ch.type == 'voice') {
+            session.refreshChannel(ch.id).catchError((_) {});
+          }
         }
       }
     } catch (e) {

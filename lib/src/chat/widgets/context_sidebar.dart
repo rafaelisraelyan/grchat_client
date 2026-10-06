@@ -225,8 +225,10 @@ class VoiceTile extends ConsumerWidget {
     final voice = ref.watch(voiceStateProvider);
     final session = ref.watch(voiceSessionProvider);
     final sessionSt = ref.read(voiceSessionProvider.notifier);
+    final myId = ref.read(sessionProvider)?.userId ?? '';
     final joined = session?.channelId == channel.id;
     final ids = voice[channel.id] ?? const {};
+    final limit = sessionSt.limits[channel.id] ?? 0;
     String nick(String id) {
       for (final m in members) {
         if (m.userId == id) return m.nick;
@@ -246,13 +248,22 @@ class VoiceTile extends ConsumerWidget {
       return false;
     }
 
-    bool muted(String id) {
-      if (session == null || session.channelId != channel.id) return true;
+    VoicePeer? peerOf(String id) {
+      if (session == null || session.channelId != channel.id) return null;
       for (final p in session.peers) {
-        if (p.id == id) return p.muted;
+        if (p.id == id) return p;
       }
-      return true;
+      return null;
     }
+
+    // Moderation power for this community (owner/admin/mod).
+    String myRole = '';
+    for (final m in members) {
+      if (m.userId == myId) myRole = m.role;
+    }
+    final canMod =
+        myRole == 'owner' || myRole == 'admin' || myRole == 'mod';
+    final canManage = myRole == 'owner' || myRole == 'admin';
 
     return InkWell(
       borderRadius: BorderRadius.circular(8),
@@ -288,7 +299,10 @@ class VoiceTile extends ConsumerWidget {
                       color: joined ? c.accent : c.textMuted),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text(channel.name,
+                    child: Text(
+                        limit > 0
+                            ? '${channel.name} · ${ids.length}/$limit'
+                            : channel.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -299,6 +313,20 @@ class VoiceTile extends ConsumerWidget {
                                 ? FontWeight.w700
                                 : FontWeight.w400)),
                   ),
+                  if (canManage)
+                    Tooltip(
+                      message: 'Лимит участников',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () => _limitDialog(context, sessionSt,
+                            channel.name, limit),
+                        child: const Padding(
+                          padding: EdgeInsets.all(4),
+                          child: Icon(Icons.group_add,
+                              size: 14, color: Colors.grey),
+                        ),
+                      ),
+                    ),
                   if (joined)
                     const Icon(Icons.logout, size: 14),
                 ]),
@@ -307,10 +335,15 @@ class VoiceTile extends ConsumerWidget {
                 Padding(
                   padding:
                       const EdgeInsets.only(left: 24, top: 1, bottom: 1),
-                  child: _VoiceRow(
+                  child: _VoiceRowButton(
+                      id: id,
                       nick: nick(id),
                       speaking: speaking(id),
-                      muted: muted(id)),
+                      peer: peerOf(id),
+                      canMod: canMod,
+                      onMenu: () => _peerMenu(
+                          context, sessionSt, channel.id, id, nick(id),
+                          peerOf(id), canMod)),
                 ),
             ]),
       ),
@@ -319,14 +352,52 @@ class VoiceTile extends ConsumerWidget {
 }
 
 /// Roster row: avatar with a subtle accent ring while speaking (§98:
+/// smooth, never neon), mic-off when muted. Tappable for the peer menu
+/// (local mute for everyone, server mute for moderators).
+class _VoiceRowButton extends StatelessWidget {
+  const _VoiceRowButton(
+      {required this.id,
+      required this.nick,
+      required this.speaking,
+      required this.peer,
+      required this.canMod,
+      required this.onMenu});
+
+  final String id;
+  final String nick;
+  final bool speaking;
+  final VoicePeer? peer;
+  final bool canMod;
+  final VoidCallback onMenu;
+
+  @override
+  Widget build(BuildContext context) {
+    final self = peer?.self ?? false;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: self ? null : onMenu,
+      child: _VoiceRow(
+          nick: nick,
+          speaking: speaking,
+          muted: peer?.muted ?? true,
+          serverMuted: peer?.serverMuted ?? false),
+    );
+  }
+}
+
+/// Roster row: avatar with a subtle accent ring while speaking (§98:
 /// smooth, never neon), mic-off when muted.
 class _VoiceRow extends StatelessWidget {
   const _VoiceRow(
-      {required this.nick, required this.speaking, required this.muted});
+      {required this.nick,
+      required this.speaking,
+      required this.muted,
+      this.serverMuted = false});
 
   final String nick;
   final bool speaking;
   final bool muted;
+  final bool serverMuted;
 
   @override
   Widget build(BuildContext context) {
@@ -352,9 +423,99 @@ class _VoiceRow extends StatelessWidget {
       ),
       if (muted) ...[
         const SizedBox(width: 4),
-        Icon(Icons.mic_off, size: 12, color: c.textMuted),
+        Tooltip(
+          message: serverMuted ? 'Замучен модератором' : 'Микрофон выключен',
+          child: Icon(Icons.mic_off,
+              size: 12,
+              color: serverMuted ? Colors.red : c.textMuted),
+        ),
       ],
     ]);
+  }
+}
+
+Future<void> _peerMenu(
+    BuildContext context,
+    VoiceSessionState st,
+    String channelId,
+    String id,
+    String nick,
+    VoicePeer? peer,
+    bool canMod) async {
+  final locallyMuted = peer?.localMuted ?? false;
+  final sm = peer?.serverMuted ?? false;
+  final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+            title: Text(nick,
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+            children: [
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(ctx, 'local'),
+                child: Text(locallyMuted
+                    ? 'Включить звук для себя'
+                    : 'Заглушить для себя'),
+              ),
+              if (canMod)
+                SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, 'server'),
+                  child: Text(
+                      sm ? 'Размутить (модер)' : 'Замутить (модер)',
+                      style: const TextStyle(color: Colors.red)),
+                ),
+            ],
+          ));
+  if (action == null || !context.mounted) return;
+  try {
+    final s = st;
+    if (action == 'local') {
+      await s.setPeerMuted(id, !locallyMuted);
+    } else {
+      final r = await s.serverMute(
+          channelId: channelId, userId: id, muted: !sm);
+      if (context.mounted && r != null) Toast.show(context, r);
+    }
+  } catch (e) {
+    if (context.mounted) Toast.show(context, friendlyVoiceError(e));
+  }
+}
+
+Future<void> _limitDialog(BuildContext context, VoiceSessionState st,
+    String channelName, int current) async {
+  final ctl = TextEditingController(text: current == 0 ? '' : '$current');
+  final value = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+            title: Text('Лимит: $channelName'),
+            content: TextField(
+              controller: ctl,
+              keyboardType: TextInputType.number,
+              autofocus: true,
+              decoration: const InputDecoration(
+                  hintText: '0–99, пусто = без лимита'),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Отмена')),
+              TextButton(
+                  onPressed: () {
+                    final v = int.tryParse(ctl.text.trim());
+                    Navigator.pop(ctx, ctl.text.trim().isEmpty ? 0 : v);
+                  },
+                  child: const Text('Сохранить')),
+            ],
+          ));
+  if (value == null || value < 0 || value > 99) return;
+  if (!context.mounted) return;
+  try {
+    await st.setLimit(value);
+    if (context.mounted) {
+      Toast.show(context,
+          value == 0 ? 'Лимит снят' : 'Лимит: $value уч.');
+    }
+  } catch (e) {
+    if (context.mounted) Toast.show(context, friendlyVoiceError(e));
   }
 }
 
@@ -519,6 +680,25 @@ class VoiceBar extends ConsumerWidget {
             onPressed: () async {
               try {
                 await st.toggleMute();
+              } catch (e) {
+                if (context.mounted) {
+                  Toast.show(context, friendlyVoiceError(e));
+                }
+              }
+            }),
+        IconButton(
+            tooltip: session.deafened
+                ? 'Включить звук'
+                : 'Заглушить всё',
+            icon: Icon(
+                session.deafened
+                    ? Icons.headset_off
+                    : Icons.headset_mic,
+                size: 18,
+                color: session.deafened ? Colors.orange : null),
+            onPressed: () async {
+              try {
+                await st.toggleDeafen();
               } catch (e) {
                 if (context.mounted) {
                   Toast.show(context, friendlyVoiceError(e));
