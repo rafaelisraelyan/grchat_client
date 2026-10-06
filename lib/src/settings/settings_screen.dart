@@ -322,12 +322,24 @@ class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key})
         );
       case UpdateStatus.available:
         final info = upd.info!;
+        final size =
+            '${(info.sizeBytes / 1048576).toStringAsFixed(1)} МБ';
+        if (!UpdateCenter.supportsInstall) {
+          // macOS/Linux: no in-place install yet, the dmg is fetched by hand.
+          return ListTile(
+            leading: const Icon(Icons.download),
+            title: Text(
+                'Доступна ${info.version}${info.prerelease ? ' (бета)' : ''}'),
+            subtitle: Text(
+                '$size — для этой платформы скачайте сборку из grchat-releases вручную'),
+          );
+        }
         return ListTile(
           leading: const Icon(Icons.download),
           title: Text(
               'Доступна ${info.version}${info.prerelease ? ' (бета)' : ''}'),
           subtitle: Text(
-              '${(info.sizeBytes / 1048576).toStringAsFixed(1)} МБ — скачивание закроет приложение и установит обновление'),
+              '$size — скачивание закроет приложение и установит обновление'),
           onTap: () => center.downloadAndInstall(),
         );
       case UpdateStatus.downloading:
