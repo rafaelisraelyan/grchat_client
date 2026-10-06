@@ -390,22 +390,29 @@ class CallState extends Notifier<ActiveCall?> {
     }
     try {
       if (_screen == null) {
+        dlog('screenshare start');
         final stream =
             await navigator.mediaDevices.getDisplayMedia({'video': true});
+        final n = stream.getVideoTracks().length;
+        dlog('screenshare stream videoTracks=$n');
         if (stream.getVideoTracks().isEmpty) {
           await stream.dispose();
+          dlog('screenshare empty tracks (picker closed?)');
           return;
         }
         final sender = _videoSender;
         if (sender == null) {
           await stream.dispose();
+          dlog('screenshare no video sender');
+          _notice('Не вышло показать экран');
           return;
         }
         await sender
             .replaceTrack(stream.getVideoTracks().first);
         _screen = stream;
         _localR?.srcObject = stream;
-        state = cur.copyWith(sharingScreen: true);
+        dlog('screenshare sharing');
+        state = state?.copyWith(sharingScreen: true);
       } else {
         final cam = _local?.getVideoTracks();
         final sender = _videoSender;
@@ -424,8 +431,10 @@ class CallState extends Notifier<ActiveCall?> {
         if (_localR != null) _localR!.srcObject = _local;
         state = state?.copyWith(sharingScreen: false);
       }
-    } catch (_) {
-      // User closed the picker or capture failed: stay on camera.
+    } catch (e) {
+      // User closed the picker or capture failed: stay on camera, but say so.
+      dlog('screenshare failed: $e');
+      _notice('Не вышло показать экран');
     }
   }
 
