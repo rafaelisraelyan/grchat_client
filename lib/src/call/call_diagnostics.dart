@@ -240,6 +240,6 @@ String iceDigest(String? candidate) {
     final host = parts.length >= 5 ? parts[4] : '?';
     return '$proto/$typ/$host';
   }
-  final v6 = RegExp(r'[0-9a-fA-F]*:[0-9a-fA-F:]+').hasMatch(c);
+  final v6 = RegExp(r'([0-9a-fA-F]{0,4}:){2,}').hasMatch(c);
   return '$proto/$typ/${v6 ? 'v6' : 'v4'}';
 }
