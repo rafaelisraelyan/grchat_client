@@ -99,9 +99,11 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       await _connect();
       await action(ref.read(authRepositoryProvider));
     } on GrchatException catch (e) {
-      setState(() => _error = _errText[e.code] ?? 'Ошибка: ${e.code}');
-    } catch (e) {
-      setState(() => _error = 'Нет соединения: $e');
+      // Raw server codes never reach the user; unknown ones degrade to a
+      // generic phrase instead of leaking internals (§54).
+      setState(() => _error = _errText[e.code] ?? 'Не вышло, попробуй ещё раз');
+    } catch (_) {
+      setState(() => _error = 'Нет соединения с сервером');
     } finally {
       if (mounted) setState(() => _busy = false);
     }

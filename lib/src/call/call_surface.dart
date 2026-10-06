@@ -54,6 +54,36 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost> {
         ref.read(callNoticeProvider.notifier).clear();
       }
     });
+    // Unanswered outgoing call (§94): reason plus a redial action.
+    // Fires while no call window exists, so it lives here, not in CallWindow.
+    ref.listen<CallRedial?>(callRedialProvider, (prev, next) {
+      if (next == null) return;
+      final redial = next;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(
+            content: Text(redial.reason),
+            action: SnackBarAction(
+              label: 'Позвонить снова',
+              onPressed: () async {
+                ref.read(callRedialProvider.notifier).clear();
+                try {
+                  await st.startCall(
+                      peerNick: redial.peerNick,
+                      dmId: redial.dmId,
+                      video: redial.video);
+                } catch (e) {
+                  if (context.mounted) {
+                    Toast.show(context, friendlyCallError(e));
+                  }
+                }
+              },
+            ),
+          ))
+          .closed
+          .then((_) {
+        ref.read(callRedialProvider.notifier).clear();
+      });
+    });
     _track(call);
     if (call == null) return const SizedBox.shrink();
     if (call.minimized) {
