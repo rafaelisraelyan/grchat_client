@@ -6,6 +6,7 @@ import 'package:riverpod/riverpod.dart';
 import '../app/providers.dart';
 import '../auth/auth_repository.dart';
 import 'call_api.dart';
+import 'call_diagnostics.dart';
 enum CallPhase { ringing, active }
 
 /// One live call. Null state = idle.
@@ -19,6 +20,9 @@ class ActiveCall {
     this.muted = false,
     this.cameraOff = false,
     this.sharingScreen = false,
+    this.remoteVideo = false,
+    this.linkDown = false,
+    this.minimized = false,
   });
 
   final String callId;
@@ -30,11 +34,23 @@ class ActiveCall {
   final bool cameraOff;
   final bool sharingScreen;
 
+  /// A remote video track arrived (avatar shown until then, §22/§41).
+  final bool remoteVideo;
+
+  /// Transport wobble: show "reconnecting", never auto-hangup (§57).
+  final bool linkDown;
+
+  /// Presentation only: mini overlay vs centered window (§46–§48).
+  final bool minimized;
+
   ActiveCall copyWith({
     CallPhase? phase,
     bool? muted,
     bool? cameraOff,
     bool? sharingScreen,
+    bool? remoteVideo,
+    bool? linkDown,
+    bool? minimized,
   }) =>
       ActiveCall(
         callId: callId,
@@ -45,6 +61,9 @@ class ActiveCall {
         muted: muted ?? this.muted,
         cameraOff: cameraOff ?? this.cameraOff,
         sharingScreen: sharingScreen ?? this.sharingScreen,
+        remoteVideo: remoteVideo ?? this.remoteVideo,
+        linkDown: linkDown ?? this.linkDown,
+        minimized: minimized ?? this.minimized,
       );
 }
 
@@ -65,6 +84,12 @@ class CallState extends Notifier<ActiveCall?> {
   StreamSubscription<Map<String, dynamic>>? _pushSub;
   final _pendingIce = <Map<String, String?>>[];
   String? _callId;
+
+  // Remote side (§15, §20): candidates before setRemoteDescription wait
+  // in [_remoteIce]; remote tracks land in [_remoteStream].
+  final _remoteIce = IceBuffer<Map<String, String?>>();
+  MediaStream? _remoteStream;
+  bool _remoteDescSet = false;
 
   RTCVideoRenderer? get localRenderer => _localR;
   RTCVideoRenderer? get remoteRenderer => _remoteR;
@@ -98,8 +123,12 @@ class CallState extends Notifier<ActiveCall?> {
 
   Future<RTCPeerConnection> _newPc(String callId) async {
     final pc = await createPeerConnection(await _rtcConfig(), {});
+    _remoteDescSet = false;
+    _remoteIce.clear();
     pc.onIceCandidate = (c) {
       if (c.candidate == null || c.candidate!.isEmpty) return;
+      dlog('ice local candidate sdpMid=${c.sdpMid} '
+          'mline=${c.sdpMLineIndex}');
       final payload = {
         'candidate': c.candidate!,
         'sdpMid': c.sdpMid,
@@ -115,20 +144,87 @@ class CallState extends Notifier<ActiveCall?> {
             sdpMLineIndex: payload['sdpMLineIndex']).catchError((_) {});
       }
     };
+    pc.onSignalingState = (s) => dlog('pc signaling=$s');
+    pc.onIceGatheringState = (s) => dlog('pc iceGathering=$s');
+    pc.onConnectionState = (s) {
+      dlog('pc connection=$s');
+      if (s == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+        state = state?.copyWith(linkDown: false);
+        _logStatsSnapshot('connected');
+      } else if (s ==
+              RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
+          s == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+        // Never auto-hangup on a wobble (§57): banner only.
+        if (state?.phase == CallPhase.active) {
+          state = state?.copyWith(linkDown: true);
+        }
+      }
+    };
+    pc.onIceConnectionState = (s) => dlog('pc iceConnection=$s');
+    pc.onTrack = (ev) => _onTrack(ev);
+    // Legacy fallback: Unified Plan delivers via onTrack; keep for old
+    // endpoints, but never let it clobber the onTrack stream.
     pc.onAddStream = (s) {
-      _remoteR?.srcObject = s;
-      state = state?.copyWith();
+      if (_remoteR?.srcObject == null) {
+        dlog('onAddStream fallback streams=1');
+        _remoteR?.srcObject = s;
+        state = state?.copyWith();
+      }
     };
     return pc;
+  }
+
+  /// Remote track arrival (§17, §20, §21): never drop, never reuse the
+  /// local renderer, never recreate renderers per event.
+  Future<void> _onTrack(RTCTrackEvent ev) async {
+    final track = ev.track;
+    dlog('onTrack kind=${track.kind} id=${track.id} '
+        'enabled=${track.enabled} streams=${ev.streams.length}');
+    try {
+      var remote = _remoteStream;
+      if (remote == null) {
+        if (ev.streams.isNotEmpty) {
+          remote = ev.streams.first;
+          dlog('remote stream from event');
+        } else {
+          remote = await createLocalMediaStream('grchat-remote');
+          dlog('remote stream created locally (no event stream)');
+        }
+        _remoteStream = remote;
+      }
+      final known =
+          remote.getTracks().any((t) => t.id == track.id);
+      if (!known) {
+        try {
+          await remote.addTrack(track);
+        } catch (_) {
+          // Already attached natively; binding below is what matters.
+        }
+      }
+      _remoteR?.srcObject ??= remote;
+      if (track.kind == 'video') {
+        state = state?.copyWith(remoteVideo: true);
+      } else {
+        state = state?.copyWith();
+      }
+      _logStatsSnapshot('ontrack-${track.kind}');
+    } catch (e) {
+      dlog('onTrack failed: $e');
+    }
   }
 
   Future<void> _addLocal(RTCPeerConnection pc, bool video) async {
     _local = await navigator.mediaDevices
         .getUserMedia({'audio': true, 'video': video});
-    for (final t in _local!.getTracks()) {
+    final tracks = _local!.getTracks();
+    dlog('getUserMedia audio=${_local!.getAudioTracks().length} '
+        'video=${_local!.getVideoTracks().length}');
+    for (final t in tracks) {
+      dlog('local track kind=${t.kind} id=${t.id} enabled=${t.enabled}');
       final sender = await pc.addTrack(t, _local!);
       if (t.kind == 'video') _videoSender = sender;
     }
+    dlog('senders=${(await pc.getSenders()).length}');
     if (video) {
       _localR = RTCVideoRenderer();
       await _localR!.initialize();
@@ -151,6 +247,7 @@ class CallState extends Notifier<ActiveCall?> {
       final offer = await _pc!.createOffer({});
       await _pc!.setLocalDescription(offer);
       final sdp = (await _pc!.getLocalDescription())?.sdp ?? '';
+      dlog('offer ${SdpSummary.parse(sdp)}');
       final callId =
           await api.offer(peerNick: peerNick, dmId: dmId, sdp: sdp);
       _callId = callId;
@@ -201,6 +298,7 @@ class CallState extends Notifier<ActiveCall?> {
       final answer = await _pc!.createAnswer({});
       await _pc!.setLocalDescription(answer);
       final sdp = (await _pc!.getLocalDescription())?.sdp ?? '';
+      dlog('answer ${SdpSummary.parse(sdp)}');
       await api.answer(callId: cur.callId, accept: true, sdp: sdp);
       _ringTimer?.cancel();
       state = cur.copyWith(phase: CallPhase.active);
@@ -297,6 +395,53 @@ class CallState extends Notifier<ActiveCall?> {
     }
   }
 
+  /// getStats digest (§25–§26). Debug-logged; use the returned string
+  /// for the debug call summary (§27).
+  Future<String> diagnosticsSummary() async {
+    final pc = _pc;
+    final cur = state;
+    if (pc == null || cur == null) return 'no call';
+    try {
+      final stats = StatsSummary.summarize(await pc.getStats());
+      final local = _local;
+      final remoteAudio =
+          _remoteStream?.getAudioTracks().isNotEmpty ?? false;
+      final remoteVideo =
+          _remoteStream?.getVideoTracks().isNotEmpty ?? false;
+      return buildDebugSummary(
+          platform: platformTag(),
+          callId: cur.callId,
+          role: cur.outgoing ? 'caller' : 'callee',
+          localAudioTracks: local?.getAudioTracks().length ?? 0,
+          localVideoTracks: local?.getVideoTracks().length ?? 0,
+          signalingState:
+              (await pc.getSignalingState()).toString(),
+          iceGatheringState:
+              (await pc.getIceGatheringState()).toString(),
+          iceConnectionState:
+              (await pc.getIceConnectionState()).toString(),
+          connectionState:
+              (await pc.getConnectionState()).toString(),
+          remoteAudio: remoteAudio,
+          remoteVideo: remoteVideo,
+          stats: stats);
+    } catch (e) {
+      return 'stats failed: $e';
+    }
+  }
+
+  Future<void> _logStatsSnapshot(String why) async {
+    try {
+      dlog('stats [$why]\n${await diagnosticsSummary()}');
+    } catch (_) {}
+  }
+
+  void setMinimized(bool minimized) {
+    final cur = state;
+    if (cur == null || cur.minimized == minimized) return;
+    state = cur.copyWith(minimized: minimized);
+  }
+
   void _notice(String text) {
     ref.read(callNoticeProvider.notifier).show(text);
   }
@@ -337,8 +482,11 @@ class CallState extends Notifier<ActiveCall?> {
     try {
       final sdp = (ev['sdp'] ?? '').toString();
       if (sdp.isNotEmpty) {
+        dlog('answer ${SdpSummary.parse(sdp)}');
         await _pc?.setRemoteDescription(
             RTCSessionDescription(sdp, 'answer'));
+        _remoteDescSet = true;
+        await _flushRemoteIce();
       }
       _ringTimer?.cancel();
       state = cur.copyWith(phase: CallPhase.active);
@@ -372,8 +520,11 @@ class CallState extends Notifier<ActiveCall?> {
       _callId = callId;
       _pc = await _newPc(callId);
       await _addLocal(_pc!, video);
+      dlog('offer ${SdpSummary.parse(sdp)}');
       await _pc!.setRemoteDescription(
           RTCSessionDescription(sdp, 'offer'));
+      _remoteDescSet = true;
+      await _flushRemoteIce();
       state = ActiveCall(
           callId: callId,
           peerNick: (ev['from_nick'] ?? '?') as String,
@@ -402,20 +553,51 @@ class CallState extends Notifier<ActiveCall?> {
     if (pc == null || state == null || ev['call_id'] != state!.callId) {
       return;
     }
+    final payload = {
+      'candidate': (ev['candidate'] ?? '').toString(),
+      'sdpMid': ev['sdp_mid']?.toString(),
+      'sdpMLineIndex': ev['sdp_mline_index']?.toString(),
+    };
+    if (!_remoteDescSet) {
+      // Race (§15): queue, never drop.
+      dlog('ice remote queued (no remote description yet)');
+      _remoteIce.add(payload);
+      return;
+    }
+    await _addRemoteCandidate(pc, payload);
+  }
+
+  Future<void> _flushRemoteIce() async {
+    final pc = _pc;
+    final queued = _remoteIce.drain();
+    if (queued.isEmpty || pc == null) return;
+    dlog('ice remote flushing ${queued.length} queued');
+    for (final p in queued) {
+      await _addRemoteCandidate(pc, p);
+    }
+  }
+
+  Future<void> _addRemoteCandidate(
+      RTCPeerConnection pc, Map<String, String?> p) async {
     try {
       await pc.addCandidate(RTCIceCandidate(
-        (ev['candidate'] ?? '') as String,
-        ev['sdp_mid']?.toString(),
-        ev['sdp_mline_index'] == null
+        p['candidate'] ?? '',
+        p['sdpMid'],
+        p['sdpMLineIndex'] == null
             ? 0
-            : int.tryParse(ev['sdp_mline_index'].toString()) ?? 0,
+            : int.tryParse(p['sdpMLineIndex'].toString()) ?? 0,
       ));
-    } catch (_) {}
+      dlog('ice remote added mid=${p['sdpMid']}');
+    } catch (e) {
+      dlog('ice remote add failed: $e');
+    }
   }
 
   Future<void> _cleanup() async {
     _callId = null;
     _pendingIce.clear();
+    _remoteIce.clear();
+    _remoteDescSet = false;
     _ringTimer?.cancel();
     _ringTimer = null;
     _videoSender = null;
@@ -438,6 +620,10 @@ class CallState extends Notifier<ActiveCall?> {
       await _local?.dispose();
     } catch (_) {}
     _local = null;
+    try {
+      await _remoteStream?.dispose();
+    } catch (_) {}
+    _remoteStream = null;
     try {
       await _localR?.dispose();
     } catch (_) {}
