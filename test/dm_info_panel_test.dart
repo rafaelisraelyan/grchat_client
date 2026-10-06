@@ -151,5 +151,13 @@ void main() {
       await t.pumpAndSettle();
       expect(fake.lastVideo, isTrue);
     });
+
+    testWidgets('call buttons expose semantics labels', (t) async {
+      final handle = t.ensureSemantics();
+      await pump(t);
+      expect(find.bySemanticsLabel('Аудио'), findsOneWidget);
+      expect(find.bySemanticsLabel('Видео'), findsOneWidget);
+      handle.dispose();
+    });
   });
 }

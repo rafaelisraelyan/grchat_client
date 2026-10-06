@@ -170,7 +170,11 @@ class _DmInfoPanelState extends ConsumerState<DmInfoPanel> {
 
   Widget _action(BuildContext context, WidgetRef ref, IconData icon,
       String label, VoidCallback onTap) {
-    return InkWell(
+    return Semantics(
+      button: true,
+      excludeSemantics: true,
+      label: label,
+      child: InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(10),
       child: Container(
@@ -185,6 +189,7 @@ class _DmInfoPanelState extends ConsumerState<DmInfoPanel> {
           const SizedBox(height: 2),
           Text(label, style: const TextStyle(fontSize: 11)),
         ]),
+      ),
       ),
     );
   }
