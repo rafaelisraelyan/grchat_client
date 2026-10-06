@@ -721,6 +721,7 @@ String friendlyCallError(Object e) {
       'USER_OFFLINE' => 'Пользователь не в сети',
       'NOT_FOUND' => 'Пользователь не найден',
       'NOT_IN_CALL' => 'Звонок уже завершён',
+      'ALREADY_IN_CALL' => 'Вы уже сейчас в звонке',
       _ => 'Не вышло позвонить',
     };
   }
