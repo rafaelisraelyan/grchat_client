@@ -6,6 +6,7 @@ import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../call/call_state.dart';
 import '../../search/search_address.dart';
+import '../../widgets/attachment_index_views.dart';
 import '../../widgets/avatar.dart';
 import '../../widgets/toast.dart';
 import '../home_state.dart';
@@ -138,19 +139,19 @@ class _DmInfoPanelState extends ConsumerState<DmInfoPanel> {
                 const SizedBox(height: 12),
                 const _SectionTitle('Фото'),
                 const SizedBox(height: 6),
-                _MediaGrid(images: images),
+                AttachmentGrid(images: images),
               ],
               if (videos.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 const _SectionTitle('Видео'),
                 const SizedBox(height: 6),
-                for (final a in videos) _FileRow(entry: a),
+                for (final a in videos) AttachmentFileRow(entry: a),
               ],
               if (files.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 const _SectionTitle('Файлы'),
                 const SizedBox(height: 6),
-                for (final a in files) _FileRow(entry: a),
+                for (final a in files) AttachmentFileRow(entry: a),
               ],
               if (_hasMore) ...[
                 const SizedBox(height: 8),
@@ -213,77 +214,3 @@ class _SectionTitle extends StatelessWidget {
             fontWeight: FontWeight.w600));
   }
 }
-
-class _MediaGrid extends ConsumerWidget {
-  const _MediaGrid({required this.images});
-  final List<AttachmentIndexEntry> images;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final cache = ref.watch(fileCacheProvider);
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3, crossAxisSpacing: 4, mainAxisSpacing: 4),
-      itemCount: images.length,
-      itemBuilder: (ctx, i) {
-        final a = images[i];
-        final bytes = cache[a.fileId];
-        if (bytes == null) {
-          ref
-              .read(fileCacheProvider.notifier)
-              .fetch(a.fileId)
-              .then((_) {})
-              .catchError((_) {});
-          return Container(
-              decoration: BoxDecoration(
-                  color: Colors.grey.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(6)));
-        }
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(6),
-          child: Image.memory(bytes, fit: BoxFit.cover),
-        );
-      },
-    );
-  }
-}
-
-class _FileRow extends StatelessWidget {
-  const _FileRow({required this.entry});
-  final AttachmentIndexEntry entry;
-
-  @override
-  Widget build(BuildContext context) {
-    final a = entry;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(children: [
-        const Icon(Icons.insert_drive_file,
-            size: 16, color: Colors.grey),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(a.filename,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13)),
-                Text(_size(a.sizeBytes),
-                    style: const TextStyle(
-                        fontSize: 11, color: Colors.grey)),
-              ]),
-        ),
-      ]),
-    );
-  }
-}
-
-String _size(int b) => b < 1024
-    ? '$b Б'
-    : b < 1048576
-        ? '${(b / 1024).toStringAsFixed(1)} КБ'
-        : '${(b / 1048576).toStringAsFixed(1)} МБ';
