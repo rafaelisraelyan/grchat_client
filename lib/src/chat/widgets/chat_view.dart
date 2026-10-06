@@ -191,7 +191,10 @@ class _ChatViewState extends ConsumerState<ChatView> {
                     onPressed:
                         _uploading == null ? _pickAndSend : null),
                 Expanded(
-                  child: TextField(
+                  child: Focus(
+                    onKeyEvent: (node, event) =>
+                        _enterToSend(event, _send),
+                    child: TextField(
                     controller: _input,
                     minLines: 1,
                     maxLines: 4,
@@ -217,6 +220,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
                     },
                     onSubmitted: (_) => _send(),
                   ),
+                ),
                 ),
                 ValueListenableBuilder<TextEditingValue>(
                   valueListenable: _input,
@@ -470,7 +474,10 @@ class _ChatViewState extends ConsumerState<ChatView> {
                   onPressed:
                       _uploading == null ? _pickAndSend : null),
               Expanded(
-                child: TextField(
+                child: Focus(
+                  onKeyEvent: (node, event) =>
+                      _enterToSend(event, _publish),
+                  child: TextField(
                   controller: _input,
                   minLines: 1,
                   maxLines: 5,
@@ -479,6 +486,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
                       border: InputBorder.none),
                   onSubmitted: (_) => _publish(),
                 ),
+              ),
               ),
               FilledButton(
                   onPressed: _publish,
@@ -521,6 +529,18 @@ class _ChatViewState extends ConsumerState<ChatView> {
     } catch (e) {
       if (mounted) Toast.show(context, '$e');
     }
+  }
+
+  /// Enter sends, Shift+Enter inserts a newline.
+  KeyEventResult _enterToSend(KeyEvent event, VoidCallback send) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.enter &&
+        !HardwareKeyboard.instance.isShiftPressed &&
+        !HardwareKeyboard.instance.isControlPressed) {
+      send();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
   }
 
   void _send() {
