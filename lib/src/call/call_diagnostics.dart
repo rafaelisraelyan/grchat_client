@@ -225,18 +225,21 @@ String buildDebugSummary({
       'Selected ICE: ${stats.selectedCandidateType}';
 }
 
-/// Short ICE candidate digest: protocol + type + family. No credentials.
+/// Short ICE candidate digest: protocol + type + host/family.
+/// Host addresses are LAN by construction; public IPs are reduced to
+/// the family. No credentials, no ports.
 String iceDigest(String? candidate) {
   final c = candidate ?? '';
   final typ =
       RegExp(r'typ\s+(\S+)').firstMatch(c)?.group(1) ?? '?';
   final proto =
       RegExp(r'^\S+\s+\d+\s+(\S+)').firstMatch(c)?.group(1) ?? '?';
-  final ip = RegExp(r'\s(\d+\.\d+\.\d+\.\d+|[0-9a-fA-F:]+:[0-9a-fA-F:]+)\s')
-          .firstMatch(c)
-          ?.group(1) ??
-      '?';
-  final family = ip.contains(':') ? 'v6' : 'v4';
   if (typ == '?' && proto == '?') return '?/?/?';
-  return '$proto/$typ/$family';
+  if (typ == 'host') {
+    final parts = c.split(RegExp(r'\s+'));
+    final host = parts.length >= 5 ? parts[4] : '?';
+    return '$proto/$typ/$host';
+  }
+  final v6 = RegExp(r'[0-9a-fA-F]*:[0-9a-fA-F:]+').hasMatch(c);
+  return '$proto/$typ/${v6 ? 'v6' : 'v4'}';
 }
