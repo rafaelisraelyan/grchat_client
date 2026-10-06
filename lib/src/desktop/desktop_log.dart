@@ -7,7 +7,8 @@ abstract final class DesktopLog {
 
   static String get path {
     final dir = Directory.systemTemp.path;
-    return '$dir\\grchat_desktop.log';
+    final sep = Platform.pathSeparator;
+    return '$dir${sep}grchat_desktop.log';
   }
 
   static void write(String line) {

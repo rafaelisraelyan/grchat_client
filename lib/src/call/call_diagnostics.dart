@@ -3,15 +3,21 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+import '../desktop/desktop_log.dart';
+
 /// Structured WebRTC diagnostics (§8–§9, §25–§27).
 ///
-/// Debug builds only: [dlog] is a no-op in release. Never logs TURN
+/// Debug builds only: [dlog] is a no-op in release. Mirrors to the desktop
+/// log file so release testers can attach it. Never logs TURN
 /// credentials — only candidate types and byte counters.
 void dlog(String line) {
   if (kDebugMode) {
     // ignore: avoid_print
     print('[webrtc] $line');
   }
+  try {
+    DesktopLog.write('[webrtc] $line');
+  } catch (_) {}
 }
 
 String platformTag() {
