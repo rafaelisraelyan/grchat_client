@@ -11,11 +11,15 @@ import '../widgets/connection_banner.dart';
 import 'home_state.dart';
 import '../widgets/toast.dart';
 import 'models.dart';
-import '../call/call_overlay.dart';
+import '../call/call_surface.dart';
+import '../call/group_call.dart';
+import '../call/group_call_window.dart';
 import '../call/call_state.dart';
 import '../voice/voice_state.dart';
 import 'widgets/chat_view.dart';
+import 'widgets/channel_info.dart';
 import 'widgets/community_rail.dart';
+import 'widgets/dm_info_panel.dart';
 import 'widgets/context_sidebar.dart';
 import 'widgets/dialogs.dart';
 import 'widgets/members_panel.dart';
@@ -39,6 +43,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     Future.microtask(() {
       ref.read(homeStateProvider.notifier).init();
       ref.read(callStateProvider.notifier).ensureListening();
+      ref.read(groupCallProvider.notifier).ensureListening();
       ref.read(voiceStateProvider.notifier).ensureListening();
     });
     _connSub =
@@ -97,16 +102,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         // Plan §62: full layout above 1250px, members auto-hidden below.
         final showMembers =
             _membersOpen && constraints.maxWidth > 1250;
+        // Broadcast workspace (§19): rail + wide feed + info panel,
+        // no second left sidebar.
+        final scope = ref.watch(homeStateProvider).scope;
+        final isBroadcast =
+            scope is ChannelScope && scope.community == null;
         return Stack(children: [
           Row(
             children: [
               CommunityRail(
-                  onAddServer: () => showServerDialog(context, ref)),
-              ContextSidebar(
-                onSearch: () => showSearchDialog(context, ref),
-                onNewDm: () => showNewDmDialog(context, ref),
-                onVoice: _voiceStub,
-              ),
+                  onAddServer: () => showAddMenu(context, ref)),
+              if (!isBroadcast)
+                ContextSidebar(
+                  onSearch: () => showSearchDialog(context, ref),
+                  onNewDm: () => showNewDmDialog(context, ref),
+                  onVoice: _voiceStub,
+                ),
               Expanded(
                   child: ChatView(
                 onToggleMembers: () =>
@@ -114,7 +125,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 onInvite: () => showInviteDialog(context, ref),
                 onVoice: _voiceStub,
               )),
-              if (showMembers) const MembersPanel(),
+              if (showMembers)
+                isBroadcast
+                    ? const ChannelInfoPanel()
+                    : scope is DmScope && !scope.thread.isGroup
+                        ? const DmInfoPanel()
+                        : const MembersPanel(),
             ],
           ),
           const Positioned(
@@ -125,7 +141,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [ConnectionBanner(), MissedBanner()]),
           ),
-          const CallOverlay(),
+          const CallOverlayHost(),
+          const GroupCallHost(),
         ]);
       }),
     );

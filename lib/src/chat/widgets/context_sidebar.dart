@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
+import '../../search/search_address.dart';
 import '../../settings/settings_screen.dart';
 import '../../voice/voice_state.dart';
 import '../../widgets/avatar.dart';
@@ -60,6 +62,16 @@ class ContextSidebar extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w700)),
               ),
+              if ((comm?.alias ?? '').isNotEmpty)
+                IconButton(
+                    tooltip: 'Копировать адрес сервера',
+                    icon: const Icon(Icons.link, size: 18),
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(
+                          text: addressOf(SearchTargetType.server,
+                              comm!.alias)));
+                      Toast.show(context, 'Адрес скопирован');
+                    }),
               IconButton(
                   tooltip: 'Найти пользователя',
                   icon: const Icon(Icons.search, size: 18),
@@ -160,7 +172,8 @@ class ChannelTile extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,
-      child: Container(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
         height: 36,
         padding: const EdgeInsets.symmetric(horizontal: 8),
         decoration: BoxDecoration(
@@ -305,7 +318,8 @@ class DmRow extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,
-      child: Container(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
         decoration: BoxDecoration(
           color: selected ? c.surfaceSelected : Colors.transparent,

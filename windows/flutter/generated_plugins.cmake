@@ -3,8 +3,10 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  connectivity_plus
   flutter_webrtc
   launch_at_startup
+  livekit_client
   local_notifier
   screen_retriever_windows
   window_manager

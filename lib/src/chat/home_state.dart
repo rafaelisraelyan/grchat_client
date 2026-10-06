@@ -19,7 +19,9 @@ abstract class Scope {
 
 class ChannelScope implements Scope {
   ChannelScope(this.community, this.channel);
-  final Community community;
+
+  /// Null = standalone channel (not bound to any community).
+  final Community? community;
   final Channel channel;
 
   @override
@@ -42,6 +44,7 @@ class DmScope implements Scope {
 class HomeData {
   const HomeData({
     this.communities = const [],
+    this.myChannels = const [],
     this.dms = const [],
     this.activeCommunityId,
     this.scope,
@@ -57,6 +60,10 @@ class HomeData {
   });
 
   final List<Community> communities;
+
+  /// Standalone channels I subscribed to (community channels ride along
+  /// their community).
+  final List<Channel> myChannels;
   final List<DmThread> dms;
 
   /// null means the DM stand (Discord-like home), otherwise a community id.
@@ -75,6 +82,7 @@ class HomeData {
 
   HomeData copyWith({
     List<Community>? communities,
+    List<Channel>? myChannels,
     List<DmThread>? dms,
     String? Function()? activeCommunityId,
     Scope? scope,
@@ -90,6 +98,7 @@ class HomeData {
   }) =>
       HomeData(
         communities: communities ?? this.communities,
+        myChannels: myChannels ?? this.myChannels,
         dms: dms ?? this.dms,
         activeCommunityId: activeCommunityId == null
             ? this.activeCommunityId
@@ -146,9 +155,16 @@ class HomeState extends Notifier<HomeData> {
     try {
       final comms = await repo.myCommunities();
       if (!ref.mounted) return;
+      // Tolerated: old servers have no list_my_channels yet.
+      List<Channel> chans = const [];
+      try {
+        chans = await repo.myChannels();
+      } catch (_) {}
+      if (!ref.mounted) return;
       final dms = await repo.dmList();
       if (!ref.mounted) return;
-      state = state.copyWith(communities: comms, dms: dms, loading: false);
+      state = state.copyWith(
+          communities: comms, myChannels: chans, dms: dms, loading: false);
       _pushSub ??= ref.read(connectionProvider).pushes.listen(_onPush);
       if (comms.isNotEmpty && comms.first.channels.isNotEmpty) {
         await selectChannel(comms.first, comms.first.channels.first);
@@ -228,12 +244,24 @@ class HomeState extends Notifier<HomeData> {
 
   String _channelName(String? channelId) {
     if (channelId == null) return 'Чат';
+    String? name;
+    var broadcast = false;
     for (final comm in state.communities) {
       for (final ch in comm.channels) {
-        if (ch.id == channelId) return '#${ch.name}';
+        if (ch.id == channelId) {
+          name = ch.name;
+          broadcast = ch.isBroadcast;
+        }
       }
     }
-    return 'Чат';
+    for (final ch in state.myChannels) {
+      if (ch.id == channelId) {
+        name = ch.name;
+        broadcast = true;
+      }
+    }
+    if (name == null) return 'Чат';
+    return broadcast ? name : '#$name';
   }
 
   /// Jump to a conversation by scope key (notification tap).
@@ -251,14 +279,21 @@ class HomeState extends Notifier<HomeData> {
           return;
         }
       }
+      final mine = state.myChannels.where((c) => c.id == id);
+      if (mine.isNotEmpty) await selectStandaloneChannel(mine.first);
     }
   }
 
   Future<void> refresh() async {
     final repo = ref.read(chatRepositoryProvider);
     final comms = await repo.myCommunities();
+    // Tolerated: old servers have no list_my_channels yet.
+    List<Channel> chans = state.myChannels;
+    try {
+      chans = await repo.myChannels();
+    } catch (_) {}
     final dms = await repo.dmList();
-    state = state.copyWith(communities: comms, dms: dms);
+    state = state.copyWith(communities: comms, myChannels: chans, dms: dms);
   }
 
   /// Called after the transport reconnects: re-auth if needed, then
@@ -280,13 +315,20 @@ class HomeState extends Notifier<HomeData> {
     final scope = state.scope;
     try {
       if (scope is ChannelScope) {
-        final comms = state.communities
-            .where((c) => c.id == scope.community.id);
-        if (comms.isEmpty) return true;
-        final chs = comms.first.channels
-            .where((c) => c.id == scope.channel.id);
-        if (chs.isEmpty) return true;
-        await selectChannel(comms.first, chs.first);
+        if (scope.community == null) {
+          final mine =
+              state.myChannels.where((c) => c.id == scope.channel.id);
+          if (mine.isEmpty) return true;
+          await selectStandaloneChannel(mine.first);
+        } else {
+          final comms = state.communities
+              .where((c) => c.id == scope.community!.id);
+          if (comms.isEmpty) return true;
+          final chs = comms.first.channels
+              .where((c) => c.id == scope.channel.id);
+          if (chs.isEmpty) return true;
+          await selectChannel(comms.first, chs.first);
+        }
       } else if (scope is DmScope) {
         final threads =
             state.dms.where((d) => d.id == scope.thread.id);
@@ -298,10 +340,11 @@ class HomeState extends Notifier<HomeData> {
     return true;
   }
 
-  Future<void> selectChannel(Community community, Channel channel) async {
-    if (channel.type != 'text') return;
+  Future<void> selectChannel(Community? community, Channel channel) async {
+    if (channel.type != 'text' && channel.type != 'broadcast') return;
+    ref.read(editingMessageProvider.notifier).clear();
     state = state.copyWith(
-        activeCommunityId: () => community.id,
+        activeCommunityId: () => community?.id,
         scope: ChannelScope(community, channel),
         messages: const [],
         members: const [],
@@ -313,21 +356,30 @@ class HomeState extends Notifier<HomeData> {
     final repo = ref.read(chatRepositoryProvider);
     try {
       final msgs = await repo.historyChannel(channel.id);
-      final members = await repo.members(community.id);
+      // Standalone channels have no community roster.
+      final members =
+          community == null ? const <Member>[] : await repo.members(community.id);
       if (state.scope?.key == 'c:${channel.id}') {
         state =
             state.copyWith(messages: msgs, members: members, loading: false);
       }
-      final voice = ref.read(voiceStateProvider.notifier);
-      for (final ch in community.channels) {
-        if (ch.type != 'text') voice.refresh(ch.id).catchError((_) {});
+      if (community != null) {
+        final voice = ref.read(voiceStateProvider.notifier);
+        for (final ch in community.channels) {
+          if (ch.type != 'text') voice.refresh(ch.id).catchError((_) {});
+        }
       }
     } catch (e) {
       state = state.copyWith(loading: false, error: e.toString());
     }
   }
 
+  /// Opens a standalone channel found via search (no community context).
+  Future<void> selectStandaloneChannel(Channel channel) =>
+      selectChannel(null, channel);
+
   Future<void> selectDm(DmThread thread) async {
+    ref.read(editingMessageProvider.notifier).clear();
     final myId = ref.read(sessionProvider)?.userId ?? '';
     state = state.copyWith(
         activeCommunityId: () => null,
@@ -353,9 +405,11 @@ class HomeState extends Notifier<HomeData> {
 
   /// The DM stand: DMs only, no channels. Keeps the selected DM if any.
   void goHome() {
+    ref.read(editingMessageProvider.notifier).clear();
     final dm = state.scope is DmScope ? state.scope : null;
     state = HomeData(
       communities: state.communities,
+      myChannels: state.myChannels,
       dms: state.dms,
       activeCommunityId: null,
       scope: dm,
@@ -514,10 +568,11 @@ class HomeState extends Notifier<HomeData> {
 
   Future<void> _refreshMembers() async {
     final scope = state.scope;
-    if (scope is ChannelScope) {
+    if (scope is ChannelScope && scope.community != null) {
       try {
-        final members =
-            await ref.read(chatRepositoryProvider).members(scope.community.id);
+        final members = await ref
+            .read(chatRepositoryProvider)
+            .members(scope.community!.id);
         if (state.scope?.key == scope.key) {
           state = state.copyWith(members: members);
         }
@@ -528,3 +583,16 @@ class HomeState extends Notifier<HomeData> {
 
 final homeStateProvider =
     NotifierProvider<HomeState, HomeData>(HomeState.new);
+
+/// Message being edited inline in the composer (Telegram-style banner).
+/// Null = plain compose mode. Cleared on scope switch.
+class EditingMessage extends Notifier<Message?> {
+  @override
+  Message? build() => null;
+
+  void begin(Message m) => state = m;
+  void clear() => state = null;
+}
+
+final editingMessageProvider =
+    NotifierProvider<EditingMessage, Message?>(EditingMessage.new);

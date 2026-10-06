@@ -65,4 +65,17 @@ class CallApi {
     if (r['type'] == 'error') return null;
     return r;
   }
+
+  /// LiveKit SFU join token for a group DM I belong to.
+  Future<({String url, String token, String room})> livekitToken(
+      String dmId) async {
+    final r = await _conn.request('livekit_token',
+        fields: {..._auth, 'dm_id': dmId});
+    _throwIfError(r);
+    return (
+      url: r['url'] as String,
+      token: r['token'] as String,
+      room: r['room'] as String
+    );
+  }
 }

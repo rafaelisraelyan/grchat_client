@@ -1,4 +1,5 @@
 import '../auth/auth_repository.dart';
+import '../search/search_results.dart';
 import '../transport/grchat_connection.dart';
 import 'models.dart';
 
@@ -180,11 +181,96 @@ class ChatRepository {
     return (userId: r['user_id'] as String, nick: r['nick'] as String);
   }
 
-  Future<String> createCommunity(String name) async {
-    final r =
-        await _conn.request('create_community', fields: {..._auth, 'name': name});
+  Future<({String communityId, String alias})> createCommunity(String name,
+      {String? alias, bool isPrivate = false}) async {
+    final r = await _conn.request('create_community', fields: {
+      ..._auth,
+      'name': name,
+      if (alias case final a) 'alias': a,
+      'is_private': isPrivate,
+    });
+    _throwIfError(r);
+    return (
+      communityId: r['community_id'] as String,
+      alias: (r['alias'] ?? '') as String
+    );
+  }
+
+  /// Creates a channel. Without [communityId] it is a standalone
+  /// broadcast feed (server forces type `broadcast`).
+  Future<({String channelId, String alias})> createChannel({
+    String? communityId,
+    required String name,
+    required String type,
+    String? alias,
+    bool isPrivate = false,
+    String? description,
+  }) async {
+    final r = await _conn.request('create_channel', fields: {
+      ..._auth,
+      if (communityId case final c) 'community_id': c,
+      'name': name,
+      'channel_type': type,
+      if (alias case final a) 'alias': a,
+      'is_private': isPrivate,
+      if (description case final d) 'description': d,
+    });
+    _throwIfError(r);
+    return (
+      channelId: r['channel_id'] as String,
+      alias: (r['alias'] ?? '') as String
+    );
+  }
+
+  Future<List<Channel>> myChannels() async {
+    final r = await _conn.request('list_my_channels', fields: _auth);
+    _throwIfError(r);
+    return ((r['channels'] as List?) ?? const [])
+        .map((c) => Channel.fromJson(c as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<ServerHit> findServer(String alias) async {
+    final r = await _conn.request('find_server',
+        fields: {..._auth, 'alias': alias});
+    _throwIfError(r);
+    return ServerHit.fromJson(r);
+  }
+
+  Future<ChannelHit> findChannel(String alias) async {
+    final r = await _conn.request('find_channel',
+        fields: {..._auth, 'alias': alias});
+    _throwIfError(r);
+    return ChannelHit.fromJson(r);
+  }
+
+  Future<String> joinServer(String alias) async {
+    final r = await _conn.request('join_server',
+        fields: {..._auth, 'alias': alias});
     _throwIfError(r);
     return r['community_id'] as String;
+  }
+
+  Future<String> subscribeChannel(String alias) async {
+    final r = await _conn.request('subscribe_channel',
+        fields: {..._auth, 'alias': alias});
+    _throwIfError(r);
+    return r['channel_id'] as String;
+  }
+
+  Future<void> unsubscribeChannel(String alias) async {
+    _throwIfError(await _conn.request('unsubscribe_channel',
+        fields: {..._auth, 'alias': alias}));
+  }
+
+  Future<void> channelGrant(String channelId, String nick,
+      {String role = 'member'}) async {
+    _throwIfError(await _conn.request('channel_grant', fields: {
+      ..._auth,
+      'channel_id': channelId,
+      'nick': nick,
+      'role': role,
+    }));
   }
 
   Future<String> createInvite(String communityId) async {
