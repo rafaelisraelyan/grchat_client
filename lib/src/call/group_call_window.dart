@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:livekit_client/livekit_client.dart';
 
@@ -7,7 +8,8 @@ import '../widgets/toast.dart';
 import 'group_call.dart';
 
 /// Group (SFU) call surface. Same visual language as the 1-1 CallWindow:
-/// centered, elevated, chat stays usable behind it. v1 has no minimize.
+/// centered, elevated, chat stays usable behind it. Esc minimizes, the pill
+/// restores — same contract as the 1-1 surface.
 class GroupCallHost extends ConsumerWidget {
   const GroupCallHost({super.key});
 
@@ -15,12 +17,28 @@ class GroupCallHost extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final call = ref.watch(groupCallProvider);
     if (call == null) return const SizedBox.shrink();
+    if (call.minimized && call.phase == GroupPhase.active) {
+      return GroupMiniOverlay(call: call);
+    }
     return Stack(children: [
       if (call.phase == GroupPhase.ringing)
         const IgnorePointer(
           child: ModalBarrier(color: Colors.black38),
         ),
-      Center(child: GroupCallWindow(call: call)),
+      Center(
+        child: CallbackShortcuts(
+          bindings: {
+            // Esc minimizes, never hangs up — same as 1-1 (§48).
+            const SingleActivator(LogicalKeyboardKey.escape): () => ref
+                .read(groupCallProvider.notifier)
+                .setMinimized(true),
+          },
+          child: Focus(
+            autofocus: true,
+            child: GroupCallWindow(call: call),
+          ),
+        ),
+      ),
     ]);
   }
 }
@@ -52,6 +70,7 @@ class GroupCallWindow extends ConsumerWidget {
           borderRadius: BorderRadius.circular(18),
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
+          _minimizeRow(st),
           _identity(),
           const SizedBox(height: 10),
           if (call.phase == GroupPhase.active && call.video)
@@ -70,6 +89,16 @@ class GroupCallWindow extends ConsumerWidget {
         ]),
       ),
     );
+  }
+
+  Widget _minimizeRow(GroupCallState st) {
+    return Row(children: [
+      const Expanded(child: SizedBox.shrink()),
+      IconButton(
+          tooltip: 'Свернуть',
+          icon: const Icon(Icons.remove, size: 20),
+          onPressed: () => st.setMinimized(true)),
+    ]);
   }
 
   Widget _identity() {
@@ -242,6 +271,50 @@ class GroupCallWindow extends ConsumerWidget {
               color: bg ?? Colors.grey.withValues(alpha: 0.25),
               shape: BoxShape.circle),
           child: Icon(icon, color: Colors.white),
+        ),
+      ),
+    );
+  }
+}
+
+/// Collapsed pill for an active group call: restore or hang up, the session
+/// keeps running. Mirrors MiniCallOverlay from the 1-1 surface.
+class GroupMiniOverlay extends ConsumerWidget {
+  const GroupMiniOverlay({super.key, required this.call});
+
+  final GroupCall call;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final st = ref.read(groupCallProvider.notifier);
+    return Positioned(
+      right: 16,
+      bottom: 16,
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(24),
+        elevation: 8,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.call, size: 18, color: Colors.green),
+            const SizedBox(width: 8),
+            Text(call.title,
+                style: const TextStyle(fontSize: 13)),
+            const SizedBox(width: 4),
+            Text('· ${call.peers.length} уч.',
+                style:
+                    const TextStyle(fontSize: 12, color: Colors.grey)),
+            IconButton(
+                tooltip: 'Вернуть звонок',
+                icon: const Icon(Icons.open_in_full, size: 18),
+                onPressed: () => st.setMinimized(false)),
+            IconButton(
+                tooltip: 'Завершить',
+                icon: const Icon(Icons.call_end,
+                    size: 18, color: Colors.red),
+                onPressed: () => st.hangup()),
+          ]),
         ),
       ),
     );

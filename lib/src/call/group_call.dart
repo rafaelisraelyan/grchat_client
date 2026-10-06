@@ -42,6 +42,7 @@ class GroupCall {
     this.peers = const [],
     this.muted = false,
     this.cameraOff = false,
+    this.minimized = false,
   });
 
   final String dmId;
@@ -58,12 +59,16 @@ class GroupCall {
   final bool muted;
   final bool cameraOff;
 
+  /// Presentation only: mini pill vs centered window, same as 1-1 (§46–§48).
+  final bool minimized;
+
   GroupCall copyWith({
     GroupPhase? phase,
     String? callId,
     List<GroupPeer>? peers,
     bool? muted,
     bool? cameraOff,
+    bool? minimized,
   }) =>
       GroupCall(
         dmId: dmId,
@@ -76,6 +81,7 @@ class GroupCall {
         peers: peers ?? this.peers,
         muted: muted ?? this.muted,
         cameraOff: cameraOff ?? this.cameraOff,
+        minimized: minimized ?? this.minimized,
       );
 }
 
@@ -277,7 +283,7 @@ class GroupCallState extends Notifier<GroupCall?> {
     try {
       await _room?.localParticipant?.setMicrophoneEnabled(!muted);
     } catch (_) {}
-    state = cur.copyWith(muted: muted);
+    _patchIfSame(cur, (live) => live.copyWith(muted: muted));
   }
 
   Future<void> toggleCamera() async {
@@ -287,7 +293,26 @@ class GroupCallState extends Notifier<GroupCall?> {
     try {
       await _room?.localParticipant?.setCameraEnabled(!off);
     } catch (_) {}
-    state = cur.copyWith(cameraOff: off);
+    _patchIfSame(cur, (live) => live.copyWith(cameraOff: off));
+  }
+
+  void setMinimized(bool minimized) {
+    final cur = state;
+    if (cur == null || cur.minimized == minimized) return;
+    state = cur.copyWith(minimized: minimized);
+  }
+
+  /// Patch the live state, never a snapshot captured before an await:
+  /// room events (_syncPeers) and UI toggles interleave, and writing back a
+  /// stale object wipes whatever the other side changed (same clobber class
+  /// as the 1-1 remoteVideo bug). The dmId+room check keeps a patch from
+  /// leaking onto a different call that started meanwhile.
+  void _patchIfSame(
+      GroupCall cur, GroupCall Function(GroupCall live) patch) {
+    final live = state;
+    if (live == null) return;
+    if (live.dmId != cur.dmId || live.room != cur.room) return;
+    state = patch(live);
   }
 
   void _attach(Room room) {
@@ -331,11 +356,14 @@ class GroupCallState extends Notifier<GroupCall?> {
           audioMuted: audioMuted));
     }
     dlog('group peers=${peers.length}');
-    state = cur.copyWith(peers: peers);
+    _patchIfSame(cur, (live) => live.copyWith(peers: peers));
   }
 
   void _onRoomLost() {
     dlog('group room lost');
+    // Never vanish silently: the window is gone, so the toast is the only
+    // trace of why. The user redials by hand from the DM.
+    ref.read(callNoticeProvider.notifier).show('Соединение с комнатой потеряно');
     _leaveRoom();
     state = null;
   }
@@ -379,6 +407,7 @@ String friendlyGroupError(Object e) {
     return switch (e.code) {
       'NOT_MEMBER' => 'Нет доступа к звонку',
       'NOT_FOUND' => 'Чат не найден',
+      'ALREADY_IN_CALL' => 'Вы уже сейчас в звонке',
       _ => 'Не вышло позвонить',
     };
   }

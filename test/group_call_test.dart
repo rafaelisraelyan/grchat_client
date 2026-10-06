@@ -83,9 +83,50 @@ void main() {
     test('maps codes to Russian copy', () {
       expect(friendlyGroupError(GrchatException('NOT_MEMBER')),
           'Нет доступа к звонку');
+      expect(friendlyGroupError(GrchatException('ALREADY_IN_CALL')),
+          'Вы уже сейчас в звонке');
       expect(friendlyGroupError(GrchatException('NOPE')),
           'Не вышло позвонить');
       expect(friendlyGroupError(StateError('x')), 'Не вышло позвонить');
+    });
+  });
+
+  group('minimize', () {
+    test('starts expanded, setMinimized flips', () {
+      final c = ProviderContainer();
+      addTearDown(c.dispose);
+      final n = c.read(groupCallProvider.notifier);
+      n.incoming(
+          callId: 'k1',
+          dmId: 'd1',
+          room: 'grchat_d1',
+          video: false,
+          fromNick: 'Second');
+      expect(c.read(groupCallProvider)?.minimized, isFalse);
+      n.setMinimized(true);
+      expect(c.read(groupCallProvider)?.minimized, isTrue);
+      n.setMinimized(false);
+      expect(c.read(groupCallProvider)?.minimized, isFalse);
+    });
+
+    test('toggleMute preserves minimized and call identity', () async {
+      final c = ProviderContainer();
+      addTearDown(c.dispose);
+      final n = c.read(groupCallProvider.notifier);
+      n.incoming(
+          callId: 'k1',
+          dmId: 'd1',
+          room: 'grchat_d1',
+          video: false,
+          fromNick: 'Second');
+      n.setMinimized(true);
+      await n.toggleMute();
+      final call = c.read(groupCallProvider);
+      expect(call?.muted, isTrue);
+      expect(call?.minimized, isTrue,
+          reason: 'mute must not wipe the minimized flag it did not touch');
+      expect(call?.callId, 'k1');
+      expect(call?.room, 'grchat_d1');
     });
   });
 }
