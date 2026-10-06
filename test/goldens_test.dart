@@ -316,7 +316,11 @@ class _FakeHomeBroadcast extends HomeState {
             authorId: 'u1',
             authorNick: 'Rafael',
             text: 'Выпустили новую версию приложения.',
-            createdAt: '2026-10-05T14:32:00Z',
+            // September, not October: postTime renders "today"/"yesterday"
+            // relative to the real clock, so October fixtures rot overnight
+            // and the golden starts failing the next day. September dates
+            // always take the stable DD.MM branch.
+            createdAt: '2026-09-05T14:32:00Z',
             kind: 'post',
             attachments: [
               Attachment(
@@ -331,8 +335,8 @@ class _FakeHomeBroadcast extends HomeState {
             authorId: 'u1',
             authorNick: 'Rafael',
             text: 'Серверы обновятся ночью.',
-            createdAt: '2026-10-04T18:00:00Z',
-            editedAt: '2026-10-04T19:00:00Z',
+            createdAt: '2026-09-04T18:00:00Z',
+            editedAt: '2026-09-04T19:00:00Z',
             kind: 'post'),
       ],
       loading: false,
