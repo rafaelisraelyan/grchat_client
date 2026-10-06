@@ -7,6 +7,8 @@ import '../app/providers.dart';
 import '../auth/auth_repository.dart';
 import 'call_api.dart';
 import 'call_diagnostics.dart';
+import 'group_call.dart' show groupCallProvider;
+import 'sfu_marker.dart';
 enum CallPhase { ringing, active }
 
 /// One live call. Null state = idle.
@@ -449,14 +451,35 @@ class CallState extends Notifier<ActiveCall?> {
   void _onPush(Map<String, dynamic> ev) {
     switch (ev['type']?.toString()) {
       case 'call_incoming':
+        final marker =
+            parseSfuMarker((ev['sdp'] ?? '').toString());
+        if (marker != null) {
+          _routeGroupInvite(ev, marker);
+          return;
+        }
         if (state != null) {
           // Busy: decline so the caller hears it instead of ringing 60s.
           final id = ev['call_id']?.toString();
           if (id != null) {
-            ref
-                .read(callApiProvider)
-                .answer(callId: id, accept: false)
-                .catchError((_) {});
+            try {
+              ref
+                  .read(callApiProvider)
+                  .answer(callId: id, accept: false)
+                  .catchError((_) {});
+            } catch (_) {}
+          }
+          return;
+        }
+        if (ref.read(groupCallProvider) != null) {
+          // Busy on a group call: same courtesy decline.
+          final id = ev['call_id']?.toString();
+          if (id != null) {
+            try {
+              ref
+                  .read(callApiProvider)
+                  .answer(callId: id, accept: false)
+                  .catchError((_) {});
+            } catch (_) {}
           }
           return;
         }
@@ -468,6 +491,23 @@ class CallState extends Notifier<ActiveCall?> {
       case 'call_ended':
         _onEnded(ev);
     }
+  }
+
+  /// SFU group invite (marker sdp): route to the group stack, never P2P.
+  void _routeGroupInvite(
+      Map<String, dynamic> ev, ({String room, bool video}) marker) {
+    const prefix = 'grchat_';
+    if (!marker.room.startsWith(prefix)) return;
+    final dmId = marker.room.substring(prefix.length);
+    if (dmId.isEmpty) return;
+    final callId = ev['call_id']?.toString();
+    if (callId == null) return;
+    ref.read(groupCallProvider.notifier).incoming(
+        callId: callId,
+        dmId: dmId,
+        room: marker.room,
+        video: marker.video,
+        fromNick: (ev['from_nick'] ?? '?').toString());
   }
 
   /// Caller side: the answer SDP must become the remote description,

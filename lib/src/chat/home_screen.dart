@@ -12,6 +12,8 @@ import 'home_state.dart';
 import '../widgets/toast.dart';
 import 'models.dart';
 import '../call/call_surface.dart';
+import '../call/group_call.dart';
+import '../call/group_call_window.dart';
 import '../call/call_state.dart';
 import '../voice/voice_state.dart';
 import 'widgets/chat_view.dart';
@@ -40,6 +42,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     Future.microtask(() {
       ref.read(homeStateProvider.notifier).init();
       ref.read(callStateProvider.notifier).ensureListening();
+      ref.read(groupCallProvider.notifier).ensureListening();
       ref.read(voiceStateProvider.notifier).ensureListening();
     });
     _connSub =
@@ -136,6 +139,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 children: [ConnectionBanner(), MissedBanner()]),
           ),
           const CallOverlayHost(),
+          const GroupCallHost(),
         ]);
       }),
     );

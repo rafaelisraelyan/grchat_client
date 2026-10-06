@@ -9,6 +9,8 @@ import 'package:grchat_client/src/app/theme.dart';
 import 'package:grchat_client/src/auth/auth_repository.dart';
 import 'package:grchat_client/src/call/call_state.dart';
 import 'package:grchat_client/src/call/call_surface.dart';
+import 'package:grchat_client/src/call/group_call.dart';
+import 'package:grchat_client/src/call/group_call_window.dart';
 import 'package:grchat_client/src/search/find_dialog.dart';
 import 'package:grchat_client/src/search/search_address.dart';
 import 'package:grchat_client/src/search/search_results.dart';
@@ -359,7 +361,7 @@ class _FakeHomeBroadcastEmpty extends HomeState {
 
 class _FakeCallState extends CallState {
   _FakeCallState(this._c);
-  ActiveCall? _c;
+  final ActiveCall? _c;
 
   @override
   ActiveCall? build() => _c;
@@ -404,6 +406,51 @@ ActiveCall _goldenCall(
         phase: phase,
         remoteVideo: remoteVideo,
         minimized: minimized);
+
+class _FakeGroupCall extends GroupCallState {
+  _FakeGroupCall(this._c);
+  final GroupCall? _c;
+
+  @override
+  GroupCall? build() => _c;
+}
+
+Future<void> _pumpGroup(
+    WidgetTester t, GroupCall? call, ThemeMode mode) async {
+  t.view.physicalSize = const Size(1280, 720);
+  t.view.devicePixelRatio = 1.0;
+  addTearDown(t.view.resetPhysicalSize);
+  await t.pumpWidget(ProviderScope(
+      overrides: [
+        groupCallProvider.overrideWith(() => _FakeGroupCall(call)),
+      ],
+      child: MaterialApp(
+          theme: grchatLight,
+          darkTheme: grchatDark,
+          themeMode: mode,
+          home: const Scaffold(
+              body: Stack(children: [
+            Positioned.fill(
+                child: ColoredBox(color: Color(0xFF1A1A22))),
+            GroupCallHost(),
+          ])))));
+  await t.pumpAndSettle();
+}
+
+GroupCall _goldenGroup(
+        {bool outgoing = false,
+        bool video = true,
+        GroupPhase phase = GroupPhase.ringing,
+        List<GroupPeer> peers = const []}) =>
+    GroupCall(
+        dmId: 'd9',
+        title: 'Команда',
+        room: 'grchat_d9',
+        video: video,
+        outgoing: outgoing,
+        phase: phase,
+        callId: 'k9',
+        peers: peers);
 
 void main() {
   testWidgets('auth screen', (t) async {
@@ -747,5 +794,43 @@ void main() {
         ThemeMode.dark);
     await expectLater(find.byType(CallOverlayHost),
         matchesGoldenFile('goldens/call_mini.png'));
+  });
+
+  testWidgets('group incoming dark', (t) async {
+    await _pumpGroup(
+        t, _goldenGroup(video: true), ThemeMode.dark);
+    await expectLater(find.byType(GroupCallHost),
+        matchesGoldenFile('goldens/group_incoming.png'));
+  });
+
+  testWidgets('group incoming light', (t) async {
+    await _pumpGroup(
+        t, _goldenGroup(video: false), ThemeMode.light);
+    await expectLater(find.byType(GroupCallHost),
+        matchesGoldenFile('goldens/group_incoming_light.png'));
+  });
+
+  testWidgets('group active grid dark', (t) async {
+    await _pumpGroup(
+        t,
+        _goldenGroup(
+            outgoing: true,
+            video: true,
+            phase: GroupPhase.active,
+            peers: [
+              GroupPeer(
+                  identity: 'u2',
+                  name: 'Second',
+                  videoTrack: null,
+                  audioMuted: false),
+              GroupPeer(
+                  identity: 'u3',
+                  name: 'TestPilot',
+                  videoTrack: null,
+                  audioMuted: true),
+            ]),
+        ThemeMode.dark);
+    await expectLater(find.byType(GroupCallHost),
+        matchesGoldenFile('goldens/group_active.png'));
   });
 }

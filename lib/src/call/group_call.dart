@@ -1,0 +1,386 @@
+import 'dart:async';
+
+import 'package:livekit_client/livekit_client.dart';
+import 'package:riverpod/riverpod.dart';
+
+import '../app/providers.dart';
+import '../auth/auth_repository.dart';
+import '../chat/home_state.dart';
+import 'call_api.dart';
+import 'call_diagnostics.dart';
+import 'call_state.dart' show callNoticeProvider, callStateProvider;
+import 'sfu_marker.dart';
+
+enum GroupPhase { ringing, active }
+
+/// One remote member of the SFU room. [videoTrack] is null until a
+/// subscribed, unmuted video track exists — the UI shows an avatar then.
+class GroupPeer {
+  GroupPeer({
+    required this.identity,
+    required this.name,
+    required this.videoTrack,
+    required this.audioMuted,
+  });
+  final String identity;
+  final String name;
+  final VideoTrack? videoTrack;
+  final bool audioMuted;
+}
+
+/// A group call lives in a LiveKit room; our server only mints tokens
+/// and fans out the invite. 1-1 calls stay on direct P2P (CallState).
+class GroupCall {
+  GroupCall({
+    required this.dmId,
+    required this.title,
+    required this.room,
+    required this.video,
+    required this.outgoing,
+    required this.phase,
+    this.callId,
+    this.peers = const [],
+    this.muted = false,
+    this.cameraOff = false,
+  });
+
+  final String dmId;
+  final String title;
+  final String room;
+  final bool video;
+  final bool outgoing;
+  final GroupPhase phase;
+
+  /// Signaling call id for hangup/decline correlation. Null until the
+  /// outgoing offer returns, or until an incoming invite arrives.
+  final String? callId;
+  final List<GroupPeer> peers;
+  final bool muted;
+  final bool cameraOff;
+
+  GroupCall copyWith({
+    GroupPhase? phase,
+    String? callId,
+    List<GroupPeer>? peers,
+    bool? muted,
+    bool? cameraOff,
+  }) =>
+      GroupCall(
+        dmId: dmId,
+        title: title,
+        room: room,
+        video: video,
+        outgoing: outgoing,
+        phase: phase ?? this.phase,
+        callId: callId ?? this.callId,
+        peers: peers ?? this.peers,
+        muted: muted ?? this.muted,
+        cameraOff: cameraOff ?? this.cameraOff,
+      );
+}
+
+final groupCallApiProvider = Provider<CallApi>((ref) {
+  final s = ref.watch(sessionProvider);
+  if (s == null) throw StateError('no session');
+  return CallApi(ref.watch(connectionProvider), s);
+});
+
+class GroupCallState extends Notifier<GroupCall?> {
+  Room? _room;
+  EventsListener<RoomEvent>? _roomEvents;
+  StreamSubscription<Map<String, dynamic>>? _pushSub;
+
+  @override
+  GroupCall? build() => null;
+
+  void ensureListening() {
+    _pushSub ??=
+        ref.read(connectionProvider).pushes.listen(_onPush);
+  }
+
+  VideoTrack? get localVideoTrack {
+    final pubs = _room?.localParticipant?.videoTrackPublications;
+    if (pubs == null) return null;
+    for (final p in pubs) {
+      final t = p.track;
+      if (t is VideoTrack && !p.muted) return t;
+    }
+    return null;
+  }
+
+  /// Outgoing group call: join the SFU room first, then ring the members
+  /// through the stock invite fan-out.
+  Future<void> join(
+      {required String dmId,
+      required String title,
+      required bool video}) async {
+    if (state != null) return;
+    if (ref.read(callStateProvider) != null) {
+      ref.read(callNoticeProvider.notifier).show('Занято');
+      return;
+    }
+    final api = ref.read(groupCallApiProvider);
+    final creds = await api.livekitToken(dmId);
+    final room = Room();
+    try {
+      _attach(room);
+      await room.connect(creds.url, creds.token);
+      await room.localParticipant
+          ?.setMicrophoneEnabled(true);
+      if (video) {
+        try {
+          await room.localParticipant?.setCameraEnabled(true);
+        } catch (e) {
+          dlog('group camera failed: $e');
+        }
+      }
+      state = GroupCall(
+          dmId: dmId,
+          title: title,
+          room: creds.room,
+          video: video,
+          outgoing: true,
+          phase: GroupPhase.active);
+      _syncPeers();
+      try {
+        final callId = await api.offer(
+            dmId: dmId,
+            sdp: buildSfuMarker(creds.room, video));
+        state = state?.copyWith(callId: callId);
+      } catch (e) {
+        // Invite failed (e.g. everyone offline): stay in the room so a
+        // late joiner still lands; the error is shown, not thrown.
+        dlog('group invite failed: $e');
+        ref
+            .read(callNoticeProvider.notifier)
+            .show(friendlyGroupError(e));
+      }
+    } catch (e) {
+      await _leaveRoom();
+      rethrow;
+    }
+  }
+
+  /// Incoming SFU invite from the signaling fan-out.
+  void incoming(
+      {required String callId,
+      required String dmId,
+      required String room,
+      required bool video,
+      required String fromNick}) {
+    if (state != null) {
+      // Busy in another group call: decline quietly.
+      try {
+        ref
+            .read(groupCallApiProvider)
+            .answer(callId: callId, accept: false)
+            .catchError((_) {});
+      } catch (_) {}
+      return;
+    }
+    if (ref.read(callStateProvider) != null) {
+      // Busy on 1-1: decline so the caller hears it.
+      try {
+        ref
+            .read(groupCallApiProvider)
+            .answer(callId: callId, accept: false)
+            .catchError((_) {});
+      } catch (_) {}
+      return;
+    }
+    dlog('group incoming room=$room from=$fromNick');
+    state = GroupCall(
+        dmId: dmId,
+        title: _dmTitle(dmId),
+        room: room,
+        video: video,
+        outgoing: false,
+        phase: GroupPhase.ringing,
+        callId: callId);
+  }
+
+  String _dmTitle(String dmId) {
+    try {
+      final data = ref.read(homeStateProvider);
+      final myId = ref.read(sessionProvider)?.userId ?? '';
+      final match = data.dms.where((d) => d.id == dmId);
+      if (match.isNotEmpty) return match.first.title(myId);
+    } catch (_) {}
+    return 'Группа';
+  }
+
+  Future<void> acceptIncoming() async {
+    final cur = state;
+    if (cur == null || cur.outgoing || cur.phase != GroupPhase.ringing) {
+      return;
+    }
+    final api = ref.read(groupCallApiProvider);
+    final room = Room();
+    try {
+      _attach(room);
+      final creds = await api.livekitToken(cur.dmId);
+      await room.connect(creds.url, creds.token);
+      await room.localParticipant?.setMicrophoneEnabled(true);
+      if (cur.video) {
+        try {
+          await room.localParticipant?.setCameraEnabled(true);
+        } catch (e) {
+          dlog('group camera failed: $e');
+        }
+      }
+      state = cur.copyWith(phase: GroupPhase.active);
+      _syncPeers();
+      // Acknowledge over signaling so the caller tracks + records.
+      // The marker sdp is convention only; media lives in the room.
+      await api.answer(
+          callId: cur.callId!,
+          accept: true,
+          sdp: buildSfuMarker(cur.room, cur.video));
+    } catch (e) {
+      await decline();
+      rethrow;
+    }
+  }
+
+  Future<void> decline() async {
+    final cur = state;
+    if (cur == null) return;
+    if (cur.callId != null) {
+      try {
+        await ref
+            .read(groupCallApiProvider)
+            .answer(callId: cur.callId!, accept: false);
+      } catch (_) {}
+    }
+    await _leaveRoom();
+    state = null;
+  }
+
+  Future<void> hangup() async {
+    final cur = state;
+    if (cur == null) return;
+    if (cur.callId != null) {
+      try {
+        await ref
+            .read(groupCallApiProvider)
+            .hangup(cur.callId!);
+      } catch (_) {}
+    }
+    await _leaveRoom();
+    state = null;
+  }
+
+  Future<void> toggleMute() async {
+    final cur = state;
+    if (cur == null) return;
+    final muted = !cur.muted;
+    try {
+      await _room?.localParticipant?.setMicrophoneEnabled(!muted);
+    } catch (_) {}
+    state = cur.copyWith(muted: muted);
+  }
+
+  Future<void> toggleCamera() async {
+    final cur = state;
+    if (cur == null || !cur.video) return;
+    final off = !cur.cameraOff;
+    try {
+      await _room?.localParticipant?.setCameraEnabled(!off);
+    } catch (_) {}
+    state = cur.copyWith(cameraOff: off);
+  }
+
+  void _attach(Room room) {
+    _room = room;
+    _roomEvents?.dispose();
+    _roomEvents = room.createListener();
+    _roomEvents!
+      ..on<ParticipantConnectedEvent>((_) => _syncPeers())
+      ..on<ParticipantDisconnectedEvent>((_) => _syncPeers())
+      ..on<TrackSubscribedEvent>((_) => _syncPeers())
+      ..on<TrackUnsubscribedEvent>((_) => _syncPeers())
+      ..on<TrackMutedEvent>((_) => _syncPeers())
+      ..on<TrackUnmutedEvent>((_) => _syncPeers())
+      ..on<RoomDisconnectedEvent>((_) => _onRoomLost());
+  }
+
+  void _syncPeers() {
+    final cur = state;
+    final room = _room;
+    if (cur == null || room == null) return;
+    final peers = <GroupPeer>[];
+    for (final p in room.remoteParticipants.values) {
+      VideoTrack? video;
+      var audioMuted = true;
+      for (final pub in p.audioTrackPublications) {
+        if (pub.subscribed && !pub.muted) audioMuted = false;
+      }
+      for (final pub in p.videoTrackPublications) {
+        if (pub.kind == TrackType.VIDEO &&
+            !pub.isScreenShare &&
+            pub.subscribed &&
+            !pub.muted) {
+          final t = pub.track;
+          if (t is VideoTrack) video = t;
+        }
+      }
+      peers.add(GroupPeer(
+          identity: p.identity,
+          name: p.name.isNotEmpty ? p.name : p.identity,
+          videoTrack: video,
+          audioMuted: audioMuted));
+    }
+    dlog('group peers=${peers.length}');
+    state = cur.copyWith(peers: peers);
+  }
+
+  void _onRoomLost() {
+    dlog('group room lost');
+    _leaveRoom();
+    state = null;
+  }
+
+  Future<void> _leaveRoom() async {
+    try {
+      _roomEvents?.dispose();
+    } catch (_) {}
+    _roomEvents = null;
+    try {
+      await _room?.disconnect();
+    } catch (_) {}
+    try {
+      await _room?.dispose();
+    } catch (_) {}
+    _room = null;
+  }
+
+  void _onPush(Map<String, dynamic> ev) {
+    switch (ev['type']?.toString()) {
+      case 'call_ended':
+        final cur = state;
+        if (cur == null ||
+            cur.callId == null ||
+            ev['call_id'] != cur.callId) {
+          return;
+        }
+        dlog('group ended by signaling');
+        _leaveRoom();
+        state = null;
+    }
+  }
+}
+
+final groupCallProvider =
+    NotifierProvider<GroupCallState, GroupCall?>(GroupCallState.new);
+
+/// Raw server codes must never reach the UI.
+String friendlyGroupError(Object e) {
+  if (e is GrchatException) {
+    return switch (e.code) {
+      'NOT_MEMBER' => 'Нет доступа к звонку',
+      'NOT_FOUND' => 'Чат не найден',
+      _ => 'Не вышло позвонить',
+    };
+  }
+  return 'Не вышло позвонить';
+}

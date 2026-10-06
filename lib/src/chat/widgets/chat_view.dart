@@ -13,6 +13,7 @@ import '../models.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../call/call_state.dart';
+import '../../call/group_call.dart';
 import 'message_list.dart';
 import 'channel_feed.dart';
 import 'dialogs.dart';
@@ -558,18 +559,24 @@ class _ChatViewState extends ConsumerState<ChatView> {
     final myId = ref.read(sessionProvider)?.userId;
     final others =
         scope.thread.members.where((m) => m.userId != myId).toList();
+    final group = scope.thread.isGroup || others.length != 1;
     try {
-      if (!scope.thread.isGroup && others.length == 1) {
+      if (!group) {
         await ref
             .read(callStateProvider.notifier)
             .startCall(peerNick: others.first.nick, video: video);
       } else {
-        await ref
-            .read(callStateProvider.notifier)
-            .startCall(dmId: scope.thread.id, video: video);
+        // Group DMs go through the SFU; 1-1 stays on direct P2P.
+        await ref.read(groupCallProvider.notifier).join(
+            dmId: scope.thread.id,
+            title: scope.thread.title(myId ?? ''),
+            video: video);
       }
     } catch (e) {
-      if (mounted) Toast.show(context, friendlyCallError(e));
+      if (mounted) {
+        Toast.show(context,
+            group ? friendlyGroupError(e) : friendlyCallError(e));
+      }
     }
   }
 

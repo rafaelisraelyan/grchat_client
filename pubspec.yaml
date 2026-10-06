@@ -40,6 +40,7 @@ dependencies:
   video_player: ^2.14.1
   path_provider: ^2.1.6
   flutter_webrtc: ^1.6.2+hotfix.3
+  livekit_client: ^2.13.0
   package_info_plus: ^10.2.2
   shared_preferences: ^2.5.5
   window_manager: ^0.5.2
