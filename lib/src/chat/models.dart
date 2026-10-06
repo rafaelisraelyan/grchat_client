@@ -1,3 +1,5 @@
+import '../auth/auth_repository.dart';
+
 class Attachment {
   Attachment(
       {required this.fileId,
@@ -237,4 +239,62 @@ class Member {
   final String userId;
   final String nick;
   final String role;
+}
+
+/// One entry of the side-panel attachments index (newest first).
+class AttachmentIndexEntry {
+  AttachmentIndexEntry({
+    required this.attachmentId,
+    required this.fileId,
+    required this.filename,
+    required this.mime,
+    required this.sizeBytes,
+    required this.messageId,
+    required this.createdAt,
+  });
+  final String attachmentId;
+  final String fileId;
+  final String filename;
+  final String mime;
+  final int sizeBytes;
+  final String messageId;
+  final String createdAt;
+
+  bool get isImage => mime.startsWith('image/');
+  bool get isVideo => mime.startsWith('video/');
+
+  factory AttachmentIndexEntry.fromJson(Map<String, dynamic> j) =>
+      AttachmentIndexEntry(
+        attachmentId: j['attachment_id'] as String,
+        fileId: (j['file_id'] ?? '') as String,
+        filename: (j['filename'] ?? 'file') as String,
+        mime: (j['mime'] ?? '') as String,
+        sizeBytes: (j['size_bytes'] as num?)?.toInt() ?? 0,
+        messageId: (j['message_id'] ?? '') as String,
+        createdAt: (j['created_at'] ?? '') as String,
+      );
+}
+
+class AttachmentsIndex {
+  AttachmentsIndex({required this.items, required this.hasMore});
+  final List<AttachmentIndexEntry> items;
+  final bool hasMore;
+}
+
+/// Russian copy for upload failures. Never surfaces raw backend codes.
+String friendlyUploadError(Object e) {
+  if (e is GrchatException) {
+    return switch (e.code) {
+      'BAD_FILENAME' => 'Некорректное имя файла.',
+      'FILE_TOO_BIG' => 'Файл слишком большой.',
+      'BAD_MIME' => 'Этот тип файлов запрещён.',
+      'QUOTA_EXCEEDED' => 'Квота исчерпана.',
+      'TOO_MANY_UPLOADS' => 'Слишком много загрузок, подожди.',
+      'NOT_MEMBER' => 'Нет доступа.',
+      'BANNED' => 'Доступ запрещён.',
+      'MUTED' => 'Нельзя писать в этот чат.',
+      _ => 'Не удалось отправить сообщение. Проверьте соединение.',
+    };
+  }
+  return 'Не удалось отправить сообщение. Проверьте соединение.';
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -194,13 +195,29 @@ class _MessageRow extends StatefulWidget {
 class _MessageRowState extends State<_MessageRow> {
   bool _hover = false;
   DateTime? _lastTapDown;
+  Timer? _hoverOut;
+
+  @override
+  void dispose() {
+    _hoverOut?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final m = widget.message;
     return MouseRegion(
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
+      onEnter: (_) {
+        _hoverOut?.cancel();
+        if (!_hover) setState(() => _hover = true);
+      },
+      // Debounced hide: the cursor crosses the gap to the buttons.
+      onExit: (_) {
+        _hoverOut?.cancel();
+        _hoverOut = Timer(const Duration(milliseconds: 150), () {
+          if (mounted && _hover) setState(() => _hover = false);
+        });
+      },
       child: GestureDetector(
         // Manual double-click: DoubleTapGestureRecognizer here breaks
         // child button taps, so detect the second tap-down by hand.
@@ -211,7 +228,7 @@ class _MessageRowState extends State<_MessageRow> {
                     now.difference(_lastTapDown!) <
                         const Duration(milliseconds: 400)) {
                   _lastTapDown = null;
-                  _editDialog(context);
+                  beginInlineEdit(context, m);
                 } else {
                   _lastTapDown = now;
                 }
@@ -220,7 +237,9 @@ class _MessageRowState extends State<_MessageRow> {
         onSecondaryTapDown: widget.mine
             ? (d) => _rowMenu(context, d.globalPosition)
             : null,
-        child: Stack(children: [
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -239,12 +258,15 @@ class _MessageRowState extends State<_MessageRow> {
             Positioned(
               right: 4,
               top: 0,
-              child: IgnorePointer(
-                ignoring: !_hover,
-                child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 120),
-                  opacity: _hover ? 1 : 0,
-                  child: _HoverActions(message: m),
+              bottom: 0,
+              child: Center(
+                child: IgnorePointer(
+                  ignoring: !_hover,
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 120),
+                    opacity: _hover ? 1 : 0,
+                    child: _HoverActions(message: m),
+                  ),
                 ),
               ),
             ),
@@ -264,48 +286,15 @@ class _MessageRowState extends State<_MessageRow> {
     );
     if (!context.mounted) return;
     if (v == 'edit') {
-      _editDialog(context);
+      beginInlineEdit(context, widget.message);
     } else if (v == 'delete') {
       _deleteConfirm(context);
     }
   }
 
-  Future<void> _editDialog(BuildContext context) async {
-    final ref = ProviderScope.containerOf(context);
-    final tc = TextEditingController(text: widget.message.text);
-    final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-              title: const Text('Изменить сообщение'),
-              content: TextField(
-                  controller: tc,
-                  autofocus: true,
-                  maxLines: 4,
-                  decoration: const InputDecoration(
-                      border: OutlineInputBorder())),
-              actions: [
-                TextButton(
-                    onPressed: () => Navigator.pop(ctx, false),
-                    child: const Text('Отмена')),
-                FilledButton(
-                    onPressed: () => Navigator.pop(ctx, true),
-                    child: const Text('Сохранить')),
-              ],
-            ));
-    if (ok == true && context.mounted) {
-      try {
-        await ref
-            .read(homeStateProvider.notifier)
-            .editMessage(widget.message.id, tc.text.trim());
-      } catch (e) {
-        if (context.mounted) Toast.show(context, '$e');
-      }
-    }
-  }
-
   Future<void> _deleteConfirm(BuildContext context) async {
     final ref = ProviderScope.containerOf(context);
-    final ok = await showDialog<bool>(
+    final ok = await showEscDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
               title: const Text('Удалить сообщение?'),
@@ -400,7 +389,9 @@ class _HoverBtn extends ConsumerWidget {
       waitDuration: const Duration(seconds: 2),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        onTap: () => isDelete ? _deleteConfirm(context, ref, message) : _editDialog(context, ref, message),
+        onTap: () => isDelete
+            ? _deleteConfirm(context, ref, message)
+            : beginInlineEdit(context, message),
         child: Padding(
           padding: const EdgeInsets.all(9),
           child: Icon(icon, size: 20, color: isDelete ? c.danger : c.textPrimary),
@@ -410,26 +401,11 @@ class _HoverBtn extends ConsumerWidget {
   }
 }
 
-Future<void> _editDialog(BuildContext context, WidgetRef ref, Message message) async {
-  final tc = TextEditingController(text: message.text);
-  final ok = await showEscDialog<bool>(
-      context: context,
-      autofocus: false,
-      builder: (ctx) => AlertDialog(
-            title: const Text('Изменить сообщение'),
-            content: TextField(controller: tc, autofocus: true, maxLines: 4, decoration: const InputDecoration(border: OutlineInputBorder())),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сохранить')),
-            ],
-          ));
-  if (ok == true && context.mounted) {
-    try {
-      await ref.read(homeStateProvider.notifier).editMessage(message.id, tc.text.trim());
-    } catch (e) {
-      if (context.mounted) Toast.show(context, '$e');
-    }
-  }
+/// Starts Telegram-style inline editing in the composer.
+void beginInlineEdit(BuildContext context, Message message) {
+  ProviderScope.containerOf(context)
+      .read(editingMessageProvider.notifier)
+      .begin(message);
 }
 
 Future<void> _deleteConfirm(BuildContext context, WidgetRef ref, Message message) async {

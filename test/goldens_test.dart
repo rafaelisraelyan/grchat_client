@@ -652,15 +652,16 @@ void main() {
     await t.pumpAndSettle();
     await expectLater(
         find.byType(HomeScreen), matchesGoldenFile('goldens/hover.png'));
-    // hover toolbar with visible icons; taps open real dialogs
+    // hover toolbar opens inline editing (banner), not a dialog
     await t.tap(find.byIcon(Icons.edit));
     await t.pumpAndSettle();
-    expect(find.text('Изменить сообщение'), findsOneWidget);
+    expect(find.text('Редактирование'), findsOneWidget);
     expect(find.text('Моё сообщение'), findsWidgets);
-    await t.tap(find.text('Отмена'));
+    await t.tap(find.byIcon(Icons.close));
     await t.pumpAndSettle();
+    expect(find.text('Редактирование'), findsNothing);
     // delete opens a confirm
-    await g.moveTo(t.getCenter(find.text('Моё сообщение')));
+    await g.moveTo(t.getCenter(find.text('Моё сообщение').first));
     await t.pump(const Duration(milliseconds: 300));
     await t.tap(find.byIcon(Icons.delete));
     await t.pumpAndSettle();
@@ -688,7 +689,7 @@ void main() {
     await t.pump(const Duration(milliseconds: 50));
     await t.tap(find.text('Моё сообщение'));
     await t.pumpAndSettle();
-    expect(find.text('Изменить сообщение'), findsOneWidget);
+    expect(find.text('Редактирование'), findsOneWidget);
   });
 
   testWidgets('find dialog dark', (t) async {

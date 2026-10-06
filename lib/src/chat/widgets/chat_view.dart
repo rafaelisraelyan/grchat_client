@@ -36,6 +36,7 @@ class ChatView extends ConsumerStatefulWidget {
 
 class _ChatViewState extends ConsumerState<ChatView> {
   final _input = TextEditingController();
+  final _inputFocus = FocusNode();
   final _scroll = ScrollController();
   bool _typingSent = false;
   double? _uploading;
@@ -50,6 +51,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
   void dispose() {
     _scroll.removeListener(_onScroll);
     _input.dispose();
+    _inputFocus.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -86,6 +88,13 @@ class _ChatViewState extends ConsumerState<ChatView> {
     ref.listen(homeStateProvider, (_, next) {
       if (next.messages.isNotEmpty) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _scrollDown());
+      }
+    });
+    // Inline edit prefill: once per edit session, then focus the field.
+    ref.listen<Message?>(editingMessageProvider, (prev, next) {
+      if (next != null && prev?.id != next.id) {
+        _input.text = next.text;
+        _inputFocus.requestFocus();
       }
     });
     // Standalone channels are broadcast feeds, not chatrooms (§4, §19).
@@ -178,6 +187,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
                 padding: const EdgeInsets.only(bottom: 8),
                 child: LinearProgressIndicator(value: _uploading),
               ),
+            const _EditBanner(),
             Container(
               constraints: const BoxConstraints(minHeight: 48),
               decoration: BoxDecoration(
@@ -195,9 +205,10 @@ class _ChatViewState extends ConsumerState<ChatView> {
                 Expanded(
                   child: Focus(
                     onKeyEvent: (node, event) =>
-                        _enterToSend(event, _send),
+                        _composerKeys(event),
                     child: TextField(
                     controller: _input,
+                    focusNode: _inputFocus,
                     minLines: 1,
                     maxLines: 4,
                     decoration: InputDecoration(
@@ -224,18 +235,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
                   ),
                 ),
                 ),
-                ValueListenableBuilder<TextEditingValue>(
-                  valueListenable: _input,
-                  builder: (ctx, v, _) {
-                    final can = v.text.trim().isNotEmpty;
-                    return IconButton(
-                        icon: const Icon(Icons.send, size: 20),
-                        color: can
-                            ? GrchatColors.of(context).accent
-                            : GrchatColors.of(context).textMuted,
-                        onPressed: can ? _send : null);
-                  },
-                ),
+                _ComposerSendButton(input: _input, onSend: _send),
               ]),
             ),
           ]),
@@ -545,12 +545,45 @@ class _ChatViewState extends ConsumerState<ChatView> {
     return KeyEventResult.ignored;
   }
 
+  KeyEventResult _composerKeys(KeyEvent event) {
+    // Esc cancels inline editing; Enter sends/saves.
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.escape &&
+        ref.read(editingMessageProvider) != null) {
+      _cancelEdit();
+      return KeyEventResult.handled;
+    }
+    return _enterToSend(event, _send);
+  }
+
   void _send() {
+    final editing = ref.read(editingMessageProvider);
     final t = _input.text;
     if (t.trim().isEmpty) return;
+    if (editing != null) {
+      _saveEdit(editing, t);
+      return;
+    }
     _input.clear();
     _typingSent = false;
     ref.read(homeStateProvider.notifier).send(t);
+  }
+
+  Future<void> _saveEdit(Message message, String text) async {
+    try {
+      await ref
+          .read(homeStateProvider.notifier)
+          .editMessage(message.id, text);
+      ref.read(editingMessageProvider.notifier).clear();
+      _input.clear();
+    } catch (e) {
+      if (mounted) Toast.show(context, '$e');
+    }
+  }
+
+  void _cancelEdit() {
+    ref.read(editingMessageProvider.notifier).clear();
+    _input.clear();
   }
 
   Future<void> _startCall({required bool video}) async {
@@ -654,9 +687,82 @@ class _ChatViewState extends ConsumerState<ChatView> {
             });
       }
     } catch (e) {
-      if (mounted) Toast.show(context, 'Не удалось отправить сообщение');
+      if (mounted) Toast.show(context, friendlyUploadError(e));
     } finally {
       if (mounted) setState(() => _uploading = null);
     }
+  }
+}
+
+/// Telegram-style edit banner above the composer: original text + cancel.
+class _EditBanner extends ConsumerWidget {
+  const _EditBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final editing = ref.watch(editingMessageProvider);
+    if (editing == null) return const SizedBox.shrink();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border(
+            left: BorderSide(
+                color: GrchatColors.of(context).accent, width: 2)),
+      ),
+      child: Row(children: [
+        const Padding(
+          padding: EdgeInsets.only(right: 8),
+          child: Icon(Icons.edit, size: 18, color: Colors.blue),
+        ),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Редактирование',
+                    style: TextStyle(
+                        color: Colors.blue,
+                        fontWeight: FontWeight.w600)),
+                Text(editing.text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13)),
+              ]),
+        ),
+        IconButton(
+            tooltip: 'Отменить',
+            icon: const Icon(Icons.close, size: 18),
+            onPressed: () =>
+                ref.read(editingMessageProvider.notifier).clear()),
+      ]),
+    );
+  }
+}
+
+/// Send button: checkmark while editing, plane otherwise.
+class _ComposerSendButton extends ConsumerWidget {
+  const _ComposerSendButton(
+      {required this.input, required this.onSend});
+
+  final TextEditingController input;
+  final VoidCallback onSend;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final editing = ref.watch(editingMessageProvider) != null;
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: input,
+      builder: (ctx, v, _) {
+        final can = v.text.trim().isNotEmpty;
+        return IconButton(
+            tooltip: editing ? 'Сохранить' : 'Отправить',
+            icon: Icon(editing ? Icons.check : Icons.send, size: 20),
+            color: can
+                ? GrchatColors.of(context).accent
+                : GrchatColors.of(context).textMuted,
+            onPressed: can ? onSend : null);
+      },
+    );
   }
 }

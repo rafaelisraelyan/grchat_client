@@ -11,18 +11,69 @@ import '../../widgets/toast.dart';
 import '../home_state.dart';
 import '../models.dart';
 
-/// Right column for a 1-1 DM: peer profile + shared media from loaded
-/// messages. No presence/last-seen: the backend has no presence feed,
+/// Right column for a 1-1 DM: peer profile + shared media from the
+/// attachments index (full history, newest first — not just the loaded
+/// page). No presence/last-seen: the backend has no presence feed,
 /// so nothing is faked. Group DMs keep the members list instead.
-class DmInfoPanel extends ConsumerWidget {
+class DmInfoPanel extends ConsumerStatefulWidget {
   const DmInfoPanel({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DmInfoPanel> createState() => _DmInfoPanelState();
+}
+
+class _DmInfoPanelState extends ConsumerState<DmInfoPanel> {
+  String? _dmId;
+  List<AttachmentIndexEntry> _items = const [];
+  bool _hasMore = false;
+  bool _loading = true;
+
+  Future<void> _load({bool more = false}) async {
+    final id = _dmId;
+    if (id == null) return;
+    if (more) {
+      if (!_hasMore || _loading) return;
+    } else if (_loading && _items.isNotEmpty) {
+      return;
+    }
+    if (!more) setState(() => _loading = true);
+    try {
+      final idx = await ref.read(fileApiProvider).attachmentsIndex(
+          dmId: id,
+          limit: 60,
+          beforeId: more && _items.isNotEmpty
+              ? _items.last.attachmentId
+              : null);
+      if (!mounted) return;
+      final known = _items.map((e) => e.attachmentId).toSet();
+      setState(() {
+        _items = [
+          ..._items,
+          for (final e in idx.items)
+            if (!known.contains(e.attachmentId)) e,
+        ];
+        _hasMore = idx.hasMore;
+        _loading = false;
+      });
+    } catch (_) {
+      // Old servers have no index endpoint: media sections stay hidden.
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final data = ref.watch(homeStateProvider);
     final scope = data.scope;
     if (scope is! DmScope || scope.thread.isGroup) {
       return const SizedBox.shrink();
+    }
+    if (_dmId != scope.thread.id) {
+      _dmId = scope.thread.id;
+      _items = const [];
+      _hasMore = false;
+      _loading = true;
+      Future.microtask(() => _load());
     }
     final myId = ref.watch(sessionProvider)?.userId ?? '';
     final others = scope.thread.members
@@ -31,21 +82,11 @@ class DmInfoPanel extends ConsumerWidget {
     if (others.isEmpty) return const SizedBox.shrink();
     final peer = others.first;
 
-    final images = <Attachment>[];
-    final videos = <Attachment>[];
-    final files = <Attachment>[];
-    for (final m in data.messages) {
-      if (m.dmId != scope.thread.id) continue;
-      for (final a in m.attachments) {
-        if (a.mime.startsWith('image/')) {
-          if (images.length < 9) images.add(a);
-        } else if (a.mime.startsWith('video/')) {
-          if (videos.length < 10) videos.add(a);
-        } else if (files.length < 10) {
-          files.add(a);
-        }
-      }
-    }
+    final images = _items.where((e) => e.isImage).toList();
+    final videos = _items.where((e) => e.isVideo).toList();
+    final files = _items
+        .where((e) => !e.isImage && !e.isVideo)
+        .toList();
 
     return SizedBox(
       width: 230,
@@ -103,15 +144,23 @@ class DmInfoPanel extends ConsumerWidget {
                 const SizedBox(height: 12),
                 const _SectionTitle('Видео'),
                 const SizedBox(height: 6),
-                for (final a in videos)
-                  _FileRow(attachment: a),
+                for (final a in videos) _FileRow(entry: a),
               ],
               if (files.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 const _SectionTitle('Файлы'),
                 const SizedBox(height: 6),
-                for (final a in files)
-                  _FileRow(attachment: a),
+                for (final a in files) _FileRow(entry: a),
+              ],
+              if (_hasMore) ...[
+                const SizedBox(height: 8),
+                Center(
+                  child: TextButton(
+                      onPressed: _loading ? null : () => _load(more: true),
+                      child: Text(_loading
+                          ? 'Загрузка…'
+                          : 'Показать ещё')),
+                ),
               ],
             ]),
       ),
@@ -167,7 +216,7 @@ class _SectionTitle extends StatelessWidget {
 
 class _MediaGrid extends ConsumerWidget {
   const _MediaGrid({required this.images});
-  final List<Attachment> images;
+  final List<AttachmentIndexEntry> images;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -202,12 +251,12 @@ class _MediaGrid extends ConsumerWidget {
 }
 
 class _FileRow extends StatelessWidget {
-  const _FileRow({required this.attachment});
-  final Attachment attachment;
+  const _FileRow({required this.entry});
+  final AttachmentIndexEntry entry;
 
   @override
   Widget build(BuildContext context) {
-    final a = attachment;
+    final a = entry;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(children: [

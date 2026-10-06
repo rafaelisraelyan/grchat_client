@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -5,9 +7,11 @@ import 'package:grchat_client/src/app/providers.dart';
 import 'package:grchat_client/src/app/theme.dart';
 import 'package:grchat_client/src/auth/auth_repository.dart';
 import 'package:grchat_client/src/call/call_state.dart';
+import 'package:grchat_client/src/chat/file_api.dart';
 import 'package:grchat_client/src/chat/home_state.dart';
 import 'package:grchat_client/src/chat/models.dart';
 import 'package:grchat_client/src/chat/widgets/dm_info_panel.dart';
+import 'package:grchat_client/src/transport/grchat_connection.dart';
 
 class _FakeSession extends SessionState {
   @override
@@ -76,6 +80,37 @@ class _FakeCall extends CallState {
   }
 }
 
+class _FakeFiles extends FileApi {
+  _FakeFiles()
+      : super(GrchatConnection(),
+            Session(userId: 'u1', nick: 'R', token: 't'));
+
+  @override
+  Future<AttachmentsIndex> attachmentsIndex({
+    String? dmId,
+    String? channelId,
+    String kind = 'all',
+    int limit = 30,
+    String? beforeId,
+  }) async {
+    return AttachmentsIndex(items: [
+      AttachmentIndexEntry(
+          attachmentId: 'a2',
+          fileId: 'f2',
+          filename: 'doc.pdf',
+          mime: 'application/pdf',
+          sizeBytes: 200,
+          messageId: 'm2',
+          createdAt: '2026-09-02T12:42:00Z'),
+    ], hasMore: false);
+  }
+
+  @override
+  Future<Uint8List> download(String fileId) async {
+    throw StateError('no bytes in tests');
+  }
+}
+
 void main() {
   group('DmInfoPanel', () {
     Future<_FakeCall> pump(WidgetTester t) async {
@@ -85,6 +120,7 @@ void main() {
             sessionProvider.overrideWith(_FakeSession.new),
             homeStateProvider.overrideWith(_FakeHome.new),
             callStateProvider.overrideWith(() => fake),
+            fileApiProvider.overrideWith((ref) => _FakeFiles()),
           ],
           child: MaterialApp(
               theme: grchatLight,
@@ -98,7 +134,6 @@ void main() {
       await pump(t);
       expect(find.text('Second'), findsWidgets);
       expect(find.text('user/Second'), findsOneWidget);
-      expect(find.text('Фото'), findsOneWidget);
       expect(find.text('Файлы'), findsOneWidget);
       expect(find.text('doc.pdf'), findsOneWidget);
       // No presence fiction and no members roster here.

@@ -11,31 +11,72 @@ import '../models.dart';
 import 'dialogs.dart';
 
 /// Right column for a broadcast channel (§14): identity, subscription,
-/// real media/files index from loaded posts, owner management.
+/// full attachments index (newest first), owner management.
 /// No fake sections: notifications and link index need backend support.
-class ChannelInfoPanel extends ConsumerWidget {
+class ChannelInfoPanel extends ConsumerStatefulWidget {
   const ChannelInfoPanel({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ChannelInfoPanel> createState() =>
+      _ChannelInfoPanelState();
+}
+
+class _ChannelInfoPanelState extends ConsumerState<ChannelInfoPanel> {
+  String? _channelId;
+  List<AttachmentIndexEntry> _items = const [];
+  bool _hasMore = false;
+  bool _loading = true;
+
+  Future<void> _load({bool more = false}) async {
+    final id = _channelId;
+    if (id == null) return;
+    if (more) {
+      if (!_hasMore || _loading) return;
+    } else if (_loading && _items.isNotEmpty) {
+      return;
+    }
+    if (!more) setState(() => _loading = true);
+    try {
+      final idx = await ref.read(fileApiProvider).attachmentsIndex(
+          channelId: id,
+          limit: 60,
+          beforeId: more && _items.isNotEmpty
+              ? _items.last.attachmentId
+              : null);
+      if (!mounted) return;
+      final known = _items.map((e) => e.attachmentId).toSet();
+      setState(() {
+        _items = [
+          ..._items,
+          for (final e in idx.items)
+            if (!known.contains(e.attachmentId)) e,
+        ];
+        _hasMore = idx.hasMore;
+        _loading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final data = ref.watch(homeStateProvider);
     final scope = data.scope;
     if (scope is! ChannelScope || scope.community != null) {
       return const SizedBox.shrink();
     }
-    final ch = scope.channel;
-    final posts = data.messages.where((m) => m.isPost).toList();
-    final images = <Attachment>[];
-    final files = <Attachment>[];
-    for (final p in posts) {
-      for (final a in p.attachments) {
-        if (a.mime.startsWith('image/')) {
-          if (images.length < 6) images.add(a);
-        } else if (files.length < 10) {
-          files.add(a);
-        }
-      }
+    if (_channelId != scope.channel.id) {
+      _channelId = scope.channel.id;
+      _items = const [];
+      _hasMore = false;
+      _loading = true;
+      Future.microtask(() => _load());
     }
+    final ch = scope.channel;
+    final images = _items.where((e) => e.isImage).toList();
+    final files =
+        _items.where((e) => !e.isImage).toList();
     return SizedBox(
       width: 230,
       child: Material(
@@ -112,32 +153,17 @@ class ChannelInfoPanel extends ConsumerWidget {
                         color: Colors.grey,
                         fontWeight: FontWeight.w600)),
                 const SizedBox(height: 6),
-                for (final a in files)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Row(children: [
-                      const Icon(Icons.insert_drive_file,
-                          size: 16, color: Colors.grey),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(a.filename,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      fontSize: 13)),
-                              Text(_size(a.sizeBytes),
-                                  style: const TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.grey)),
-                            ]),
-                      ),
-                    ]),
-                  ),
+                for (final a in files) _IndexFileRow(entry: a),
+              ],
+              if (_hasMore) ...[
+                const SizedBox(height: 8),
+                Center(
+                  child: TextButton(
+                      onPressed: _loading ? null : () => _load(more: true),
+                      child: Text(_loading
+                          ? 'Загрузка…'
+                          : 'Показать ещё')),
+                ),
               ],
             ]),
       ),
@@ -186,9 +212,41 @@ class ChannelInfoPanel extends ConsumerWidget {
   }
 }
 
+class _IndexFileRow extends StatelessWidget {
+  const _IndexFileRow({required this.entry});
+  final AttachmentIndexEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final a = entry;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(children: [
+        const Icon(Icons.insert_drive_file,
+            size: 16, color: Colors.grey),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(a.filename,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13)),
+                Text(_size(a.sizeBytes),
+                    style: const TextStyle(
+                        fontSize: 11, color: Colors.grey)),
+              ]),
+        ),
+      ]),
+    );
+  }
+}
+
 class _MediaGrid extends ConsumerWidget {
   const _MediaGrid({required this.images});
-  final List<Attachment> images;
+  final List<AttachmentIndexEntry> images;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {

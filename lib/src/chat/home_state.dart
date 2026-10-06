@@ -342,6 +342,7 @@ class HomeState extends Notifier<HomeData> {
 
   Future<void> selectChannel(Community? community, Channel channel) async {
     if (channel.type != 'text' && channel.type != 'broadcast') return;
+    ref.read(editingMessageProvider.notifier).clear();
     state = state.copyWith(
         activeCommunityId: () => community?.id,
         scope: ChannelScope(community, channel),
@@ -378,6 +379,7 @@ class HomeState extends Notifier<HomeData> {
       selectChannel(null, channel);
 
   Future<void> selectDm(DmThread thread) async {
+    ref.read(editingMessageProvider.notifier).clear();
     final myId = ref.read(sessionProvider)?.userId ?? '';
     state = state.copyWith(
         activeCommunityId: () => null,
@@ -403,6 +405,7 @@ class HomeState extends Notifier<HomeData> {
 
   /// The DM stand: DMs only, no channels. Keeps the selected DM if any.
   void goHome() {
+    ref.read(editingMessageProvider.notifier).clear();
     final dm = state.scope is DmScope ? state.scope : null;
     state = HomeData(
       communities: state.communities,
@@ -580,3 +583,16 @@ class HomeState extends Notifier<HomeData> {
 
 final homeStateProvider =
     NotifierProvider<HomeState, HomeData>(HomeState.new);
+
+/// Message being edited inline in the composer (Telegram-style banner).
+/// Null = plain compose mode. Cleared on scope switch.
+class EditingMessage extends Notifier<Message?> {
+  @override
+  Message? build() => null;
+
+  void begin(Message m) => state = m;
+  void clear() => state = null;
+}
+
+final editingMessageProvider =
+    NotifierProvider<EditingMessage, Message?>(EditingMessage.new);

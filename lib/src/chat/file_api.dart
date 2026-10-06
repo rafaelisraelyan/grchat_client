@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import '../auth/auth_repository.dart';
 import '../transport/grchat_connection.dart';
+import 'models.dart';
 
 const _chunkSize = 24576;
 
@@ -68,8 +69,34 @@ class FileApi {
     }
   }
 
-  Future<Uint8List> download(String fileId) async {
-    final chunks = <int, List<int>>{};
+  /// Side-panel attachments index: newest first, paginated, independent
+  /// of chat history paging. Exactly one of [dmId]/[channelId].
+  Future<AttachmentsIndex> attachmentsIndex({
+    String? dmId,
+    String? channelId,
+    String kind = 'all',
+    int limit = 30,
+    String? beforeId,
+  }) async {
+    final r = await _conn.request('attachments_index', fields: {
+      ..._auth,
+      if (dmId case final d) 'dm_id': d,
+      if (channelId case final c) 'channel_id': c,
+      'kind': kind,
+      'limit': limit,
+      if (beforeId case final b) 'before_id': b,
+    });
+    _throwIfError(r);
+    return AttachmentsIndex(
+      items: ((r['attachments'] as List?) ?? const [])
+          .map((a) => AttachmentIndexEntry.fromJson(
+              a as Map<String, dynamic>))
+          .toList(),
+      hasMore: (r['has_more'] ?? false) as bool,
+    );
+  }
+
+  Future<Uint8List> download(String fileId) async {    final chunks = <int, List<int>>{};
     int? total;
     final done = Completer<void>();
     final sub = _conn.pushes.listen((m) {
