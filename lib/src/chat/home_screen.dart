@@ -19,6 +19,7 @@ import '../voice/voice_state.dart';
 import 'widgets/chat_view.dart';
 import 'widgets/channel_info.dart';
 import 'widgets/community_rail.dart';
+import 'widgets/dm_info_panel.dart';
 import 'widgets/context_sidebar.dart';
 import 'widgets/dialogs.dart';
 import 'widgets/members_panel.dart';
@@ -127,7 +128,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               if (showMembers)
                 isBroadcast
                     ? const ChannelInfoPanel()
-                    : const MembersPanel(),
+                    : scope is DmScope && !scope.thread.isGroup
+                        ? const DmInfoPanel()
+                        : const MembersPanel(),
             ],
           ),
           const Positioned(

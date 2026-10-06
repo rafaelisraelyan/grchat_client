@@ -452,6 +452,53 @@ GroupCall _goldenGroup(
         callId: 'k9',
         peers: peers);
 
+class _FakeHomeDmProfile extends HomeState {
+  @override
+  HomeData build() {
+    final thread = DmThread(id: 'd1', isGroup: false, members: [
+      DmMember(userId: 'u1', nick: 'Rafael'),
+      DmMember(userId: 'u2', nick: 'Second'),
+    ]);
+    return HomeData(
+      communities: const [],
+      dms: [thread],
+      scope: DmScope(thread, 'u1'),
+      messages: [
+        Message(
+            id: 'm1',
+            dmId: 'd1',
+            authorId: 'u2',
+            authorNick: 'Second',
+            text: 'pic',
+            createdAt: '2026-09-02T12:41:00Z',
+            attachments: [
+              Attachment(
+                  fileId: 'f1',
+                  filename: 'pic.png',
+                  sizeBytes: 1258291,
+                  mime: 'image/png')
+            ]),
+        Message(
+            id: 'm2',
+            dmId: 'd1',
+            authorId: 'u1',
+            authorNick: 'Rafael',
+            text: 'doc',
+            createdAt: '2026-09-02T12:42:00Z',
+            attachments: [
+              Attachment(
+                  fileId: 'f2',
+                  filename: 'notes.pdf',
+                  sizeBytes: 860160,
+                  mime: 'application/pdf')
+            ]),
+      ],
+      members: const [],
+      loading: false,
+    );
+  }
+}
+
 void main() {
   testWidgets('auth screen', (t) async {
     t.view.physicalSize = const Size(1280, 720);
@@ -810,8 +857,7 @@ void main() {
         matchesGoldenFile('goldens/group_incoming_light.png'));
   });
 
-  testWidgets('group active grid dark', (t) async {
-    await _pumpGroup(
+  testWidgets('group active grid dark', (t) async {    await _pumpGroup(
         t,
         _goldenGroup(
             outgoing: true,
@@ -832,5 +878,24 @@ void main() {
         ThemeMode.dark);
     await expectLater(find.byType(GroupCallHost),
         matchesGoldenFile('goldens/group_active.png'));
+  });
+
+  testWidgets('dm profile panel dark', (t) async {
+    t.view.physicalSize = const Size(1280, 720);
+    t.view.devicePixelRatio = 1.0;
+    addTearDown(t.view.resetPhysicalSize);
+    await t.pumpWidget(ProviderScope(
+        overrides: [
+          sessionProvider.overrideWith(_FakeSession.new),
+          homeStateProvider.overrideWith(_FakeHomeDmProfile.new),
+        ],
+        child: MaterialApp(
+            theme: grchatLight,
+            darkTheme: grchatDark,
+            themeMode: ThemeMode.dark,
+            home: const HomeScreen())));
+    await t.pumpAndSettle();
+    await expectLater(find.byType(HomeScreen),
+        matchesGoldenFile('goldens/dm_profile.png'));
   });
 }
