@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../../search/search_address.dart';
+import '../../widgets/attachment_index_views.dart';
 import '../../widgets/avatar.dart';
 import '../../widgets/toast.dart';
 import '../home_state.dart';
@@ -143,7 +144,7 @@ class _ChannelInfoPanelState extends ConsumerState<ChannelInfoPanel> {
                         color: Colors.grey,
                         fontWeight: FontWeight.w600)),
                 const SizedBox(height: 6),
-                _MediaGrid(images: images),
+                AttachmentGrid(images: images),
               ],
               if (files.isNotEmpty) ...[
                 const SizedBox(height: 12),
@@ -153,7 +154,7 @@ class _ChannelInfoPanelState extends ConsumerState<ChannelInfoPanel> {
                         color: Colors.grey,
                         fontWeight: FontWeight.w600)),
                 const SizedBox(height: 6),
-                for (final a in files) _IndexFileRow(entry: a),
+                for (final a in files) AttachmentFileRow(entry: a),
               ],
               if (_hasMore) ...[
                 const SizedBox(height: 8),
@@ -211,77 +212,3 @@ class _ChannelInfoPanelState extends ConsumerState<ChannelInfoPanel> {
     return const SizedBox.shrink();
   }
 }
-
-class _IndexFileRow extends StatelessWidget {
-  const _IndexFileRow({required this.entry});
-  final AttachmentIndexEntry entry;
-
-  @override
-  Widget build(BuildContext context) {
-    final a = entry;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(children: [
-        const Icon(Icons.insert_drive_file,
-            size: 16, color: Colors.grey),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(a.filename,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13)),
-                Text(_size(a.sizeBytes),
-                    style: const TextStyle(
-                        fontSize: 11, color: Colors.grey)),
-              ]),
-        ),
-      ]),
-    );
-  }
-}
-
-class _MediaGrid extends ConsumerWidget {
-  const _MediaGrid({required this.images});
-  final List<AttachmentIndexEntry> images;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final cache = ref.watch(fileCacheProvider);
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3, crossAxisSpacing: 4, mainAxisSpacing: 4),
-      itemCount: images.length,
-      itemBuilder: (ctx, i) {
-        final a = images[i];
-        final bytes = cache[a.fileId];
-        if (bytes == null) {
-          ref
-              .read(fileCacheProvider.notifier)
-              .fetch(a.fileId)
-              .then((_) {})
-              .catchError((_) {});
-          return Container(
-              decoration: BoxDecoration(
-                  color: Colors.grey.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(6)));
-        }
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(6),
-          child: Image.memory(bytes, fit: BoxFit.cover),
-        );
-      },
-    );
-  }
-}
-
-String _size(int b) => b < 1024
-    ? '$b Б'
-    : b < 1048576
-        ? '${(b / 1024).toStringAsFixed(1)} КБ'
-        : '${(b / 1048576).toStringAsFixed(1)} МБ';

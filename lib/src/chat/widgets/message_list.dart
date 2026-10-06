@@ -363,7 +363,8 @@ class _HoverActions extends StatelessWidget {
         decoration: BoxDecoration(
             border: Border.all(color: c.borderSubtle),
             borderRadius: BorderRadius.circular(10)),
-        padding: const EdgeInsets.symmetric(horizontal: 2),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           _HoverBtn(icon: Icons.edit, label: 'Изменить', message: message, isDelete: false),
           _HoverBtn(icon: Icons.delete, label: 'Удалить', message: message, isDelete: true),
@@ -393,8 +394,9 @@ class _HoverBtn extends ConsumerWidget {
             ? _deleteConfirm(context, ref, message)
             : beginInlineEdit(context, message),
         child: Padding(
-          padding: const EdgeInsets.all(9),
-          child: Icon(icon, size: 20, color: isDelete ? c.danger : c.textPrimary),
+          padding: const EdgeInsets.all(7),
+          child: Icon(icon,
+              size: 18, color: isDelete ? c.danger : c.textPrimary),
         ),
       ),
     );
