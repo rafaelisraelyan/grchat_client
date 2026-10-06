@@ -11,7 +11,7 @@ import '../widgets/connection_banner.dart';
 import 'home_state.dart';
 import '../widgets/toast.dart';
 import 'models.dart';
-import '../call/call_overlay.dart';
+import '../call/call_surface.dart';
 import '../call/call_state.dart';
 import '../voice/voice_state.dart';
 import 'widgets/chat_view.dart';
@@ -135,7 +135,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [ConnectionBanner(), MissedBanner()]),
           ),
-          const CallOverlay(),
+          const CallOverlayHost(),
         ]);
       }),
     );

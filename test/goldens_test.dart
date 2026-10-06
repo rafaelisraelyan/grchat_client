@@ -7,6 +7,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:grchat_client/src/app/providers.dart';
 import 'package:grchat_client/src/app/theme.dart';
 import 'package:grchat_client/src/auth/auth_repository.dart';
+import 'package:grchat_client/src/call/call_state.dart';
+import 'package:grchat_client/src/call/call_surface.dart';
 import 'package:grchat_client/src/search/find_dialog.dart';
 import 'package:grchat_client/src/search/search_address.dart';
 import 'package:grchat_client/src/search/search_results.dart';
@@ -355,6 +357,54 @@ class _FakeHomeBroadcastEmpty extends HomeState {
   }
 }
 
+class _FakeCallState extends CallState {
+  _FakeCallState(this._c);
+  ActiveCall? _c;
+
+  @override
+  ActiveCall? build() => _c;
+}
+
+Future<void> _pumpCall(
+    WidgetTester t, ActiveCall? call, ThemeMode mode) async {
+  t.view.physicalSize = const Size(1280, 720);
+  t.view.devicePixelRatio = 1.0;
+  addTearDown(t.view.resetPhysicalSize);
+  await t.pumpWidget(ProviderScope(
+      overrides: [
+        callStateProvider.overrideWith(() => _FakeCallState(call)),
+      ],
+      child: MaterialApp(
+          theme: grchatLight,
+          darkTheme: grchatDark,
+          themeMode: mode,
+          home: const Scaffold(
+              body: Stack(children: [
+            Positioned.fill(
+                child: ColoredBox(color: Color(0xFF1A1A22))),
+            CallOverlayHost(),
+          ])))));
+  // Fixed frames: the active-call timer is periodic, settle would hang.
+  await t.pump();
+  await t.pump(const Duration(seconds: 1));
+  await t.pump();
+}
+
+ActiveCall _goldenCall(
+        {bool outgoing = false,
+        bool video = false,
+        CallPhase phase = CallPhase.ringing,
+        bool remoteVideo = false,
+        bool minimized = false}) =>
+    ActiveCall(
+        callId: 'c1',
+        peerNick: 'Masha',
+        video: video,
+        outgoing: outgoing,
+        phase: phase,
+        remoteVideo: remoteVideo,
+        minimized: minimized);
+
 void main() {
   testWidgets('auth screen', (t) async {
     t.view.physicalSize = const Size(1280, 720);
@@ -620,8 +670,7 @@ void main() {
         matchesGoldenFile('goldens/feed_dark.png'));
   });
 
-  testWidgets('broadcast feed empty subscriber', (t) async {
-    t.view.physicalSize = const Size(1280, 720);
+  testWidgets('broadcast feed empty subscriber', (t) async {    t.view.physicalSize = const Size(1280, 720);
     t.view.devicePixelRatio = 1.0;
     addTearDown(t.view.resetPhysicalSize);
     await t.pumpWidget(ProviderScope(
@@ -638,5 +687,65 @@ void main() {
     await t.pumpAndSettle();
     await expectLater(find.byType(HomeScreen),
         matchesGoldenFile('goldens/feed_empty.png'));
+  });
+
+  testWidgets('call incoming dark', (t) async {
+    await _pumpCall(
+        t,
+        _goldenCall(video: false),
+        ThemeMode.dark);
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/call_incoming.png'));
+  });
+
+  testWidgets('call incoming light', (t) async {
+    await _pumpCall(
+        t,
+        _goldenCall(video: true),
+        ThemeMode.light);
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/call_incoming_light.png'));
+  });
+
+  testWidgets('call outgoing dark', (t) async {
+    await _pumpCall(
+        t,
+        _goldenCall(outgoing: true, video: false),
+        ThemeMode.dark);
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/call_outgoing.png'));
+  });
+
+  testWidgets('call active audio dark', (t) async {
+    await _pumpCall(
+        t,
+        _goldenCall(
+            outgoing: true, video: false, phase: CallPhase.active),
+        ThemeMode.dark);
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/call_audio.png'));
+  });
+
+  testWidgets('call active video placeholder dark', (t) async {
+    await _pumpCall(
+        t,
+        _goldenCall(
+            outgoing: true, video: true, phase: CallPhase.active),
+        ThemeMode.dark);
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/call_video_wait.png'));
+  });
+
+  testWidgets('call mini overlay dark', (t) async {
+    await _pumpCall(
+        t,
+        _goldenCall(
+            outgoing: true,
+            video: false,
+            phase: CallPhase.active,
+            minimized: true),
+        ThemeMode.dark);
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/call_mini.png'));
   });
 }
