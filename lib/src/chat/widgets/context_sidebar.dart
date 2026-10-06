@@ -18,12 +18,10 @@ class ContextSidebar extends ConsumerWidget {
     super.key,
     required this.onSearch,
     required this.onNewDm,
-    required this.onVoice,
   });
 
   final VoidCallback onSearch;
   final VoidCallback onNewDm;
-  final void Function(Channel channel) onVoice;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -99,6 +97,7 @@ class ContextSidebar extends ConsumerWidget {
               ],
             ),
           ),
+          const VoiceBar(),
           const UserPanel(),
         ]),
       ),
@@ -140,6 +139,7 @@ class ContextSidebar extends ConsumerWidget {
           ],
         ),
       ),
+      const VoiceBar(),
       const UserPanel(),
     ]);
   }
@@ -223,15 +223,35 @@ class VoiceTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final c = GrchatColors.of(context);
     final voice = ref.watch(voiceStateProvider);
-    final notifier = ref.read(voiceStateProvider.notifier);
-    final joined =
-        notifier.joinedChannelId == channel.id;
+    final session = ref.watch(voiceSessionProvider);
+    final sessionSt = ref.read(voiceSessionProvider.notifier);
+    final joined = session?.channelId == channel.id;
     final ids = voice[channel.id] ?? const {};
     String nick(String id) {
       for (final m in members) {
         if (m.userId == id) return m.nick;
       }
-      return id.substring(0, 8);
+      final peer = session != null && session.channelId == channel.id
+          ? session.peers.where((p) => p.id == id)
+          : const <VoicePeer>[];
+      if (peer.isNotEmpty) return peer.first.nick;
+      return id.length > 8 ? id.substring(0, 8) : id;
+    }
+
+    bool speaking(String id) {
+      if (session == null || session.channelId != channel.id) return false;
+      for (final p in session.peers) {
+        if (p.id == id) return p.speaking;
+      }
+      return false;
+    }
+
+    bool muted(String id) {
+      if (session == null || session.channelId != channel.id) return true;
+      for (final p in session.peers) {
+        if (p.id == id) return p.muted;
+      }
+      return true;
     }
 
     return InkWell(
@@ -239,12 +259,15 @@ class VoiceTile extends ConsumerWidget {
       onTap: () async {
         try {
           if (joined) {
-            await notifier.leave();
+            await sessionSt.leave();
           } else {
-            await notifier.join(channel.id);
+            await sessionSt.join(
+                channelId: channel.id, title: channel.name);
           }
         } catch (e) {
-          if (context.mounted) Toast.show(context, '$e');
+          if (context.mounted) {
+            Toast.show(context, friendlyVoiceError(e));
+          }
         }
       },
       child: Container(
@@ -284,15 +307,54 @@ class VoiceTile extends ConsumerWidget {
                 Padding(
                   padding:
                       const EdgeInsets.only(left: 24, top: 1, bottom: 1),
-                  child: Text(nick(id),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 12, color: c.textSecondary)),
+                  child: _VoiceRow(
+                      nick: nick(id),
+                      speaking: speaking(id),
+                      muted: muted(id)),
                 ),
             ]),
       ),
     );
+  }
+}
+
+/// Roster row: avatar with a subtle accent ring while speaking (§98:
+/// smooth, never neon), mic-off when muted.
+class _VoiceRow extends StatelessWidget {
+  const _VoiceRow(
+      {required this.nick, required this.speaking, required this.muted});
+
+  final String nick;
+  final bool speaking;
+  final bool muted;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = GrchatColors.of(context);
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.all(2),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: speaking
+              ? Border.all(color: c.accent, width: 2)
+              : Border.all(color: Colors.transparent, width: 2),
+        ),
+        child: Avatar(nick, radius: 10),
+      ),
+      const SizedBox(width: 6),
+      Flexible(
+        child: Text(nick,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, color: c.textSecondary)),
+      ),
+      if (muted) ...[
+        const SizedBox(width: 4),
+        Icon(Icons.mic_off, size: 12, color: c.textMuted),
+      ],
+    ]);
   }
 }
 
@@ -410,6 +472,77 @@ class _GroupAvatar extends StatelessWidget {
 }
 
 /// Bottom of the sidebar: me + settings. Theme/logout live in Settings.
+/// Voice connection panel (§97): bottom sidebar while in a voice channel.
+/// Shows "Подключено к" plus the channel name, with mic and disconnect.
+class VoiceBar extends ConsumerWidget {
+  const VoiceBar({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.watch(voiceSessionProvider);
+    if (session == null) return const SizedBox.shrink();
+    final st = ref.read(voiceSessionProvider.notifier);
+    final c = GrchatColors.of(context);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: c.surfaceSelected,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(children: [
+        Icon(Icons.volume_up, size: 16, color: c.accent),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Подключено',
+                    style:
+                        TextStyle(fontSize: 11, color: Colors.grey)),
+                Text(session.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w700)),
+              ]),
+        ),
+        IconButton(
+            tooltip: session.muted
+                ? 'Включить микрофон'
+                : 'Выключить микрофон',
+            icon: Icon(
+                session.muted ? Icons.mic_off : Icons.mic,
+                size: 18,
+                color: session.muted ? Colors.red : null),
+            onPressed: () async {
+              try {
+                await st.toggleMute();
+              } catch (e) {
+                if (context.mounted) {
+                  Toast.show(context, friendlyVoiceError(e));
+                }
+              }
+            }),
+        IconButton(
+            tooltip: 'Отключиться',
+            icon: const Icon(Icons.call_end,
+                size: 18, color: Colors.red),
+            onPressed: () async {
+              try {
+                await st.leave();
+              } catch (e) {
+                if (context.mounted) {
+                  Toast.show(context, friendlyVoiceError(e));
+                }
+              }
+            }),
+      ]),
+    );
+  }
+}
+
 class UserPanel extends ConsumerWidget {
   const UserPanel({super.key});
 

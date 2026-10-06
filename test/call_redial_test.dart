@@ -6,7 +6,7 @@ import 'package:grchat_client/src/call/call_surface.dart';
 
 class _FakeCall extends CallState {
   _FakeCall(this._c);
-  ActiveCall? _c;
+  final ActiveCall? _c;
 
   String? lastPeer;
   String? lastDm;

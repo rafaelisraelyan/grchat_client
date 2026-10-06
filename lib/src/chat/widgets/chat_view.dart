@@ -23,12 +23,10 @@ class ChatView extends ConsumerStatefulWidget {
   const ChatView(
       {super.key,
       required this.onToggleMembers,
-      required this.onInvite,
-      required this.onVoice});
+      required this.onInvite});
 
   final VoidCallback onToggleMembers;
   final VoidCallback onInvite;
-  final void Function(Channel channel) onVoice;
 
   @override
   ConsumerState<ChatView> createState() => _ChatViewState();
