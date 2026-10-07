@@ -96,7 +96,8 @@ class VoicePeer {
       required this.self,
       this.serverMuted = false,
       this.localMuted = false,
-      this.videoTrack});
+      this.videoTrack,
+      this.audioLevel = 0.0});
   final String id;
   final String nick;
   final bool speaking;
@@ -111,6 +112,10 @@ class VoicePeer {
 
   /// Live remote/local video track for the tile. Null = avatar mode.
   final VideoTrack? videoTrack;
+
+  /// Mic loudness 0..1, quantized to 0.1 steps. Drives the speaking ring
+  /// opacity: louder = more solid. Always 0 when effectively muted.
+  final double audioLevel;
 }
 
 /// Merge signaling roster (authoritative membership + nicks) with room
@@ -123,6 +128,7 @@ List<VoicePeer> mergeVoicePeers({
   required Map<String, String> nicks,
   required Map<String, ({String name, bool speaking, bool muted})> room,
   Map<String, VideoTrack?> videos = const {},
+  Map<String, double> levels = const {},
   required String myId,
   required String myNick,
   required bool selfMuted,
@@ -144,15 +150,23 @@ List<VoicePeer> mergeVoicePeers({
         self ? selfMuted : (r?.muted ?? true) || sm || lm;
     final rname = r?.name;
     final rspeaking = r?.speaking ?? false;
+    final speakingNow =
+        (self ? selfSpeaking : rspeaking) && !effectiveMuted;
+    // Raw SFU levels are jittery; 0.1 steps keep the ring calm and let the
+    // engine skip no-op rebuilds. Silent or muted = no ring at all.
+    final raw = (levels[id] ?? 0.0).clamp(0.0, 1.0);
+    final level =
+        speakingNow ? (raw * 10).roundToDouble() / 10 : 0.0;
     peers.add(VoicePeer(
         id: id,
         nick: self ? myNick : (nicks[id] ?? rname ?? fallback),
-        speaking: (self ? selfSpeaking : rspeaking) && !effectiveMuted,
+        speaking: speakingNow,
         muted: effectiveMuted,
         self: self,
         serverMuted: sm,
         localMuted: lm,
-        videoTrack: videos[id]));
+        videoTrack: videos[id],
+        audioLevel: level));
   }
   peers.sort((a, b) {
     if (a.self != b.self) return a.self ? -1 : 1;
@@ -228,6 +242,11 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
   Room? _room;
   EventsListener<RoomEvent>? _roomEvents;
   StreamSubscription<Map<String, dynamic>>? _pushSub;
+
+  /// Mic-level sampler: LiveKit only emits speaking transitions, so levels
+  /// for the ring opacity are polled. 8 Hz + 0.1 quantization + no-op guard
+  /// below keep rebuilds to real changes only.
+  Timer? _levelTimer;
 
   /// Local-only mutes (deafen one person for myself). Never leaves the device.
   final Set<String> mutedPeers = {};
@@ -322,6 +341,12 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
       dlog('voice joined room=${creds.room}');
       state = VoiceSession(
           channelId: channelId, title: title, room: creds.room);
+      _levelTimer?.cancel();
+      _levelTimer =
+          Timer.periodic(const Duration(milliseconds: 120), (_) {
+        if (state == null || _room == null) return;
+        _syncPeers();
+      });
       _syncPeers();
     } catch (e) {
       dlog('voice join failed: $e');
@@ -516,6 +541,7 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     final nicks = _nicks;
     final r = <String, ({String name, bool speaking, bool muted})>{};
     final vids = <String, VideoTrack?>{};
+    final lvls = <String, double>{};
     if (room != null) {
       for (final p in room.remoteParticipants.values) {
         var muted = true;
@@ -538,6 +564,7 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
           muted: muted,
         );
         vids[p.identity] = video;
+        lvls[p.identity] = p.audioLevel;
       }
       final local = room.localParticipant;
       if (local != null) {
@@ -548,25 +575,52 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
           muted: cur.muted,
         );
         vids[local.identity] = localVideoTrack;
+        lvls[local.identity] = local.audioLevel;
       }
     }
     final s = ref.read(sessionProvider);
     final myId = s?.userId ?? '';
-    state = cur.copyWith(
-        peers: mergeVoicePeers(
-            signalingIds: ids,
-            nicks: nicks[cur.channelId] ?? {},
-            room: r,
-            videos: vids,
-            myId: myId,
-            myNick: s?.nick ?? '?',
-            selfMuted: cur.muted,
-            selfSpeaking:
-                room?.localParticipant?.isSpeaking ?? false,
-            mutedPeers: mutedPeers,
-            serverMuted: serverMuted,
-            deafened: cur.deafened));
+    final next = mergeVoicePeers(
+        signalingIds: ids,
+        nicks: nicks[cur.channelId] ?? {},
+        room: r,
+        videos: vids,
+        levels: lvls,
+        myId: myId,
+        myNick: s?.nick ?? '?',
+        selfMuted: cur.muted,
+        selfSpeaking: room?.localParticipant?.isSpeaking ?? false,
+        mutedPeers: mutedPeers,
+        serverMuted: serverMuted,
+        deafened: cur.deafened);
+    // The level ticker fires 8×/s: publish only on visible change, otherwise
+    // the whole sidebar + call grid would rebuild for nothing.
+    if (!_samePeers(cur.peers, next)) {
+      state = cur.copyWith(peers: next);
+    }
     _enforceSubscriptions();
+  }
+
+  /// Visible peer equality: ids, nicks, flags, quantized level and the live
+  /// track identity. Anything else is not worth a rebuild.
+  bool _samePeers(List<VoicePeer> a, List<VoicePeer> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      final x = a[i];
+      final y = b[i];
+      if (x.id != y.id ||
+          x.nick != y.nick ||
+          x.speaking != y.speaking ||
+          x.muted != y.muted ||
+          x.self != y.self ||
+          x.serverMuted != y.serverMuted ||
+          x.localMuted != y.localMuted ||
+          x.audioLevel != y.audioLevel ||
+          !identical(x.videoTrack, y.videoTrack)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /// Enforce who I actually hear: server mutes, my local mutes and deafen
@@ -635,6 +689,8 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
   }
 
   Future<void> _leaveRoom() async {
+    _levelTimer?.cancel();
+    _levelTimer = null;
     try {
       _roomEvents?.dispose();
     } catch (_) {}

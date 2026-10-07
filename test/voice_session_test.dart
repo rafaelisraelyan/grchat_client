@@ -87,6 +87,52 @@ void main() {
       final third = peers.firstWhere((p) => p.id == 'u3');
       expect(third.nick, 'Third');
       expect(third.speaking, isFalse);
+      expect(third.audioLevel, 0.0);
+    });
+
+    test('loudness quantizes to 0.1 and dies with mute', () {
+      // 0.76 -> 0.8: the ring breathes, it does not jitter per frame.
+      final loud = mergeVoicePeers(
+          signalingIds: const {'u1', 'u2'},
+          nicks: const {'u1': 'Rafael', 'u2': 'Second'},
+          room: const {
+            'u2': (name: 'Second', speaking: true, muted: false),
+          },
+          levels: const {'u2': 0.76},
+          myId: 'u1',
+          myNick: 'Rafael',
+          selfMuted: false,
+          selfSpeaking: false);
+      expect(loud.firstWhere((p) => p.id == 'u2').audioLevel, 0.8);
+      // Loud but muted (server lock): no level, no ring.
+      final locked = mergeVoicePeers(
+          signalingIds: const {'u1', 'u2'},
+          nicks: const {'u1': 'Rafael', 'u2': 'Second'},
+          room: const {
+            'u2': (name: 'Second', speaking: true, muted: false),
+          },
+          levels: const {'u2': 0.9},
+          myId: 'u1',
+          myNick: 'Rafael',
+          selfMuted: false,
+          selfSpeaking: false,
+          serverMuted: const {'u2'});
+      final second = locked.firstWhere((p) => p.id == 'u2');
+      expect(second.speaking, isFalse);
+      expect(second.audioLevel, 0.0);
+      // Out-of-range levels clamp instead of breaking opacity math.
+      final hot = mergeVoicePeers(
+          signalingIds: const {'u1', 'u2'},
+          nicks: const {'u1': 'Rafael', 'u2': 'Second'},
+          room: const {
+            'u2': (name: 'Second', speaking: true, muted: false),
+          },
+          levels: const {'u2': 7.5},
+          myId: 'u1',
+          myNick: 'Rafael',
+          selfMuted: false,
+          selfSpeaking: false);
+      expect(hot.firstWhere((p) => p.id == 'u2').audioLevel, 1.0);
     });
 
     test('stale room entries never leak in', () {
