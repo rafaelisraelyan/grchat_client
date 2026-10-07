@@ -597,6 +597,10 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     // the whole sidebar + call grid would rebuild for nothing.
     if (!_samePeers(cur.peers, next)) {
       state = cur.copyWith(peers: next);
+      dlog('voice levels: ${[
+        for (final p in next)
+          '${p.nick}=${p.speaking ? 's' : '-'}${p.audioLevel.toStringAsFixed(1)}${p.muted ? 'm' : ''}'
+      ].join(' ')}');
     }
     _enforceSubscriptions();
   }

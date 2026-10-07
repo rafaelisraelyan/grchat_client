@@ -446,9 +446,11 @@ class _VoiceRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = GrchatColors.of(context);
     // Discord-style speaking ring: fixed 2px, only the opacity breathes
-    // with the voice. Quiet frames fade out instead of blinking.
-    final ring = speaking && level > 0
-        ? _speakGreen.withValues(alpha: 0.3 + 0.7 * level.clamp(0.0, 1.0))
+    // with the voice. Speaking always shows at least a faint ring (quiet
+    // frames quantize to 0 but must not blink out); louder = more solid.
+    final ring = speaking
+        ? _speakGreen.withValues(
+            alpha: 0.35 + 0.65 * level.clamp(0.0, 1.0))
         : Colors.transparent;
     return Row(mainAxisSize: MainAxisSize.min, children: [
       AnimatedContainer(

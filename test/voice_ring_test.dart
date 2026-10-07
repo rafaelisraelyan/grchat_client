@@ -29,7 +29,7 @@ class _FakeVoice extends VoiceSessionState {
   VoiceSession? build() => _s;
 }
 
-VoiceSession _session(double level) => VoiceSession(
+VoiceSession _session(double level, {bool speaking = true}) => VoiceSession(
     channelId: 'vc1',
     title: 'voice',
     room: 'grchat_vc_vc1',
@@ -43,20 +43,22 @@ VoiceSession _session(double level) => VoiceSession(
       VoicePeer(
           id: 'u2',
           nick: 'Second',
-          speaking: true,
+          speaking: speaking,
           muted: false,
           self: false,
           audioLevel: level),
     ]);
 
-Future<void> _pumpTile(WidgetTester t, double level) async {
+Future<void> _pumpTile(WidgetTester t, double level,
+    {bool speaking = true}) async {
   await t.pumpWidget(ProviderScope(
       overrides: [
         sessionProvider.overrideWith(_FakeSession.new),
         voiceStateProvider.overrideWith(() => _FakeRoster({
               'vc1': {'u1', 'u2'}
             })),
-        voiceSessionProvider.overrideWith(() => _FakeVoice(_session(level))),
+        voiceSessionProvider.overrideWith(
+            () => _FakeVoice(_session(level, speaking: speaking))),
       ],
       child: MaterialApp(
           theme: grchatDark,
@@ -92,22 +94,30 @@ void main() {
     await _pumpTile(t, 0.8);
     final ring = _ringOf(t);
     expect(ring, isNotNull);
-    // Discord green, mostly opaque at 0.8 loudness (0.3 + 0.7*0.8).
+    // Discord green, nearly solid at 0.8 loudness (0.35 + 0.65*0.8).
     expect(ring!.r, greaterThan(0.2));
     expect(ring.g, greaterThan(0.7));
     expect(ring.a, greaterThan(0.8));
   });
 
-  testWidgets('quiet peer ring fades', (t) async {
+  testWidgets('quiet peer ring fades but never blinks out', (t) async {
     await _pumpTile(t, 0.2);
     final ring = _ringOf(t)!;
-    // 0.3 + 0.7*0.2 = 0.44: visible but clearly translucent.
-    expect(ring.a, greaterThan(0.3));
+    // 0.35 + 0.65*0.2 = 0.48: translucent, never invisible while speaking.
+    expect(ring.a, greaterThan(0.4));
     expect(ring.a, lessThan(0.6));
   });
 
-  testWidgets('silent peer has no ring', (t) async {
+  testWidgets('quiet frames at zero level keep a faint ring', (t) async {
+    // Level quantizes to 0 below 0.05, but speaking still shows the floor.
     await _pumpTile(t, 0.0);
+    final ring = _ringOf(t)!;
+    expect(ring.a, greaterThan(0.3));
+    expect(ring.a, lessThan(0.4));
+  });
+
+  testWidgets('silent peer has no ring', (t) async {
+    await _pumpTile(t, 0.9, speaking: false);
     final ring = _ringOf(t)!;
     expect(ring.a, 0.0);
   });
