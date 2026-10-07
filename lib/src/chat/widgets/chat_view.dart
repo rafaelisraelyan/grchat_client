@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home_state.dart';
+import '../../voice/voice_state.dart';
 import '../../desktop/desktop_log.dart';
 import '../../search/search_address.dart';
 import '../../widgets/avatar.dart';
@@ -98,6 +99,11 @@ class _ChatViewState extends ConsumerState<ChatView> {
     // Standalone channels are broadcast feeds, not chatrooms (§4, §19).
     if (scope is ChannelScope && scope.community == null) {
       return _buildBroadcast(context, data, scope);
+    }
+    // A selected voice channel shows no chat UI: the Call Window overlay
+    // carries the call, this panel only offers joining/expanding.
+    if (scope is ChannelScope && scope.channel.type == 'voice') {
+      return _buildVoiceScope(context, ref, scope);
     }
     return Column(children: [
       Container(
@@ -245,6 +251,94 @@ class _ChatViewState extends ConsumerState<ChatView> {
 
   /// Broadcast feed layout (§4, §6, §19): header, posts, publish
   /// composer for owners/admins, subscription state for the rest.
+  /// Central content for a selected voice channel: no chat, no composer.
+  /// The Call Window overlay carries the call; this panel shows context and
+  /// offers joining (fresh) or expanding (already in, minimized).
+  Widget _buildVoiceScope(
+      BuildContext context, WidgetRef ref, ChannelScope scope) {
+    final ch = scope.channel;
+    final session = ref.watch(voiceSessionProvider);
+    final inHere =
+        session != null && session.channelId == ch.id;
+    final count =
+        ref.watch(voiceStateProvider)[ch.id]?.length ?? 0;
+    return Column(children: [
+      Container(
+        padding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+            border: Border(
+                bottom: BorderSide(
+                    color: Theme.of(context)
+                        .dividerColor
+                        .withValues(alpha: 0.3)))),
+        child: Row(children: [
+          const Icon(Icons.volume_up, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+              child: Text(ch.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700))),
+        ]),
+      ),
+      Expanded(
+        child: Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Avatar(ch.name, radius: 34),
+            const SizedBox(height: 12),
+            Text(ch.name,
+                style: const TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(
+                inHere
+                    ? '$count ${_plural(count, 'участник', 'участника', 'участников')}'
+                    : count > 0
+                        ? 'Внутри: $count — присоединяйся'
+                        : 'Пока пусто — заходи первым',
+                style:
+                    const TextStyle(fontSize: 13, color: Colors.grey)),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: () async {
+                final st =
+                    ref.read(voiceSessionProvider.notifier);
+                try {
+                  if (inHere) {
+                    st.setMinimized(false);
+                  } else {
+                    await st.join(
+                        channelId: ch.id, title: ch.name);
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    Toast.show(
+                        context, friendlyVoiceError(e));
+                  }
+                }
+              },
+              icon: Icon(inHere ? Icons.open_in_full : Icons.call,
+                  size: 18),
+              label:
+                  Text(inHere ? 'Развернуть звонок' : 'Подключиться'),
+            ),
+          ]),
+        ),
+      ),
+    ]);
+  }
+
+  static String _plural(int n, String one, String few, String many) {
+    if (n % 10 == 1 && n % 100 != 11) return one;
+    if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)) {
+      return few;
+    }
+    return many;
+  }
+
   Widget _buildBroadcast(
       BuildContext context, HomeData data, ChannelScope scope) {
     final ch = scope.channel;

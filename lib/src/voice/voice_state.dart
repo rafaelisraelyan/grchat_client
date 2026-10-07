@@ -95,7 +95,8 @@ class VoicePeer {
       required this.muted,
       required this.self,
       this.serverMuted = false,
-      this.localMuted = false});
+      this.localMuted = false,
+      this.videoTrack});
   final String id;
   final String nick;
   final bool speaking;
@@ -107,6 +108,9 @@ class VoicePeer {
   /// Muted by a moderator (lock + label), vs muted locally by me.
   final bool serverMuted;
   final bool localMuted;
+
+  /// Live remote/local video track for the tile. Null = avatar mode.
+  final VideoTrack? videoTrack;
 }
 
 /// Merge signaling roster (authoritative membership + nicks) with room
@@ -118,6 +122,7 @@ List<VoicePeer> mergeVoicePeers({
   required Set<String> signalingIds,
   required Map<String, String> nicks,
   required Map<String, ({String name, bool speaking, bool muted})> room,
+  Map<String, VideoTrack?> videos = const {},
   required String myId,
   required String myNick,
   required bool selfMuted,
@@ -137,17 +142,17 @@ List<VoicePeer> mergeVoicePeers({
     final lm = !self && (mutedPeers.contains(id) || deafened);
     final effectiveMuted =
         self ? selfMuted : (r?.muted ?? true) || sm || lm;
+    final rname = r?.name;
+    final rspeaking = r?.speaking ?? false;
     peers.add(VoicePeer(
         id: id,
-        nick: self
-            ? myNick
-            : (nicks[id] ?? r?.name ?? fallback),
-        speaking: (self ? selfSpeaking : (r?.speaking ?? false)) &&
-            !effectiveMuted,
+        nick: self ? myNick : (nicks[id] ?? rname ?? fallback),
+        speaking: (self ? selfSpeaking : rspeaking) && !effectiveMuted,
         muted: effectiveMuted,
         self: self,
         serverMuted: sm,
-        localMuted: lm));
+        localMuted: lm,
+        videoTrack: videos[id]));
   }
   peers.sort((a, b) {
     if (a.self != b.self) return a.self ? -1 : 1;
@@ -167,7 +172,9 @@ class VoiceSession {
       this.muted = false,
       this.deafened = false,
       this.serverMutedMe = false,
-      this.userLimit = 0});
+      this.userLimit = 0,
+      this.minimized = false,
+      this.cameraOff = true});
 
   final String channelId;
   final String title;
@@ -184,12 +191,20 @@ class VoiceSession {
   /// Channel cap from voice_members, 0 = unlimited.
   final int userLimit;
 
+  /// Presentation only: Call Window vs top-right pill (§12–§14).
+  final bool minimized;
+
+  /// Camera is opt-in (Discord voice default): nothing published until set.
+  final bool cameraOff;
+
   VoiceSession copyWith(
           {List<VoicePeer>? peers,
           bool? muted,
           bool? deafened,
           bool? serverMutedMe,
-          int? userLimit}) =>
+          int? userLimit,
+          bool? minimized,
+          bool? cameraOff}) =>
       VoiceSession(
           channelId: channelId,
           title: title,
@@ -198,7 +213,9 @@ class VoiceSession {
           muted: muted ?? this.muted,
           deafened: deafened ?? this.deafened,
           serverMutedMe: serverMutedMe ?? this.serverMutedMe,
-          userLimit: userLimit ?? this.userLimit);
+          userLimit: userLimit ?? this.userLimit,
+          minimized: minimized ?? this.minimized,
+          cameraOff: cameraOff ?? this.cameraOff);
 }
 
 final voiceSessionApiProvider = Provider<CallApi>((ref) {
@@ -329,6 +346,36 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     } catch (_) {}
   }
 
+  void setMinimized(bool minimized) {
+    final cur = state;
+    if (cur == null || cur.minimized == minimized) return;
+    state = cur.copyWith(minimized: minimized);
+  }
+
+  /// Camera opt-in: first enable publishes, disable unpublishes.
+  Future<void> toggleCamera() async {
+    final cur = state;
+    if (cur == null) return;
+    final off = !cur.cameraOff;
+    try {
+      await _room?.localParticipant?.setCameraEnabled(!off);
+    } catch (_) {}
+    final live = state;
+    if (live == null || live.channelId != cur.channelId) return;
+    state = live.copyWith(cameraOff: off);
+    _syncPeers();
+  }
+
+  VideoTrack? get localVideoTrack {
+    final pubs = _room?.localParticipant?.videoTrackPublications;
+    if (pubs == null) return null;
+    for (final p in pubs) {
+      final t = p.track;
+      if (t is VideoTrack && !p.muted) return t;
+    }
+    return null;
+  }
+
   Future<void> toggleMute() async {
     final cur = state;
     if (cur == null) return;
@@ -417,22 +464,27 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     return muted ? '$nick замучен' : '$nick размучен';
   }
 
-  /// Owner/admin: cap occupants (0 = unlimited). Applies to future joins.
-  Future<void> setLimit(int limit) async {
-    final cur = state;
-    if (cur == null) return;
+  /// Owner/admin: cap occupants (0 = unlimited). Channel-scoped, works
+  /// without joining: management is not presence. Applies to future joins.
+  Future<void> setLimit(
+      {required String channelId, required int limit}) async {
     final s = ref.read(sessionProvider);
-    if (s == null) return;
+    if (s == null || channelId.isEmpty) return;
     final r = await ref.read(connectionProvider).request('voice_limit',
         fields: {
           'session_token': s.token,
-          'channel_id': cur.channelId,
+          'channel_id': channelId,
           'user_limit': limit
         });
     if (r['type'] == 'error') {
       throw GrchatException(r['code']?.toString() ?? 'UNKNOWN');
     }
-    state = cur.copyWith(userLimit: (r['user_limit'] as num?)?.toInt() ?? limit);
+    final v = (r['user_limit'] as num?)?.toInt() ?? limit;
+    limits[channelId] = v;
+    final cur = state;
+    if (cur != null && cur.channelId == channelId) {
+      state = cur.copyWith(userLimit: v);
+    }
   }
 
   /// Resolve nicks/mutes/limit for a channel without joining (limit display).
@@ -463,17 +515,39 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     final ids = ref.read(voiceStateProvider)[cur.channelId] ?? {};
     final nicks = _nicks;
     final r = <String, ({String name, bool speaking, bool muted})>{};
+    final vids = <String, VideoTrack?>{};
     if (room != null) {
       for (final p in room.remoteParticipants.values) {
         var muted = true;
+        VideoTrack? video;
         for (final pub in p.audioTrackPublications) {
           if (pub.subscribed && !pub.muted) muted = false;
+        }
+        for (final pub in p.videoTrackPublications) {
+          if (pub.kind == TrackType.VIDEO &&
+              !pub.isScreenShare &&
+              pub.subscribed &&
+              !pub.muted) {
+            final t = pub.track;
+            if (t is VideoTrack) video = t;
+          }
         }
         r[p.identity] = (
           name: p.name.isNotEmpty ? p.name : p.identity,
           speaking: p.isSpeaking,
           muted: muted,
         );
+        vids[p.identity] = video;
+      }
+      final local = room.localParticipant;
+      if (local != null) {
+        final s2 = ref.read(sessionProvider);
+        r[local.identity] = (
+          name: s2?.nick ?? '?',
+          speaking: local.isSpeaking,
+          muted: cur.muted,
+        );
+        vids[local.identity] = localVideoTrack;
       }
     }
     final s = ref.read(sessionProvider);
@@ -483,6 +557,7 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
             signalingIds: ids,
             nicks: nicks[cur.channelId] ?? {},
             room: r,
+            videos: vids,
             myId: myId,
             myNick: s?.nick ?? '?',
             selfMuted: cur.muted,
