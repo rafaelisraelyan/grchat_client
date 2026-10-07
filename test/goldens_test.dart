@@ -12,6 +12,7 @@ import 'package:grchat_client/src/call/call_state.dart';
 import 'package:grchat_client/src/call/call_surface.dart';
 import 'package:grchat_client/src/call/group_call.dart';
 import 'package:grchat_client/src/call/group_call_window.dart';
+import 'package:grchat_client/src/voice/voice_state.dart';
 import 'package:grchat_client/src/search/find_dialog.dart';
 import 'package:grchat_client/src/search/search_address.dart';
 import 'package:grchat_client/src/search/search_results.dart';
@@ -411,6 +412,66 @@ ActiveCall _goldenCall(
         phase: phase,
         remoteVideo: remoteVideo,
         minimized: minimized);
+
+class _FakeVoiceState extends VoiceSessionState {
+  _FakeVoiceState(this._s);
+  final VoiceSession? _s;
+
+  @override
+  VoiceSession? build() => _s;
+}
+
+Future<void> _pumpVoice(
+    WidgetTester t, VoiceSession? session, ThemeMode mode) async {
+  t.view.physicalSize = const Size(1280, 720);
+  t.view.devicePixelRatio = 1.0;
+  addTearDown(t.view.resetPhysicalSize);
+  await t.pumpWidget(ProviderScope(
+      overrides: [
+        callStateProvider.overrideWith(() => _FakeCallState(null)),
+        voiceSessionProvider.overrideWith(() => _FakeVoiceState(session)),
+      ],
+      child: MaterialApp(
+          theme: grchatLight,
+          darkTheme: grchatDark,
+          themeMode: mode,
+          home: const Scaffold(
+              body: Stack(children: [
+            Positioned.fill(
+                child: ColoredBox(color: Color(0xFF1A1A22))),
+            CallOverlayHost(),
+          ])))));
+  // Fixed frames: the call timer is periodic, settle would hang.
+  await t.pump();
+  await t.pump(const Duration(seconds: 1));
+  await t.pump();
+}
+
+VoiceSession _goldenVoice({bool minimized = false}) => VoiceSession(
+    channelId: 'vc1',
+    title: 'voice',
+    room: 'grchat_vc_vc1',
+    minimized: minimized,
+    peers: [
+      VoicePeer(
+          id: 'u1',
+          nick: 'Rafael',
+          speaking: false,
+          muted: false,
+          self: true),
+      VoicePeer(
+          id: 'u2',
+          nick: 'Second',
+          speaking: true,
+          muted: false,
+          self: false),
+      VoicePeer(
+          id: 'u3',
+          nick: 'TestPilot',
+          speaking: false,
+          muted: true,
+          self: false),
+    ]);
 
 class _FakeGroupCall extends GroupCallState {
   _FakeGroupCall(this._c);
@@ -847,6 +908,19 @@ void main() {
         ThemeMode.dark);
     await expectLater(find.byType(CallOverlayHost),
         matchesGoldenFile('goldens/call_mini.png'));
+  });
+
+  testWidgets('voice grid dark', (t) async {
+    await _pumpVoice(t, _goldenVoice(), ThemeMode.dark);
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/voice_grid.png'));
+  });
+
+  testWidgets('voice mini overlay dark', (t) async {
+    await _pumpVoice(
+        t, _goldenVoice(minimized: true), ThemeMode.dark);
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/voice_mini.png'));
   });
 
   testWidgets('group incoming dark', (t) async {

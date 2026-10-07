@@ -399,7 +399,9 @@ class CallWindow extends StatelessWidget {
 }
 
 /// Participant grid (§5): 1 centered, 2 side by side, 3–4 as 2×2,
-/// 5+ responsive. Size never shifts on speaking (§10).
+/// 5+ responsive. Size never shifts on speaking (§10). Tiles always fit the
+/// available area: the cell aspect is derived from the constraints so no row
+/// is ever clipped by the control bar.
 class ParticipantGrid extends StatelessWidget {
   const ParticipantGrid({super.key, required this.participants});
 
@@ -428,16 +430,27 @@ class ParticipantGrid extends StatelessWidget {
         : participants.length <= 4
             ? 2
             : 3;
-    return GridView.count(
-      crossAxisCount: cols,
-      crossAxisSpacing: 8,
-      mainAxisSpacing: 8,
-      childAspectRatio: 4 / 3,
-      physics: const NeverScrollableScrollPhysics(),
-      children: [
-        for (final p in participants) ParticipantTile(participant: p),
-      ],
-    );
+    final rows =
+        (participants.length + cols - 1) ~/ cols;
+    return LayoutBuilder(builder: (ctx, cons) {
+      var aspect = 4 / 3;
+      if (cons.maxWidth.isFinite &&
+          cons.maxHeight.isFinite &&
+          cons.maxWidth > 0 &&
+          cons.maxHeight > 0) {
+        aspect = (cons.maxWidth * rows) / (cons.maxHeight * cols);
+      }
+      return GridView.count(
+        crossAxisCount: cols,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+        childAspectRatio: aspect,
+        physics: const NeverScrollableScrollPhysics(),
+        children: [
+          for (final p in participants) ParticipantTile(participant: p),
+        ],
+      );
+    });
   }
 }
 
