@@ -386,8 +386,11 @@ class VoiceTile extends ConsumerWidget {
   }
 }
 
-/// Roster row: avatar with a subtle accent ring while speaking (§98:
-/// smooth, never neon), mic-off when muted. Tappable for the peer menu
+/// Speaking-ring green (Discord-style): fixed hue, loudness drives opacity.
+const _speakGreen = Color(0xFF57F287);
+
+/// Roster row: avatar with a loudness-driven green ring while speaking,
+/// mic-off when muted. Tappable for the peer menu
 /// (local mute for everyone, server mute for moderators).
 class _VoiceRowButton extends StatelessWidget {
   const _VoiceRowButton(
@@ -415,37 +418,45 @@ class _VoiceRowButton extends StatelessWidget {
           nick: nick,
           speaking: speaking,
           muted: peer?.muted ?? true,
-          serverMuted: peer?.serverMuted ?? false),
+          serverMuted: peer?.serverMuted ?? false,
+          level: peer?.audioLevel ?? 0.0),
     );
   }
 }
 
-/// Roster row: avatar with a subtle accent ring while speaking (§98:
-/// smooth, never neon), mic-off when muted.
+/// Roster row: avatar with a loudness-driven green ring while speaking,
+/// mic-off when muted.
 class _VoiceRow extends StatelessWidget {
   const _VoiceRow(
       {required this.nick,
       required this.speaking,
       required this.muted,
-      this.serverMuted = false});
+      this.serverMuted = false,
+      this.level = 0.0});
 
   final String nick;
   final bool speaking;
   final bool muted;
   final bool serverMuted;
 
+  /// Mic loudness 0..1: louder = more solid green. Silent = no ring.
+  final double level;
+
   @override
   Widget build(BuildContext context) {
     final c = GrchatColors.of(context);
+    // Discord-style speaking ring: fixed 2px, only the opacity breathes
+    // with the voice. Quiet frames fade out instead of blinking.
+    final ring = speaking && level > 0
+        ? _speakGreen.withValues(alpha: 0.3 + 0.7 * level.clamp(0.0, 1.0))
+        : Colors.transparent;
     return Row(mainAxisSize: MainAxisSize.min, children: [
       AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.all(2),
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          border: speaking
-              ? Border.all(color: c.accent, width: 2)
-              : Border.all(color: Colors.transparent, width: 2),
+          border: Border.all(color: ring, width: 2),
         ),
         child: Avatar(nick, radius: 10),
       ),
