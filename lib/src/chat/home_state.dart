@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:riverpod/riverpod.dart';
 
 import '../app/providers.dart';
+import '../call/call_session.dart';
 import '../desktop/window.dart';
 import '../notify/notify.dart';
 import '../voice/voice_state.dart';
@@ -146,6 +147,10 @@ final fileCacheProvider =
 
 class HomeState extends Notifier<HomeData> {
   StreamSubscription<Map<String, dynamic>>? _pushSub;
+
+  /// Last text/dm scope the user actually read. Voice leave returns here
+  /// (§24); voice scope itself is never recorded.
+  Scope? lastTextScope;
 
   @override
   HomeData build() => const HomeData();
@@ -342,6 +347,9 @@ class HomeState extends Notifier<HomeData> {
 
   Future<void> selectChannel(Community? community, Channel channel) async {
     if (channel.type != 'text' && channel.type != 'broadcast') return;
+    lastTextScope = ChannelScope(community, channel);
+    // Reading text while in a call folds the window, never stops media (§33).
+    minimizeLiveCall(ref);
     ref.read(editingMessageProvider.notifier).clear();
     state = state.copyWith(
         activeCommunityId: () => community?.id,
@@ -383,7 +391,53 @@ class HomeState extends Notifier<HomeData> {
   Future<void> selectStandaloneChannel(Channel channel) =>
       selectChannel(null, channel);
 
+  /// Focus a voice channel scope: no history load, no composer. If our live
+  /// voice session is in this channel, expand the window (§17, no rejoin);
+  /// otherwise the scope just selects and the tile offers joining.
+  void selectVoiceScope(Community? community, Channel channel) {
+    if (channel.type != 'voice') return;
+    state = state.copyWith(
+        activeCommunityId: () => community?.id,
+        scope: ChannelScope(community, channel),
+        messages: const [],
+        members: const [],
+        typing: {},
+        loading: false,
+        unread: {...state.unread}..remove('c:${channel.id}'));
+    final session = ref.read(voiceSessionProvider);
+    if (session != null && session.channelId == channel.id) {
+      ref.read(voiceSessionProvider.notifier).setMinimized(false);
+    }
+  }
+
+  /// After leaving a voice channel, go back to the last viewed text/dm
+  /// scope when it still exists (§24). Stays put otherwise.
+  Future<void> reselectLastText() async {
+    final last = lastTextScope;
+    if (last is DmScope) {
+      final threads = state.dms.where((d) => d.id == last.thread.id);
+      if (threads.isNotEmpty) {
+        await selectDm(threads.first);
+      }
+    } else if (last is ChannelScope) {
+      final lc = last.channel;
+      if (lc.type != 'text' && lc.type != 'broadcast') return;
+      if (last.community == null) {
+        final mine = state.myChannels.where((c) => c.id == lc.id);
+        if (mine.isNotEmpty) await selectStandaloneChannel(mine.first);
+      } else {
+        final comms =
+            state.communities.where((c) => c.id == last.community!.id);
+        if (comms.isEmpty) return;
+        final chs = comms.first.channels.where((c) => c.id == lc.id);
+        if (chs.isNotEmpty) await selectChannel(comms.first, chs.first);
+      }
+    }
+  }
+
   Future<void> selectDm(DmThread thread) async {
+    lastTextScope = DmScope(thread, ref.read(sessionProvider)?.userId ?? '');
+    minimizeLiveCall(ref);
     ref.read(editingMessageProvider.notifier).clear();
     final myId = ref.read(sessionProvider)?.userId ?? '';
     state = state.copyWith(
@@ -410,6 +464,7 @@ class HomeState extends Notifier<HomeData> {
 
   /// The DM stand: DMs only, no channels. Keeps the selected DM if any.
   void goHome() {
+    minimizeLiveCall(ref);
     ref.read(editingMessageProvider.notifier).clear();
     final dm = state.scope is DmScope ? state.scope : null;
     state = HomeData(

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../app/theme.dart';
+import '../../call/call_session.dart';
 import '../../search/search_address.dart';
 import '../../settings/settings_screen.dart';
 import '../../voice/voice_state.dart';
@@ -92,12 +93,14 @@ class ContextSidebar extends ConsumerWidget {
                   groupLabel('Голосовые каналы'),
                   for (final ch
                       in comm.channels.where((c) => c.type != 'text'))
-                    VoiceTile(channel: ch, members: data.members),
+                    VoiceTile(
+                        channel: ch,
+                        community: comm,
+                        members: data.members),
                 ],
               ],
             ),
           ),
-          const VoiceBar(),
           const UserPanel(),
         ]),
       ),
@@ -139,7 +142,6 @@ class ContextSidebar extends ConsumerWidget {
           ],
         ),
       ),
-      const VoiceBar(),
       const UserPanel(),
     ]);
   }
@@ -214,9 +216,13 @@ class ChannelTile extends StatelessWidget {
 
 class VoiceTile extends ConsumerWidget {
   const VoiceTile(
-      {super.key, required this.channel, required this.members});
+      {super.key,
+      required this.channel,
+      required this.community,
+      required this.members});
 
   final Channel channel;
+  final Community? community;
   final List<Member> members;
 
   @override
@@ -225,6 +231,7 @@ class VoiceTile extends ConsumerWidget {
     final voice = ref.watch(voiceStateProvider);
     final session = ref.watch(voiceSessionProvider);
     final sessionSt = ref.read(voiceSessionProvider.notifier);
+    final homeSt = ref.read(homeStateProvider.notifier);
     final myId = ref.read(sessionProvider)?.userId ?? '';
     final joined = session?.channelId == channel.id;
     final ids = voice[channel.id] ?? const {};
@@ -268,13 +275,16 @@ class VoiceTile extends ConsumerWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: () async {
+        // Click is focus-or-join, never blind rejoin (§18/§22): already
+        // here → select scope + expand; elsewhere → move; new → join.
+        if (joined) {
+          homeSt.selectVoiceScope(community, channel);
+          return;
+        }
         try {
-          if (joined) {
-            await sessionSt.leave();
-          } else {
-            await sessionSt.join(
-                channelId: channel.id, title: channel.name);
-          }
+          await sessionSt.join(
+              channelId: channel.id, title: channel.name);
+          homeSt.selectVoiceScope(community, channel);
         } catch (e) {
           if (context.mounted) {
             Toast.show(context, friendlyVoiceError(e));
@@ -319,7 +329,7 @@ class VoiceTile extends ConsumerWidget {
                       child: InkWell(
                         borderRadius: BorderRadius.circular(12),
                         onTap: () => _limitDialog(context, sessionSt,
-                            channel.name, limit),
+                            channel, limit),
                         child: const Padding(
                           padding: EdgeInsets.all(4),
                           child: Icon(Icons.group_add,
@@ -328,7 +338,31 @@ class VoiceTile extends ConsumerWidget {
                       ),
                     ),
                   if (joined)
-                    const Icon(Icons.logout, size: 14),
+                    Tooltip(
+                      message: 'Выйти из войса',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () async {
+                          try {
+                            await leaveVoice(
+                                ref.read(
+                                    voiceSessionProvider.notifier),
+                                ref.read(homeStateProvider.notifier),
+                                ref.read(homeStateProvider).scope,
+                                channel.id);
+                          } catch (e) {
+                            if (context.mounted) {
+                              Toast.show(
+                                  context, friendlyVoiceError(e));
+                            }
+                          }
+                        },
+                        child: const Padding(
+                          padding: EdgeInsets.all(4),
+                          child: Icon(Icons.logout, size: 14),
+                        ),
+                      ),
+                    ),
                 ]),
               ),
               for (final id in ids)
@@ -343,7 +377,8 @@ class VoiceTile extends ConsumerWidget {
                       canMod: canMod,
                       onMenu: () => _peerMenu(
                           context, sessionSt, channel.id, id, nick(id),
-                          peerOf(id), canMod)),
+                          peerOf(id), canMod,
+                          inChannel: joined)),
                 ),
             ]),
       ),
@@ -441,7 +476,9 @@ Future<void> _peerMenu(
     String id,
     String nick,
     VoicePeer? peer,
-    bool canMod) async {
+    bool canMod, {
+    bool inChannel = true,
+  }) async {
   final locallyMuted = peer?.localMuted ?? false;
   final sm = peer?.serverMuted ?? false;
   final action = await showDialog<String>(
@@ -466,6 +503,11 @@ Future<void> _peerMenu(
             ],
           ));
   if (action == null || !context.mounted) return;
+  if (action == 'local' && !inChannel) {
+    // Local mute only affects what I hear in my current room.
+    Toast.show(context, 'Зайди в войс, чтобы заглушить');
+    return;
+  }
   try {
     final s = st;
     if (action == 'local') {
@@ -481,12 +523,12 @@ Future<void> _peerMenu(
 }
 
 Future<void> _limitDialog(BuildContext context, VoiceSessionState st,
-    String channelName, int current) async {
+    Channel channel, int current) async {
   final ctl = TextEditingController(text: current == 0 ? '' : '$current');
   final value = await showDialog<int>(
       context: context,
       builder: (ctx) => AlertDialog(
-            title: Text('Лимит: $channelName'),
+            title: Text('Лимит: ${channel.name}'),
             content: TextField(
               controller: ctl,
               keyboardType: TextInputType.number,
@@ -509,7 +551,7 @@ Future<void> _limitDialog(BuildContext context, VoiceSessionState st,
   if (value == null || value < 0 || value > 99) return;
   if (!context.mounted) return;
   try {
-    await st.setLimit(value);
+    await st.setLimit(channelId: channel.id, limit: value);
     if (context.mounted) {
       Toast.show(context,
           value == 0 ? 'Лимит снят' : 'Лимит: $value уч.');
@@ -633,96 +675,6 @@ class _GroupAvatar extends StatelessWidget {
 }
 
 /// Bottom of the sidebar: me + settings. Theme/logout live in Settings.
-/// Voice connection panel (§97): bottom sidebar while in a voice channel.
-/// Shows "Подключено к" plus the channel name, with mic and disconnect.
-class VoiceBar extends ConsumerWidget {
-  const VoiceBar({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final session = ref.watch(voiceSessionProvider);
-    if (session == null) return const SizedBox.shrink();
-    final st = ref.read(voiceSessionProvider.notifier);
-    final c = GrchatColors.of(context);
-    return Container(
-      margin: const EdgeInsets.fromLTRB(8, 0, 8, 4),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      decoration: BoxDecoration(
-        color: c.surfaceSelected,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(children: [
-        Icon(Icons.volume_up, size: 16, color: c.accent),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('Подключено',
-                    style:
-                        TextStyle(fontSize: 11, color: Colors.grey)),
-                Text(session.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 12, fontWeight: FontWeight.w700)),
-              ]),
-        ),
-        IconButton(
-            tooltip: session.muted
-                ? 'Включить микрофон'
-                : 'Выключить микрофон',
-            icon: Icon(
-                session.muted ? Icons.mic_off : Icons.mic,
-                size: 18,
-                color: session.muted ? Colors.red : null),
-            onPressed: () async {
-              try {
-                await st.toggleMute();
-              } catch (e) {
-                if (context.mounted) {
-                  Toast.show(context, friendlyVoiceError(e));
-                }
-              }
-            }),
-        IconButton(
-            tooltip: session.deafened
-                ? 'Включить звук'
-                : 'Заглушить всё',
-            icon: Icon(
-                session.deafened
-                    ? Icons.headset_off
-                    : Icons.headset_mic,
-                size: 18,
-                color: session.deafened ? Colors.orange : null),
-            onPressed: () async {
-              try {
-                await st.toggleDeafen();
-              } catch (e) {
-                if (context.mounted) {
-                  Toast.show(context, friendlyVoiceError(e));
-                }
-              }
-            }),
-        IconButton(
-            tooltip: 'Отключиться',
-            icon: const Icon(Icons.call_end,
-                size: 18, color: Colors.red),
-            onPressed: () async {
-              try {
-                await st.leave();
-              } catch (e) {
-                if (context.mounted) {
-                  Toast.show(context, friendlyVoiceError(e));
-                }
-              }
-            }),
-      ]),
-    );
-  }
-}
-
 class UserPanel extends ConsumerWidget {
   const UserPanel({super.key});
 
