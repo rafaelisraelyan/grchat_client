@@ -244,8 +244,10 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
   StreamSubscription<Map<String, dynamic>>? _pushSub;
 
   /// Mic-level sampler: LiveKit only emits speaking transitions, so levels
-  /// for the ring opacity are polled. 8 Hz + 0.1 quantization + no-op guard
-  /// below keep rebuilds to real changes only.
+  /// for the ring opacity are polled. 16 Hz + 0.1 quantization + no-op guard
+  /// below keep rebuilds to real changes only. Appearance itself is
+  /// event-driven (ActiveSpeakersChangedEvent → _syncPeers); the poll only
+  /// refines loudness between events.
   Timer? _levelTimer;
 
   /// Local-only mutes (deafen one person for myself). Never leaves the device.
@@ -343,7 +345,7 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
           channelId: channelId, title: title, room: creds.room);
       _levelTimer?.cancel();
       _levelTimer =
-          Timer.periodic(const Duration(milliseconds: 120), (_) {
+          Timer.periodic(const Duration(milliseconds: 60), (_) {
         if (state == null || _room == null) return;
         _syncPeers();
       });

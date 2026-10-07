@@ -454,7 +454,8 @@ class _VoiceRow extends StatelessWidget {
         : Colors.transparent;
     return Row(mainAxisSize: MainAxisSize.min, children: [
       AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
+        // Appear fast (voice already audible), fade out smoothly.
+        duration: Duration(milliseconds: speaking ? 120 : 250),
         padding: const EdgeInsets.all(2),
         decoration: BoxDecoration(
           shape: BoxShape.circle,
