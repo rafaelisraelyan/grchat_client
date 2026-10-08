@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -30,13 +31,26 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
 
   /// Minimize/expand morph: 0 = expanded window, 1 = mini pill.
   /// The engine flag flips instantly; this animates the surface behind it.
+  /// One normalized progress drives everything (§28): rect, radius,
+  /// elevation and content staging. 380ms, emphasized but snappy (§26).
   late final AnimationController _morph = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 280));
+      vsync: this, duration: const Duration(milliseconds: 380));
 
   /// Session the morph belongs to + last settled minimized value.
   /// A new session snaps instead of animating from a stale position.
   String? _morphCall;
   bool? _settled;
+
+  /// Frozen pill-preview participant for the flight (§60): the surface
+  /// shrinks AS one object, so the rider is snapshotted at takeoff.
+  /// Settled states always use the live spotlight instead.
+  CallParticipant? _rider;
+
+  /// Last settled window size, reported post-layout (§33-safe: never read
+  /// during build). The flight takes off pixel-exact from it, even for
+  /// intrinsic-height windows.
+  Size? _fromSize;
+  final GlobalKey _measureKey = GlobalKey();
 
   @override
   void dispose() {
@@ -138,6 +152,8 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       final target = mini ? 1.0 : 0.0;
       _morphCall = call.sessionId;
       _settled = mini;
+      // A new session invalidates any stored takeoff size.
+      _fromSize = null;
       if (first) {
         _morph.value = target;
       } else if (_morph.value != target) {
@@ -147,6 +163,8 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       }
     } else if (_settled != mini) {
       _settled = mini;
+      // Freeze the rider at takeoff: the flight carries one participant.
+      _rider = call.spotlight;
       if (mini) {
         _morph.forward();
       } else {
@@ -183,72 +201,126 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                 },
                 child: Focus(
                   autofocus: true,
-                  child: CallWindow(
-                      call: call,
-                      secs: _secs,
-                      media: _mediaFor(call)),
-                ),
-              ),
-            ),
-          ]);
-        }
-        // Mid-flight both surfaces exist: the window flies into the corner
-        // while the pill fades in (and symmetrically back on expand).
-        final showWindow = t < 1.0;
-        final showPill = t > 0.0;
-        // Flight path: center → top-right corner, shrinking; the last third
-        // is mostly a crossfade so the handoff point never pops.
-        final fly =
-            Curves.easeInOutCubic.transform((t / 0.7).clamp(0.0, 1.0));
-        final fade =
-            Curves.easeOut.transform(((t - 0.55) / 0.45).clamp(0.0, 1.0));
-        return Stack(children: [
-          // Slight dim while ringing only; active calls never block chat.
-          // Kept under the flying window until it mostly left.
-          if (ringing && t < 0.5)
-            const IgnorePointer(
-              child: ModalBarrier(color: Colors.black38),
-            ),
-          if (showWindow)
-            Positioned.fill(
-              child: Align(
-                alignment:
-                    Alignment.lerp(Alignment.center, Alignment.topRight, fly)!,
-                child: Opacity(
-                  opacity: 1.0 - fade,
-                  child: Transform.scale(
-                    scale: 1.0 - 0.78 * fly,
-                    child: CallbackShortcuts(
-                      bindings: {
-                        // Esc minimizes, never hangs up (§48).
-                        const SingleActivator(LogicalKeyboardKey.escape):
-                            () => call.onSetMinimized(true),
-                      },
-                      child: Focus(
-                        autofocus: true,
-                        child: CallWindow(
-                            call: call,
-                            secs: _secs,
-                            media: _mediaFor(call)),
-                      ),
+                  child: NotificationListener<SizeChangedLayoutNotification>(
+                    onNotification: (_) {
+                      // Post-layout report (never build): the next flight
+                      // takes off from exactly this box.
+                      _fromSize = _measureKey.currentContext?.size;
+                      return true;
+                    },
+                    child: SizeChangedLayoutNotifier(
+                      child: CallWindow(
+                          key: _measureKey,
+                          call: call,
+                          secs: _secs,
+                          media: _mediaFor(call)),
                     ),
                   ),
                 ),
               ),
             ),
-          if (showPill)
-            Positioned(
-              right: 12,
-              top: 12,
-              child: Opacity(
-                opacity: fade,
-                child: Transform.scale(
-                  scale: 0.8 + 0.2 * fade,
-                  alignment: Alignment.topRight,
-                  child: MiniPillBody(call: call, secs: _secs),
+          ]);
+        }
+        // Single-object morph (§1–§4, §60): one container flies
+        // center → top-right while its box, radius and elevation
+        // interpolate. The rider video (same keyed element as the grid and
+        // the pill) rides full-bleed; only chrome crossfades in stages
+        // (§29): title out early, pill bar in late. Symmetric on reverse.
+        final screen = MediaQuery.sizeOf(ctx);
+        final box = callWindowSize(call, screen);
+        // Prefer the measured settled box (exact, resize-live); computed
+        // width with a fallback height otherwise.
+        final fromSize =
+            _fromSize ?? Size(box.width, box.height ?? 360.0);
+        final fromRect = Rect.fromCenter(
+            center: screen.center(Offset.zero),
+            width: fromSize.width,
+            height: fromSize.height);
+        final pillRect = Rect.fromLTWH(
+            screen.width - kPillMargin - kPillSize.width,
+            kPillMargin,
+            kPillSize.width,
+            kPillSize.height);
+        final e = Curves.easeInOutCubic.transform(t); // §27
+        final rect = Rect.lerp(fromRect, pillRect, e)!;
+        final radius = lerpDouble(18, kPillRadius, e)!;
+        final elev = lerpDouble(12, 8, e)!;
+        // Staging: title fades 0–0.3, pill bar fades in 0.55–1.
+        final titleOut = (1.0 - t / 0.3).clamp(0.0, 1.0);
+        final barIn = ((t - 0.55) / 0.45).clamp(0.0, 1.0);
+        final rider = _rider;
+        return Stack(key: const ValueKey('morph-surface'), children: [
+          // Slight dim while ringing only; active calls never block chat.
+          // Kept under the flying surface until it mostly left.
+          if (ringing && t < 0.5)
+            const IgnorePointer(
+              child: ModalBarrier(color: Colors.black38),
+            ),
+          Positioned.fromRect(
+            rect: rect,
+            child: Material(
+              color:
+                  Theme.of(ctx).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(radius),
+              elevation: elev,
+              shadowColor: Colors.black.withValues(alpha: 0.5),
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                      color: Theme.of(ctx)
+                          .dividerColor
+                          .withValues(alpha: 0.5)),
+                  borderRadius: BorderRadius.circular(radius),
                 ),
+                clipBehavior: Clip.antiAlias,
+                child: Stack(children: [
+                  Positioned.fill(child: _riderFace(rider, call.title)),
+                  if (titleOut > 0)
+                    Positioned(
+                      top: 14,
+                      left: 18,
+                      right: 18,
+                      child: Opacity(
+                        opacity: titleOut,
+                        child: Text(call.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                    ),
+                  if (barIn > 0)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: Opacity(
+                        opacity: barIn,
+                        child: Container(
+                          padding: const EdgeInsets.fromLTRB(
+                              12, 16, 12, 8),
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Colors.transparent,
+                                Colors.black87,
+                              ],
+                            ),
+                          ),
+                          child: _pillMeta(
+                              name: rider?.nick ?? call.title,
+                              muted: rider?.muted ?? false,
+                              status: _pillStatus(call, _secs)),
+                        ),
+                      ),
+                    ),
+                ]),
               ),
             ),
+          ),
         ]);
       },
     );
@@ -313,9 +385,14 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
             borderRadius: BorderRadius.circular(12)),
         clipBehavior: Clip.antiAlias,
         child: hasRemote
-            ? RTCVideoView(remote!,
-                objectFit: RTCVideoViewObjectFit
-                    .RTCVideoViewObjectFitContain)
+            // Same GlobalObjectKey as the pill/morph rider builder (§4):
+            // minimizing re-homes this element instead of rebinding the
+            // texture, so the frame never drops to black mid-flight.
+            ? KeyedSubtree(
+                key: GlobalObjectKey(remote!),
+                child: RTCVideoView(remote,
+                    objectFit: RTCVideoViewObjectFit
+                        .RTCVideoViewObjectFitContain))
             : Center(
                 child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -390,6 +467,31 @@ String formatCallDuration(int s) {
   return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
 }
 
+/// Compact pill geometry (§5–§6): anchored top-right of the app area with
+/// 14px margins, wide capsule-ish, big enough to actually see the peer.
+const Size kPillSize = Size(280, 96);
+const double kPillMargin = 14;
+const double kPillRadius = 48;
+
+/// Expanded window box for a call on [screen]. Shared by [CallWindow] and
+/// the morph start rect so the flight takes off pixel-exact. Height stays
+/// null for intrinsic (audio/identity) windows — the morph measures those
+/// from the live window at takeoff instead.
+({double width, double? height}) callWindowSize(
+    UnifiedCall call, Size screen) {
+  final wideVideo = call.video && call.phase == CallPhase.active;
+  if (wideVideo) {
+    return (
+      width: (screen.width - 96).clamp(320.0, 880.0),
+      height: (screen.height - 96).clamp(320.0, 640.0),
+    );
+  } else if (call.video || call.phase == CallPhase.active) {
+    return (width: (screen.width - 64).clamp(320.0, 480.0), height: null);
+  } else {
+    return (width: (screen.width - 64).clamp(300.0, 440.0), height: null);
+  }
+}
+
 /// Centered, elevated, visually separate from the chat (§33–§34).
 class CallWindow extends StatelessWidget {
   const CallWindow(
@@ -405,19 +507,10 @@ class CallWindow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
-    final wideVideo = call.video && call.phase == CallPhase.active;
-    final double width;
-    final double? height;
-    if (wideVideo) {
-      width = (size.width - 96).clamp(320.0, 880.0);
-      height = (size.height - 96).clamp(320.0, 640.0);
-    } else if (call.video || call.phase == CallPhase.active) {
-      width = (size.width - 64).clamp(320.0, 480.0);
-      height = null;
-    } else {
-      width = (size.width - 64).clamp(300.0, 440.0);
-      height = null;
-    }
+    final box = callWindowSize(call, size);
+    final width = box.width;
+    final height = box.height;
+    final wideVideo = height != null;
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(18),
@@ -740,8 +833,11 @@ class ParticipantTile extends StatelessWidget {
   }
 }
 
-/// Minimized call pill, top right (§13/§46): title, status, mic, expand,
-/// leave. Never hangs up by itself.
+/// Minimized live pill, top right (§5–§7, §61): a small LIVE window into
+/// the conversation, not a status bar. P2P always shows the remote peer
+/// (§8, §18); group/voice show the stabilized active remote speaker with
+/// first-remote fallback (§9, §22). Click the free area to expand (§45);
+/// hangup ends the session for real (§44), never just the pill.
 class MiniCallOverlay extends StatelessWidget {
   const MiniCallOverlay(
       {super.key, required this.call, required this.secs});
@@ -752,79 +848,235 @@ class MiniCallOverlay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Positioned(
-      right: 12,
-      top: 12,
-      child: MiniPillBody(call: call, secs: secs),
+      right: kPillMargin,
+      top: kPillMargin,
+      child: MiniVideoPill(call: call, secs: secs),
     );
   }
 }
 
-/// The pill itself, position-free so the minimize morph can fade/scale it
-/// inside its own Positioned. Same pixels as [MiniCallOverlay].
-class MiniPillBody extends StatelessWidget {
-  const MiniPillBody(
+/// Speaking green, shared with the sidebar roster ring language.
+const _pillSpeakGreen = Color(0xFF57F287);
+
+/// Avatar face for camera-off preview (pill, morph, audio-only, §23/§47).
+Widget _avatarFace(String nick, {double radius = 26}) => Container(
+      color: Colors.black,
+      child: Center(child: Avatar(nick, radius: radius)),
+    );
+
+/// Rider face for the morph flight: live video when the frozen rider has
+/// it, avatar otherwise. The video is the same keyed element as the grid
+/// and the pill (§4): nothing re-binds mid-flight.
+Widget _riderFace(CallParticipant? rider, String fallbackNick) {
+  final v = rider?.video;
+  if (v != null) {
+    return Container(color: Colors.black, child: Builder(builder: v));
+  }
+  return _avatarFace(rider?.nick ?? fallbackNick);
+}
+
+/// Bottom meta line shared by the morph flight and the settled pill:
+/// name, mute state, duration. Never interactive itself.
+Widget _pillMeta(
+    {required String name, required bool muted, required String status}) {
+  return Row(mainAxisSize: MainAxisSize.min, children: [
+    Flexible(
+      child: Text(name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: Colors.white)),
+    ),
+    if (muted) ...[
+      const SizedBox(width: 4),
+      const Icon(Icons.mic_off, size: 11, color: Colors.white70),
+    ],
+    const SizedBox(width: 6),
+    Text(status,
+        style: const TextStyle(fontSize: 11, color: Colors.white70)),
+  ]);
+}
+
+String _pillStatus(UnifiedCall call, int secs) =>
+    call.phase == CallPhase.active
+        ? formatCallDuration(secs)
+        : 'Вызов…';
+
+/// Settled pill content: the live spotlight with a short crossfade on
+/// speaker change (§24). The pill box never moves or resizes (§25); only
+/// this content fades, 180ms.
+Widget _pillPreview(UnifiedCall call) {
+  final sp = call.spotlight;
+  final hasVideo = sp?.video != null;
+  return AnimatedSwitcher(
+    duration: const Duration(milliseconds: 180),
+    transitionBuilder: (child, animation) =>
+        FadeTransition(opacity: animation, child: child),
+    layoutBuilder: (current, previous) => Stack(children: [
+      if (current != null) Positioned.fill(child: current),
+      for (final p in previous) Positioned.fill(child: p),
+    ]),
+    // Identity follows content, not just id: a camera toggle on the same
+    // speaker (§58) swaps avatar ↔ video without changing who is shown.
+    child: KeyedSubtree(
+      key: ValueKey('spot-${sp?.id ?? 'none'}-${hasVideo ? 'v' : 'a'}'),
+      child: hasVideo
+          ? Container(
+              color: Colors.black, child: Builder(builder: sp!.video!))
+          : _avatarFace(sp?.nick ?? call.title),
+    ),
+  );
+}
+
+class MiniVideoPill extends StatefulWidget {
+  const MiniVideoPill(
       {super.key, required this.call, required this.secs});
 
   final UnifiedCall call;
   final int secs;
 
   @override
+  State<MiniVideoPill> createState() => _MiniVideoPillState();
+}
+
+class _MiniVideoPillState extends State<MiniVideoPill> {
+  bool _hover = false;
+
+  /// Button taps also land on the expand detector below (§45): swallow the
+  /// echo so mute/hangup never expand as a side effect.
+  DateTime? _controlTap;
+
+  void _guarded(VoidCallback fn) {
+    _controlTap = DateTime.now();
+    fn();
+  }
+
+  void _expand() {
+    final guard = _controlTap;
+    if (guard != null &&
+        DateTime.now().difference(guard) <
+            const Duration(milliseconds: 350)) {
+      return;
+    }
+    widget.call.onSetMinimized(false);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final status = call.phase == CallPhase.active
-        ? (call.kind == CallKind.direct
-            ? formatCallDuration(secs)
-            : '${call.subtitle} · ${formatCallDuration(secs)}')
-        : (call.phase == CallPhase.ringing ? 'Вызов…' : call.subtitle);
-    return Material(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(14),
-        elevation: 8,
-        child: Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            border: Border.all(
+    final call = widget.call;
+    final sp = call.spotlight;
+    final speaking = sp?.speaking ?? false;
+    return SizedBox(
+      width: kPillSize.width,
+      height: kPillSize.height,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          onTap: _expand,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(kPillRadius),
+              // Thin speaking outline, never a size pulse (§41).
+              border: Border.all(
+                  color:
+                      speaking ? _pillSpeakGreen : Colors.transparent,
+                  width: 1.5),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(kPillRadius - 1.5),
+              child: Material(
                 color: Theme.of(context)
-                    .dividerColor
-                    .withValues(alpha: 0.5)),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            if (call.kind == CallKind.direct)
-              Avatar(call.title, radius: 14)
-            else
-              const Icon(Icons.volume_up, size: 20),
-            const SizedBox(width: 8),
-            Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(call.title,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w700)),
-                  Text(status,
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.grey)),
+                    .colorScheme
+                    .surfaceContainerHighest,
+                elevation: 8,
+                child: Stack(children: [
+                  Positioned.fill(child: _pillPreview(call)),
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(12, 16, 8, 7),
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.transparent,
+                            Colors.black87,
+                          ],
+                        ),
+                      ),
+                      child: Row(children: [
+                        Expanded(
+                          child: _pillMeta(
+                              name: sp?.nick ?? call.title,
+                              muted: sp?.muted ?? false,
+                              status: _pillStatus(call, widget.secs)),
+                        ),
+                        // Hover-revealed controls (§42): the preview stays
+                        // the hero, buttons never cover the face fully.
+                        AnimatedOpacity(
+                          duration: const Duration(milliseconds: 200),
+                          opacity: _hover ? 1.0 : 0.0,
+                          child: IgnorePointer(
+                            ignoring: !_hover,
+                            child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                      tooltip: call.muted
+                                          ? 'Включить микрофон'
+                                          : 'Выключить',
+                                      iconSize: 18,
+                                      padding: EdgeInsets.zero,
+                                      constraints:
+                                          const BoxConstraints(),
+                                      icon: Icon(
+                                          call.muted
+                                              ? Icons.mic_off
+                                              : Icons.mic,
+                                          color: Colors.white),
+                                      onPressed: () => _guarded(
+                                          () => call.onToggleMute())),
+                                  IconButton(
+                                      tooltip: 'Вернуть звонок',
+                                      iconSize: 18,
+                                      padding: EdgeInsets.zero,
+                                      constraints:
+                                          const BoxConstraints(),
+                                      icon: const Icon(
+                                          Icons.open_in_full,
+                                          color: Colors.white),
+                                      onPressed: () => _guarded(
+                                          () => call.onSetMinimized(
+                                              false))),
+                                  IconButton(
+                                      tooltip: 'Завершить',
+                                      iconSize: 18,
+                                      padding: EdgeInsets.zero,
+                                      constraints:
+                                          const BoxConstraints(),
+                                      icon: const Icon(Icons.call_end,
+                                          color: Colors.red),
+                                      onPressed: () =>
+                                          _guarded(() => call.onHangup())),
+                                ]),
+                          ),
+                        ),
+                      ]),
+                    ),
+                  ),
                 ]),
-            const SizedBox(width: 8),
-            IconButton(
-                tooltip:
-                    call.muted ? 'Включить микрофон' : 'Выключить',
-                icon: Icon(
-                    call.muted ? Icons.mic_off : Icons.mic,
-                    size: 20),
-                onPressed: () => call.onToggleMute()),
-            IconButton(
-                tooltip: 'Вернуть звонок',
-                icon: const Icon(Icons.open_in_full, size: 20),
-                onPressed: () => call.onSetMinimized(false)),
-            IconButton(
-                tooltip: 'Завершить',
-                icon: const Icon(Icons.call_end,
-                    size: 20, color: Colors.red),
-                onPressed: () => call.onHangup()),
-          ]),
+              ),
+            ),
+          ),
         ),
+      ),
     );
   }
 }

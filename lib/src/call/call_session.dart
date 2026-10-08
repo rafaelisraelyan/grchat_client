@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:livekit_client/livekit_client.dart';
 
 import '../app/providers.dart';
@@ -24,13 +25,20 @@ class CallParticipant {
       required this.self,
       required this.speaking,
       required this.muted,
-      this.video});
+      this.video,
+      this.videoKey});
   final String id;
   final String nick;
   final bool self;
   final bool speaking;
   final bool muted;
   final WidgetBuilder? video;
+
+  /// Stable identity for the media behind [video] (track/renderer object).
+  /// Render sites wrap the video in `KeyedSubtree(GlobalObjectKey(videoKey))`
+  /// so the SAME element — and its texture binding — survives layout moves
+  /// (grid ↔ morph ↔ pill) with no black frame (§4, §53). Null = avatar.
+  final Object? videoKey;
 }
 
 /// One value the universal Call Window renders, whichever engine owns media.
@@ -62,7 +70,8 @@ class UnifiedCall {
       required this.onToggleShare,
       required this.onSetMinimized,
       required this.friendlyError,
-      this.switchDetail});
+      this.switchDetail,
+      this.spotlight});
   final CallKind kind;
   final String sessionId;
   final String title;
@@ -91,6 +100,12 @@ class UnifiedCall {
   /// Call-waiting context for the incoming window (§31–§33), e.g.
   /// 'Вы сейчас в голосовом канале «Studio».' Null = free, plain accept.
   final String? switchDetail;
+
+  /// Live pill preview (§61): the remote peer to watch while minimized.
+  /// P2P = the peer, always (§18). Group/voice = stabilized active remote
+  /// speaker with first-remote fallback (§9, §22). Null = no remote peers:
+  /// the pill shows the call avatar instead.
+  final CallParticipant? spotlight;
 }
 
 /// Picks the live engine: direct P2P first, group SFU second, server voice
@@ -128,6 +143,27 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
   final coord = ref.read(mediaCoordinatorProvider.notifier);
   final incoming =
       !call.outgoing && call.phase == CallPhase.ringing;
+  // P2P pill preview (§8, §18): always the remote peer, never self-view.
+  // Speaking/mute of the remote side are unknown to the P2P engine, so the
+  // tile stays neutral. The renderer object keys the shared video: the same
+  // track binding rides grid ↔ morph ↔ pill with no re-create (§4, §53).
+  final remoteRenderer = st.remoteRenderer;
+  final hasRemoteVideo =
+      call.video && call.remoteVideo && remoteRenderer != null;
+  final remote = CallParticipant(
+      id: 'peer',
+      nick: call.peerNick,
+      self: false,
+      speaking: false,
+      muted: false,
+      video: hasRemoteVideo
+          ? ((ctx) => KeyedSubtree(
+              key: GlobalObjectKey(remoteRenderer),
+              child: RTCVideoView(remoteRenderer,
+                  objectFit: RTCVideoViewObjectFit
+                      .RTCVideoViewObjectFitCover)))
+          : null,
+      videoKey: hasRemoteVideo ? remoteRenderer : null);
   return UnifiedCall(
     kind: CallKind.direct,
     sessionId: call.callId,
@@ -143,7 +179,7 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
     sharingScreen: call.sharingScreen,
     linkDown: call.linkDown,
     minimized: call.minimized,
-    participants: const [],
+    participants: [remote],
     // Accept is an atomic coordinator switch (§3): the live session (if
     // any) ends first, the new media starts only after. Decline keeps the
     // current session untouched.
@@ -160,6 +196,8 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
     friendlyError: friendlyCallError,
     switchDetail:
         incoming ? coord.switchWarningFor(MediaSessionKind.direct) : null,
+    // P2P spotlight is always the remote peer (§18), even mid-sentence.
+    spotlight: remote,
   );
 }
 
@@ -169,6 +207,19 @@ String _plural(int n, String one, String few, String many) {
     return few;
   }
   return many;
+}
+
+/// Pill preview pick (§9, §18–§22): stabilized display wins, otherwise the
+/// first remote. Self never qualifies; empty remotes → null (avatar mode).
+CallParticipant? spotlightPeer(
+    {required List<CallParticipant> parts, String? displayedId}) {
+  CallParticipant? first;
+  for (final p in parts) {
+    if (p.self) continue;
+    first ??= p;
+    if (displayedId != null && p.id == displayedId) return p;
+  }
+  return first;
 }
 
 /// Leave the server voice session; when its channel is still selected,
@@ -194,8 +245,11 @@ UnifiedCall _fromVoice(Ref ref, VoiceSession session) {
         speaking: p.speaking,
         muted: p.muted,
         video: track != null
-            ? ((ctx) => VideoTrackRenderer(track))
-            : null));
+            ? ((ctx) => KeyedSubtree(
+                key: GlobalObjectKey(track),
+                child: VideoTrackRenderer(track)))
+            : null,
+        videoKey: track));
   }
   final others = parts.where((p) => !p.self).length;
   return UnifiedCall(
@@ -227,6 +281,9 @@ UnifiedCall _fromVoice(Ref ref, VoiceSession session) {
     onToggleShare: () async {},
     onSetMinimized: (m) => st.setMinimized(m),
     friendlyError: friendlyCallError,
+    // Stabilized remote speaker, first-remote fallback (§9, §22).
+    spotlight: spotlightPeer(
+        parts: parts, displayedId: session.displayedSpeakerId),
   );
 }
 
@@ -242,13 +299,14 @@ UnifiedCall _fromGroup(Ref ref, GroupCall call) {
         id: p.identity,
         nick: p.name,
         self: false,
-        // The group engine tracks membership, not loudness: no ring yet.
-        // Same as the old group grid — presence without speaking state.
-        speaking: false,
+        speaking: p.speaking,
         muted: p.audioMuted,
         video: track != null
-            ? ((ctx) => VideoTrackRenderer(track))
-            : null));
+            ? ((ctx) => KeyedSubtree(
+                key: GlobalObjectKey(track),
+                child: VideoTrackRenderer(track)))
+            : null,
+        videoKey: track));
   }
   // Self tile last, like the old group grid.
   final myNick = ref.read(sessionProvider)?.nick ?? '?';
@@ -260,8 +318,11 @@ UnifiedCall _fromGroup(Ref ref, GroupCall call) {
       speaking: false,
       muted: call.muted,
       video: call.video && !call.cameraOff && selfTrack != null
-          ? ((ctx) => VideoTrackRenderer(selfTrack))
-          : null));
+          ? ((ctx) => KeyedSubtree(
+              key: GlobalObjectKey(selfTrack),
+              child: VideoTrackRenderer(selfTrack)))
+          : null,
+      videoKey: call.video && !call.cameraOff ? selfTrack : null));
   final n = call.peers.length;
   return UnifiedCall(
     kind: CallKind.group,
@@ -298,5 +359,8 @@ UnifiedCall _fromGroup(Ref ref, GroupCall call) {
     friendlyError: friendlyGroupError,
     switchDetail:
         incoming ? coord.switchWarningFor(MediaSessionKind.group) : null,
+    // Stabilized remote speaker, first-remote fallback (§9, §22).
+    spotlight: spotlightPeer(
+        parts: parts, displayedId: call.displayedSpeakerId),
   );
 }
