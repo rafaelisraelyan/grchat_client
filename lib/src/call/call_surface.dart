@@ -9,6 +9,7 @@ import '../widgets/avatar.dart';
 import '../widgets/toast.dart';
 import 'call_session.dart';
 import 'call_state.dart';
+import 'media_session.dart';
 
 /// Global call surface: centered CallWindow + top-right mini pill.
 /// Renders [UnifiedCall], whichever engine owns media (direct P2P today,
@@ -77,16 +78,35 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
               label: 'Позвонить снова',
               onPressed: () async {
                 ref.read(callRedialProvider.notifier).clear();
-                try {
-                  final st = ref.read(callStateProvider.notifier);
-                  await st.startCall(
-                      peerNick: redial.peerNick,
-                      dmId: redial.dmId,
-                      video: redial.video);
-                } catch (e) {
-                  if (context.mounted) {
-                    Toast.show(context, friendlyCallError(e));
-                  }
+                // A redial never kills a live session silently: free starts,
+                // anything else gets a toast, never a confirm dialog from
+                // a snackbar action.
+                final coord =
+                    ref.read(mediaCoordinatorProvider.notifier);
+                switch (coord.requestSlot('redial')) {
+                  case SessionRequest.free:
+                    try {
+                      final st =
+                          ref.read(callStateProvider.notifier);
+                      await st.startCall(
+                          peerNick: redial.peerNick,
+                          dmId: redial.dmId,
+                          video: redial.video);
+                    } catch (e) {
+                      if (context.mounted) {
+                        Toast.show(context, friendlyCallError(e));
+                      }
+                    }
+                  case SessionRequest.confirm:
+                    if (context.mounted) {
+                      Toast.show(
+                          context, 'Завершите текущий звонок');
+                    }
+                  case SessionRequest.busy:
+                    if (context.mounted) {
+                      Toast.show(
+                          context, 'Дождитесь переключения звонка');
+                    }
                 }
               },
             ),
@@ -135,7 +155,7 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     }
     final ringing = call.kind == CallKind.direct &&
         call.phase == CallPhase.ringing;
-    return AnimatedBuilder(
+    final body = AnimatedBuilder(
       animation: _morph,
       builder: (ctx, _) {
         final t = _morph.value;
@@ -232,6 +252,30 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
         ]);
       },
     );
+    // Session switch in progress (§57): veil with a spinner, no fake
+    // "connected" state, media buttons untouchable until the new session
+    // is live. Also serializes double-Accept: the buttons sit under this.
+    if (!ref.watch(mediaCoordinatorProvider)) return body;
+    return Stack(children: [
+      body,
+      const ModalBarrier(color: Colors.black54),
+      Center(
+        child: Card(
+          child: Padding(
+            padding:
+                EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+              SizedBox(width: 12),
+              Text('Переключаем звонок…'),
+            ]),
+          ),
+        ),
+      ),
+    ]);
   }
 
   /// Central area: direct keeps its hero/PiP/identity layout verbatim (§29);
@@ -452,29 +496,63 @@ class CallWindow extends StatelessWidget {
 
   Widget _controls(BuildContext context) {
     if (call.onAccept != null) {
+      Future<void> accept() async {
+        try {
+          await call.onAccept!();
+        } catch (e) {
+          if (context.mounted) {
+            Toast.show(context, call.friendlyError(e));
+          }
+        }
+      }
+
+      Future<void> decline() async {
+        try {
+          await call.onDecline!();
+        } catch (e) {
+          if (context.mounted) {
+            Toast.show(context, call.friendlyError(e));
+          }
+        }
+      }
+
+      // Call waiting (§30): the warning names the live session, and accept
+      // says what it does — ends it — instead of silently tearing down.
+      final detail = call.switchDetail;
+      if (detail != null) {
+        return Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Вы уже участвуете в другом разговоре.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: Colors.grey)),
+          Text(detail,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _roundBtn(
+                  Colors.red, Icons.call_end, 'Отклонить', decline),
+              const SizedBox(width: 12),
+              Tooltip(
+                message: 'Завершить текущий и принять',
+                child: FilledButton.tonalIcon(
+                  onPressed: accept,
+                  icon: const Icon(Icons.call, size: 18),
+                  label: const Text('Завершить и принять'),
+                ),
+              ),
+            ],
+          ),
+        ]);
+      }
       return Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          _roundBtn(Colors.red, Icons.call_end, 'Отклонить',
-              () async {
-            try {
-              await call.onDecline!();
-            } catch (e) {
-              if (context.mounted) {
-                Toast.show(context, call.friendlyError(e));
-              }
-            }
-          }),
+          _roundBtn(
+              Colors.red, Icons.call_end, 'Отклонить', decline),
           const SizedBox(width: 28),
-          _roundBtn(Colors.green, Icons.call, 'Принять', () async {
-            try {
-              await call.onAccept!();
-            } catch (e) {
-              if (context.mounted) {
-                Toast.show(context, call.friendlyError(e));
-              }
-            }
-          }),
+          _roundBtn(Colors.green, Icons.call, 'Принять', accept),
         ],
       );
     }

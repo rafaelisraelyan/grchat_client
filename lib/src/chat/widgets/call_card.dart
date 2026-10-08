@@ -4,8 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../call/call_state.dart';
+import '../../call/media_session.dart';
 import '../home_state.dart';
-import '../../widgets/toast.dart';
 import '../models.dart';
 
 String _mmss(int totalSec) {
@@ -137,27 +137,30 @@ class CallCard extends ConsumerWidget {
   }
 
   Future<void> _callback(BuildContext context, WidgetRef ref) async {
-    if (ref.read(callStateProvider) != null) {
-      Toast.show(context, 'Уже в звонке');
-      return;
-    }
     final scope = ref.read(homeStateProvider).scope;
     if (scope is! DmScope) return;
     final notifier = ref.read(callStateProvider.notifier);
-    try {
-      if (!scope.thread.isGroup) {
-        final others = scope.thread.members
-            .where((m) => m.userId != myId)
-            .toList();
-        if (others.isEmpty) return;
-        await notifier.startCall(
-            peerNick: others.first.nick, video: message.call!.video);
-      } else {
-        await notifier.startCall(
-            dmId: scope.thread.id, video: message.call!.video);
-      }
-    } catch (e) {
-      if (context.mounted) Toast.show(context, friendlyCallError(e));
+    if (!scope.thread.isGroup) {
+      final others = scope.thread.members
+          .where((m) => m.userId != myId)
+          .toList();
+      if (others.isEmpty) return;
+      final nick = others.first.nick;
+      await runMediaStart(context, ref,
+          title: 'Позвонить $nick?',
+          action: 'позвонить',
+          start: () => notifier.startCall(
+              peerNick: nick, video: message.call!.video),
+          label: 'direct $nick',
+          friendlyError: friendlyCallError);
+    } else {
+      await runMediaStart(context, ref,
+          title: 'Позвонить в группу?',
+          action: 'позвонить',
+          start: () => notifier.startCall(
+              dmId: scope.thread.id, video: message.call!.video),
+          label: 'group ${scope.thread.id}',
+          friendlyError: friendlyCallError);
     }
   }
 }

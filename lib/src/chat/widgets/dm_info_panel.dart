@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../call/call_state.dart';
+import '../../call/media_session.dart';
 import '../../search/search_address.dart';
 import '../../widgets/attachment_index_views.dart';
 import '../../widgets/avatar.dart';
@@ -196,13 +197,14 @@ class _DmInfoPanelState extends ConsumerState<DmInfoPanel> {
 
   Future<void> _call(
       WidgetRef ref, BuildContext context, String nick, bool video) async {
-    try {
-      await ref
-          .read(callStateProvider.notifier)
-          .startCall(peerNick: nick, video: video);
-    } catch (e) {
-      if (context.mounted) Toast.show(context, friendlyCallError(e));
-    }
+    await runMediaStart(context, ref,
+        title: 'Позвонить $nick?',
+        action: 'позвонить',
+        start: () => ref
+            .read(callStateProvider.notifier)
+            .startCall(peerNick: nick, video: video),
+        label: 'direct $nick',
+        friendlyError: friendlyCallError);
   }
 }
 

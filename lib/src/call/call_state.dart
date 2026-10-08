@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:riverpod/riverpod.dart';
 
@@ -8,6 +9,7 @@ import '../auth/auth_repository.dart';
 import 'call_api.dart';
 import 'call_diagnostics.dart';
 import 'group_call.dart' show groupCallProvider;
+import 'media_session.dart';
 import 'sfu_marker.dart';
 enum CallPhase { ringing, active }
 
@@ -114,11 +116,21 @@ class CallState extends Notifier<ActiveCall?> {
   final _pendingIce = <Map<String, String?>>[];
   String? _callId;
 
+  /// Dry-ring offer (§25): the remote SDP waits here until accept, so an
+  /// incoming call holds NO microphone/camera while it rings. Media starts
+  /// in [acceptIncoming], never before.
+  String? _pendingOfferSdp;
+
   // Remote side (§15, §20): candidates before setRemoteDescription wait
   // in [_remoteIce]; remote tracks land in [_remoteStream].
   final _remoteIce = IceBuffer<Map<String, String?>>();
   MediaStream? _remoteStream;
   bool _remoteDescSet = false;
+
+  /// A live call hidden under a ringing incoming (call waiting): its
+  /// transport keeps running untouched (dry ring) until decline restores
+  /// it or an atomic switch ends it. Null in the common case.
+  ActiveCall? _displaced;
 
   /// A remote video track has arrived at least once. Tracked separately from
   /// [ActiveCall.remoteVideo] because _prepareIncoming rebuilds the ringing
@@ -314,26 +326,41 @@ class CallState extends Notifier<ActiveCall?> {
             phase: CallPhase.ringing);
         // Unanswered outgoing: stop ringing before the server sweep (60s).
         // Offer redial (§94) instead of a dead-end toast.
-        _ringTimer?.cancel();
-        _ringTimer = Timer(const Duration(seconds: 50), () async {
-          final c = state;
-          if (c == null ||
-              c.callId != callId ||
-              c.phase != CallPhase.ringing) {
-            return;
-          }
-          ref.read(callRedialProvider.notifier).offer(CallRedial(
-              reason: 'Нет ответа',
-              peerNick: peerNick,
-              dmId: dmId,
-              video: video));
-          await hangup();
-        });
+        _armUnansweredTimeout(
+            callId: callId,
+            peerNick: peerNick,
+            dmId: dmId,
+            video: video);
       }
     } catch (e) {
       await _cleanup();
       rethrow;
     }
+  }
+
+  /// Unanswered-outgoing watchdog: redial offer (§94) instead of ringing
+  /// into the server sweep. Re-armed when a displaced dial-out resurfaces
+  /// after a declined/waiting incoming.
+  void _armUnansweredTimeout(
+      {required String callId,
+      String? peerNick,
+      String? dmId,
+      required bool video}) {
+    _ringTimer?.cancel();
+    _ringTimer = Timer(const Duration(seconds: 50), () async {
+      final c = state;
+      if (c == null ||
+          c.callId != callId ||
+          c.phase != CallPhase.ringing) {
+        return;
+      }
+      ref.read(callRedialProvider.notifier).offer(CallRedial(
+          reason: 'Нет ответа',
+          peerNick: peerNick,
+          dmId: dmId,
+          video: video));
+      await hangup();
+    });
   }
 
   Future<void> acceptIncoming() async {
@@ -342,6 +369,21 @@ class CallState extends Notifier<ActiveCall?> {
     ref.read(callRedialProvider.notifier).clear();
     final api = ref.read(callApiProvider);
     try {
+      if (_pc == null) {
+        // Dry ring: the microphone/camera start only now, at accept time.
+        // The old session (if any) was already ended by the coordinator,
+        // so these fields are free — never two live transports (§1).
+        _pc = await _newPc(cur.callId);
+        await _addLocal(_pc!, cur.video);
+        dlog('offer ${SdpSummary.parse(_pendingOfferSdp ?? '')}');
+        await _pc!.setRemoteDescription(RTCSessionDescription(
+            _pendingOfferSdp ?? '', 'offer'));
+        _remoteDescSet = true;
+        await _flushRemoteIce();
+        if (_remoteVideoArrived) {
+          state = state?.copyWith(remoteVideo: true);
+        }
+      }
       final answer = await _pc!.createAnswer({});
       await _pc!.setLocalDescription(answer);
       final sdp = (await _pc!.getLocalDescription())?.sdp ?? '';
@@ -360,19 +402,87 @@ class CallState extends Notifier<ActiveCall?> {
   Future<void> decline() async {
     final cur = state;
     if (cur == null) return;
+    final disp = _displaced;
+    _displaced = null;
     try {
       await ref.read(callApiProvider).answer(callId: cur.callId, accept: false);
     } catch (_) {}
+    if (disp != null) {
+      // A live call was waiting under this ring: resurface it. Dry ring
+      // never touched its transport, so only the state comes back — plus
+      // its unanswered timeout if it was still dialling out (the ring
+      // overwrote the timer reference).
+      _ringTimer?.cancel();
+      _ringTimer = null;
+      state = disp;
+      if (disp.outgoing && disp.phase == CallPhase.ringing) {
+        _armUnansweredTimeout(
+            callId: disp.callId,
+            peerNick: disp.dmId == null ? disp.peerNick : null,
+            dmId: disp.dmId,
+            video: disp.video);
+      }
+      return;
+    }
     await _cleanup();
   }
 
   Future<void> hangup() async {
+    await endAll();
+  }
+
+  /// Coordinator primitive: end everything this engine holds, with the
+  /// right verb per occupancy (hangup for live, decline for a bare ring).
+  /// The accepted pending ([exceptPendingId]) keeps its dry offer while a
+  /// displaced transport underneath is dropped. Idempotent (§38).
+  Future<void> endAll({String? exceptPendingId}) async {
     final cur = state;
-    if (cur == null) return;
+    if (cur != null &&
+        !cur.outgoing &&
+        cur.phase == CallPhase.ringing &&
+        cur.callId == exceptPendingId) {
+      await endDisplacedForSwitch();
+      return;
+    }
+    final disp = _displaced;
+    _displaced = null;
+    if (disp != null) {
+      try {
+        await ref.read(callApiProvider).hangup(disp.callId);
+      } catch (_) {}
+    }
+    if (cur == null) {
+      await _cleanup();
+      return;
+    }
+    if (!cur.outgoing && cur.phase == CallPhase.ringing) {
+      try {
+        await ref
+            .read(callApiProvider)
+            .answer(callId: cur.callId, accept: false);
+      } catch (_) {}
+      await _cleanup();
+    } else {
+      try {
+        await ref.read(callApiProvider).hangup(cur.callId);
+      } catch (_) {}
+      await _cleanup();
+    }
+  }
+
+  /// Drop a displaced live call for an atomic switch: signaling hangup for
+  /// the old peer, local transport closed. The ringing pending (state,
+  /// offer, queued ICE) is untouched — the accept that follows owns it.
+  Future<void> endDisplacedForSwitch() async {
+    final disp = _displaced;
+    _displaced = null;
+    if (disp == null) return;
+    dlog('displaced call ended for switch ${disp.callId}');
     try {
-      await ref.read(callApiProvider).hangup(cur.callId);
+      await ref.read(callApiProvider).hangup(disp.callId);
     } catch (_) {}
-    await _cleanup();
+    await _closeTransport();
+    _pendingIce.clear();
   }
 
   void toggleMute() {
@@ -513,22 +623,13 @@ class CallState extends Notifier<ActiveCall?> {
           _routeGroupInvite(ev, marker);
           return;
         }
-        if (state != null) {
-          // Busy: decline so the caller hears it instead of ringing 60s.
-          final id = ev['call_id']?.toString();
-          if (id != null) {
-            try {
-              ref
-                  .read(callApiProvider)
-                  .answer(callId: id, accept: false)
-                  .catchError((_) {});
-            } catch (_) {}
-          }
-          return;
-        }
-        if (ref.read(groupCallProvider) != null) {
-          // Busy on a group call: same courtesy decline.
-          final id = ev['call_id']?.toString();
+        // Single pending at a time (§16): a switch running or an unanswered
+        // ring means BUSY for the next caller. Anything merely active gets
+        // call waiting instead (§45) — dry ring holds no media (§25), and
+        // accept is an atomic coordinator switch, never a second session.
+        final coord = ref.read(mediaCoordinatorProvider.notifier);
+        final id = ev['call_id']?.toString();
+        if (coord.switching || coord.hasPendingIncoming()) {
           if (id != null) {
             try {
               ref
@@ -594,9 +695,21 @@ class CallState extends Notifier<ActiveCall?> {
 
   void _onEnded(Map<String, dynamic> ev) {
     final cur = state;
-    if (cur == null || ev['call_id'] != cur.callId) return;
+    if (cur == null || ev['call_id'] != cur.callId) {
+      // Late end for a call hidden under a ring (§39): it is already gone
+      // remotely — drop it so a later decline cannot resurrect a ghost.
+      final disp = _displaced;
+      if (disp != null && ev['call_id'] == disp.callId) {
+        dlog('displaced call ended remotely ${disp.callId}');
+        _displaced = null;
+        _closeTransport();
+        _pendingIce.clear();
+      }
+      return;
+    }
     final reason = ev['reason']?.toString() ?? '';
     final by = (ev['by_nick'] ?? cur.peerNick).toString();
+    final wasPending = !cur.outgoing && cur.phase == CallPhase.ringing;
     if (cur.phase == CallPhase.ringing) {
       if (cur.outgoing) {
         // Unanswered either way (decline or timeout race): redial §94.
@@ -610,29 +723,73 @@ class CallState extends Notifier<ActiveCall?> {
         _notice('Пропущенный звонок от ${cur.peerNick}');
       }
     }
+    final disp = _displaced;
+    _displaced = null;
+    if (disp != null && wasPending) {
+      // The ring ended remotely with a live call underneath: it resurfaces,
+      // media untouched (dry ring never took it).
+      _ringTimer?.cancel();
+      _ringTimer = null;
+      _pendingOfferSdp = null;
+      state = disp;
+      if (disp.outgoing && disp.phase == CallPhase.ringing) {
+        _armUnansweredTimeout(
+            callId: disp.callId,
+            peerNick: disp.dmId == null ? disp.peerNick : null,
+            dmId: disp.dmId,
+            video: disp.video);
+      }
+      return;
+    }
     _cleanup();
   }
 
+  /// Test seam: drive a dry-ring incoming without WebRTC (headless-safe:
+  /// no PC or media is created at ring time by design).
+  @visibleForTesting
+  Future<void> debugIncomingForTest(
+          {required String callId,
+          required String peerNick,
+          required bool video,
+          String sdp = ''}) =>
+      _prepareIncoming(
+          {'call_id': callId, 'from_nick': peerNick, 'sdp': sdp});
+
+  /// Test seam: the live call hidden under a ringing incoming, if any.
+  @visibleForTesting
+  ActiveCall? get debugDisplacedForTest => _displaced;
+
+  /// Test seam: remote ended a call by id.
+  @visibleForTesting
+  void debugRemoteEndedForTest(String callId) =>
+      _onEnded({'call_id': callId});
+
   Future<void> _prepareIncoming(Map<String, dynamic> ev) async {
+    ActiveCall? stashed;
     try {
       ref.read(callRedialProvider.notifier).clear();
       final callId = ev['call_id'] as String;
       final sdp = (ev['sdp'] ?? '') as String;
       final video = sdp.contains('m=video');
+      // Call waiting: a live session keeps running under this ring (its
+      // transport is untouched until decline restores it or a switch ends
+      // it). Never two actives — the ring itself holds no media.
+      final cur = state;
+      if (cur != null && (cur.outgoing || cur.phase != CallPhase.ringing)) {
+        _displaced = cur;
+        stashed = cur;
+      }
       _callId = callId;
-      _pc = await _newPc(callId);
-      await _addLocal(_pc!, video);
-      dlog('offer ${SdpSummary.parse(sdp)}');
-      await _pc!.setRemoteDescription(
-          RTCSessionDescription(sdp, 'offer'));
-      _remoteDescSet = true;
-      await _flushRemoteIce();
+      // Dry ring (§25): the offer waits for accept; no PeerConnection and
+      // no microphone/camera while it rings, even over a live session.
+      _pendingOfferSdp = sdp;
+      dlog('offer ${SdpSummary.parse(sdp)} (dry ring)');
       state = incomingRingingCall(
           callId: callId,
           peerNick: (ev['from_nick'] ?? '?') as String,
           video: video,
-          // onTrack already ran during setRemoteDescription above.
-          remoteVideoArrived: _remoteVideoArrived);
+          // No setRemoteDescription ran yet: nothing could have arrived.
+          remoteVideoArrived: false);
       // Safety net if the caller never hangs up (old client / no sweep).
       _ringTimer?.cancel();
       _ringTimer = Timer(const Duration(seconds: 58), () async {
@@ -646,22 +803,25 @@ class CallState extends Notifier<ActiveCall?> {
         await decline();
       });
     } catch (_) {
-      await _cleanup();
+      if (stashed != null) {
+        _displaced = null;
+        state = stashed;
+      } else {
+        await _cleanup();
+      }
     }
   }
 
   Future<void> _onRemoteIce(Map<String, dynamic> ev) async {
     final pc = _pc;
-    if (pc == null || state == null || ev['call_id'] != state!.callId) {
-      return;
-    }
+    if (state == null || ev['call_id'] != state!.callId) return;
     final payload = {
       'candidate': (ev['candidate'] ?? '').toString(),
       'sdpMid': ev['sdp_mid']?.toString(),
       'sdpMLineIndex': ev['sdp_mline_index']?.toString(),
     };
-    if (!_remoteDescSet) {
-      // Race (§15): queue, never drop.
+    if (!_remoteDescSet || pc == null) {
+      // Race (§15) or dry ring: queue, never drop.
       dlog('ice remote queued (no remote description yet)');
       _remoteIce.add(payload);
       return;
@@ -698,12 +858,21 @@ class CallState extends Notifier<ActiveCall?> {
 
   Future<void> _cleanup() async {
     _callId = null;
+    _pendingOfferSdp = null;
     _pendingIce.clear();
     _remoteIce.clear();
-    _remoteDescSet = false;
-    _remoteVideoArrived = false;
     _ringTimer?.cancel();
     _ringTimer = null;
+    await _closeTransport();
+    state = null;
+  }
+
+  /// Close the local transport only: PC, streams, renderers, senders.
+  /// Keeps state, the dry-ring offer, queued remote ICE and call ids — the
+  /// displaced/switch paths manage those explicitly. Idempotent (§38).
+  Future<void> _closeTransport() async {
+    _remoteDescSet = false;
+    _remoteVideoArrived = false;
     _videoSender = null;
     if (_screen != null) {
       for (final t in _screen!.getTracks()) {
@@ -736,7 +905,6 @@ class CallState extends Notifier<ActiveCall?> {
       await _remoteR?.dispose();
     } catch (_) {}
     _remoteR = null;
-    state = null;
   }
 }
 
