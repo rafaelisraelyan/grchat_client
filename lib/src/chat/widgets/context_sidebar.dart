@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../app/theme.dart';
 import '../../call/call_session.dart';
+import '../../call/media_session.dart';
 import '../../search/search_address.dart';
 import '../../settings/settings_screen.dart';
 import '../../voice/voice_state.dart';
@@ -277,18 +278,21 @@ class VoiceTile extends ConsumerWidget {
       onTap: () async {
         // Click is focus-or-join, never blind rejoin (§18/§22): already
         // here → select scope + expand; elsewhere → move; new → join.
+        // A live session of any kind gates through the coordinator (§43):
+        // confirm ends it first, never two at once (§1).
         if (joined) {
           homeSt.selectVoiceScope(community, channel);
           return;
         }
-        try {
-          await sessionSt.join(
-              channelId: channel.id, title: channel.name);
+        final started = await runMediaStart(context, ref,
+            title: 'Подключиться к ${channel.name}?',
+            action: 'подключиться',
+            start: () => sessionSt.join(
+                channelId: channel.id, title: channel.name),
+            label: 'voice ${channel.name}',
+            friendlyError: friendlyVoiceError);
+        if (started) {
           homeSt.selectVoiceScope(community, channel);
-        } catch (e) {
-          if (context.mounted) {
-            Toast.show(context, friendlyVoiceError(e));
-          }
         }
       },
       child: Container(

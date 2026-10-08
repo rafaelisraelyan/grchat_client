@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:grchat_client/src/call/call_session.dart';
 import 'package:grchat_client/src/call/call_state.dart';
 import 'package:grchat_client/src/call/call_surface.dart';
+import 'package:grchat_client/src/call/media_session.dart';
 import 'package:grchat_client/src/chat/home_state.dart';
 import 'package:grchat_client/src/chat/models.dart';
 import 'package:grchat_client/src/voice/voice_state.dart';
@@ -285,6 +286,93 @@ void main() {
       await t.pump();
       expect(find.byType(ParticipantTile), findsNWidgets(5));
       expect(find.byType(GridView), findsOneWidget);
+    });
+
+    UnifiedCall waitingValue({required Future<void> Function() onAccept}) =>
+        UnifiedCall(
+            kind: CallKind.direct,
+            sessionId: 'c2',
+            title: 'Masha',
+            subtitle: 'Входящий видеозвонок',
+            video: true,
+            outgoing: false,
+            phase: CallPhase.ringing,
+            muted: false,
+            cameraOff: true,
+            sharingScreen: false,
+            linkDown: false,
+            minimized: false,
+            participants: const [],
+            onAccept: onAccept,
+            onDecline: () async {},
+            onHangup: () async {},
+            onToggleMute: () {},
+            onToggleCamera: () {},
+            onToggleShare: () async {},
+            onSetMinimized: (_) {},
+            friendlyError: friendlyCallError,
+            switchDetail: 'Вы сейчас в голосовом канале «Studio».');
+
+    testWidgets('waiting accept warns and switches the label', (t) async {
+      var accepted = false;
+      await pump(t, waitingValue(onAccept: () async {
+        accepted = true;
+      }));
+      expect(find.text('Вы уже участвуете в другом разговоре.'),
+          findsOneWidget);
+      expect(find.text('Вы сейчас в голосовом канале «Studio».'),
+          findsOneWidget);
+      expect(find.text('Завершить и принять'), findsOneWidget);
+      expect(find.byTooltip('Принять'), findsNothing);
+      await t.tap(find.text('Завершить и принять'));
+      expect(accepted, isTrue);
+    });
+
+    testWidgets('free incoming keeps the plain accept row', (t) async {
+      final u = waitingValue(onAccept: () async {});
+      await pump(
+          t,
+          UnifiedCall(
+              kind: u.kind,
+              sessionId: u.sessionId,
+              title: u.title,
+              subtitle: u.subtitle,
+              video: u.video,
+              outgoing: u.outgoing,
+              phase: u.phase,
+              muted: u.muted,
+              cameraOff: u.cameraOff,
+              sharingScreen: u.sharingScreen,
+              linkDown: u.linkDown,
+              minimized: u.minimized,
+              participants: u.participants,
+              onAccept: u.onAccept,
+              onDecline: u.onDecline,
+              onHangup: u.onHangup,
+              onToggleMute: u.onToggleMute,
+              onToggleCamera: u.onToggleCamera,
+              onToggleShare: u.onToggleShare,
+              onSetMinimized: u.onSetMinimized,
+              friendlyError: u.friendlyError));
+      expect(find.byTooltip('Принять'), findsOneWidget);
+      expect(find.text('Вы уже участвуете в другом разговоре.'),
+          findsNothing);
+    });
+
+    testWidgets('switching shows the veil, input blocked', (t) async {
+      final c = ProviderContainer(overrides: [
+        callStateProvider.overrideWith(() => _FakeCall(_direct())),
+      ]);
+      addTearDown(c.dispose);
+      c.read(mediaCoordinatorProvider);
+      c.read(mediaCoordinatorProvider.notifier).state = true;
+      await t.pumpWidget(UncontrolledProviderScope(
+          container: c,
+          child: const MaterialApp(
+              home: Scaffold(body: CallOverlayHost()))));
+      await t.pump();
+      expect(find.text('Переключаем звонок…'), findsOneWidget);
+      expect(find.byType(ModalBarrier), findsWidgets);
     });
   });
 }

@@ -7,6 +7,7 @@ import '../chat/home_state.dart';
 import '../voice/voice_state.dart';
 import 'call_state.dart';
 import 'group_call.dart';
+import 'media_session.dart';
 
 /// Call engine behind the universal window.
 enum CallKind { direct, group, serverVoice }
@@ -60,7 +61,8 @@ class UnifiedCall {
       required this.onToggleCamera,
       required this.onToggleShare,
       required this.onSetMinimized,
-      required this.friendlyError});
+      required this.friendlyError,
+      this.switchDetail});
   final CallKind kind;
   final String sessionId;
   final String title;
@@ -85,6 +87,10 @@ class UnifiedCall {
   /// Maps engine errors to Russian UI copy. Direct and voice share the P2P
   /// table; group calls have their own (NOT_MEMBER et al).
   final String Function(Object) friendlyError;
+
+  /// Call-waiting context for the incoming window (§31–§33), e.g.
+  /// 'Вы сейчас в голосовом канале «Studio».' Null = free, plain accept.
+  final String? switchDetail;
 }
 
 /// Picks the live engine: direct P2P first, group SFU second, server voice
@@ -119,6 +125,7 @@ void minimizeLiveCall(Ref ref) {
 
 UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
   final st = ref.read(callStateProvider.notifier);
+  final coord = ref.read(mediaCoordinatorProvider.notifier);
   final incoming =
       !call.outgoing && call.phase == CallPhase.ringing;
   return UnifiedCall(
@@ -137,7 +144,13 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
     linkDown: call.linkDown,
     minimized: call.minimized,
     participants: const [],
-    onAccept: incoming ? () => st.acceptIncoming() : null,
+    // Accept is an atomic coordinator switch (§3): the live session (if
+    // any) ends first, the new media starts only after. Decline keeps the
+    // current session untouched.
+    onAccept: incoming
+        ? () => coord.acceptIncoming(
+            kind: MediaSessionKind.direct, pendingId: call.callId)
+        : null,
     onDecline: incoming ? () => st.decline() : null,
     onHangup: () => st.hangup(),
     onToggleMute: () => st.toggleMute(),
@@ -145,6 +158,8 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
     onToggleShare: () => st.toggleScreenShare(),
     onSetMinimized: (m) => st.setMinimized(m),
     friendlyError: friendlyCallError,
+    switchDetail:
+        incoming ? coord.switchWarningFor(MediaSessionKind.direct) : null,
   );
 }
 
@@ -217,6 +232,7 @@ UnifiedCall _fromVoice(Ref ref, VoiceSession session) {
 
 UnifiedCall _fromGroup(Ref ref, GroupCall call) {
   final st = ref.read(groupCallProvider.notifier);
+  final coord = ref.read(mediaCoordinatorProvider.notifier);
   final incoming =
       !call.outgoing && call.phase == GroupPhase.ringing;
   final parts = <CallParticipant>[];
@@ -269,7 +285,10 @@ UnifiedCall _fromGroup(Ref ref, GroupCall call) {
     linkDown: false,
     minimized: call.minimized,
     participants: parts,
-    onAccept: incoming ? () => st.acceptIncoming() : null,
+    onAccept: incoming
+        ? () => coord.acceptIncoming(
+            kind: MediaSessionKind.group, pendingId: call.callId!)
+        : null,
     onDecline: incoming ? () => st.decline() : null,
     onHangup: () => st.hangup(),
     onToggleMute: () => st.toggleMute(),
@@ -277,5 +296,7 @@ UnifiedCall _fromGroup(Ref ref, GroupCall call) {
     onToggleShare: () async {},
     onSetMinimized: (m) => st.setMinimized(m),
     friendlyError: friendlyGroupError,
+    switchDetail:
+        incoming ? coord.switchWarningFor(MediaSessionKind.group) : null,
   );
 }

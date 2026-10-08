@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home_state.dart';
 import '../../voice/voice_state.dart';
+import '../../call/media_session.dart';
 import '../../desktop/desktop_log.dart';
 import '../../search/search_address.dart';
 import '../../widgets/avatar.dart';
@@ -304,21 +305,18 @@ class _ChatViewState extends ConsumerState<ChatView> {
             const SizedBox(height: 16),
             FilledButton.icon(
               onPressed: () async {
-                final st =
-                    ref.read(voiceSessionProvider.notifier);
-                try {
-                  if (inHere) {
-                    st.setMinimized(false);
-                  } else {
-                    await st.join(
-                        channelId: ch.id, title: ch.name);
-                  }
-                } catch (e) {
-                  if (context.mounted) {
-                    Toast.show(
-                        context, friendlyVoiceError(e));
-                  }
+                if (inHere) {
+                  ref.read(voiceSessionProvider.notifier).setMinimized(false);
+                  return;
                 }
+                await runMediaStart(context, ref,
+                    title: 'Подключиться к ${ch.name}?',
+                    action: 'подключиться',
+                    start: () => ref
+                        .read(voiceSessionProvider.notifier)
+                        .join(channelId: ch.id, title: ch.name),
+                    label: 'voice ${ch.name}',
+                    friendlyError: friendlyVoiceError);
               },
               icon: Icon(inHere ? Icons.open_in_full : Icons.call,
                   size: 18),
@@ -710,23 +708,28 @@ class _ChatViewState extends ConsumerState<ChatView> {
     final others =
         scope.thread.members.where((m) => m.userId != myId).toList();
     final group = scope.thread.isGroup || others.length != 1;
-    try {
-      if (!group) {
-        await ref
-            .read(callStateProvider.notifier)
-            .startCall(peerNick: others.first.nick, video: video);
-      } else {
-        // Group DMs go through the SFU; 1-1 stays on direct P2P.
-        await ref.read(groupCallProvider.notifier).join(
-            dmId: scope.thread.id,
-            title: scope.thread.title(myId ?? ''),
-            video: video);
-      }
-    } catch (e) {
-      if (mounted) {
-        Toast.show(context,
-            group ? friendlyGroupError(e) : friendlyCallError(e));
-      }
+    if (!group) {
+      final nick = others.first.nick;
+      await runMediaStart(context, ref,
+          title: 'Позвонить $nick?',
+          action: 'позвонить',
+          start: () => ref
+              .read(callStateProvider.notifier)
+              .startCall(peerNick: nick, video: video),
+          label: 'direct $nick',
+          friendlyError: friendlyCallError);
+    } else {
+      // Group DMs go through the SFU; 1-1 stays on direct P2P.
+      final title = scope.thread.title(myId ?? '');
+      await runMediaStart(context, ref,
+          title: 'Присоединиться к «$title»?',
+          action: 'присоединиться',
+          start: () => ref
+              .read(groupCallProvider.notifier)
+              .join(
+                  dmId: scope.thread.id, title: title, video: video),
+          label: 'group $title',
+          friendlyError: friendlyGroupError);
     }
   }
 

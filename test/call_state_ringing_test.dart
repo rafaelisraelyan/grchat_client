@@ -1,3 +1,4 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grchat_client/src/call/call_state.dart';
 
@@ -68,6 +69,91 @@ void main() {
       expect(s.callId, 'c1');
       expect(s.peerNick, 'Rafael');
       expect(s.phase, CallPhase.ringing);
+    });
+  });
+
+  /// Call waiting on the real engine, headless: dry ring creates no
+  /// transport, so prepare/decline never touch WebRTC here. Every scenario
+  /// ends hung up: no 58s ring timer may leak out of the test.
+  group('displaced live call under a dry ring', () {
+    ActiveCall activeA() => ActiveCall(
+        callId: 'a',
+        peerNick: 'Alex',
+        video: false,
+        outgoing: true,
+        phase: CallPhase.active);
+
+    ProviderContainer container() {
+      final c = ProviderContainer();
+      addTearDown(c.dispose);
+      return c;
+    }
+
+    test('dry ring sets state with no transport behind it', () async {
+      final c = container();
+      final st = c.read(callStateProvider.notifier);
+      // Old code opened a PC + mic here and died headless (cleanup → null).
+      await st.debugIncomingForTest(
+          callId: 'b', peerNick: 'Masha', video: true);
+      final s = c.read(callStateProvider);
+      expect(s?.callId, 'b');
+      expect(s?.phase, CallPhase.ringing);
+      await st.decline();
+      expect(c.read(callStateProvider), isNull);
+    });
+
+    test('ring over active stashes it, decline restores it', () async {
+      final c = container();
+      final st = c.read(callStateProvider.notifier);
+      st.state = activeA();
+      await st.debugIncomingForTest(
+          callId: 'b', peerNick: 'Masha', video: false);
+      expect(c.read(callStateProvider)?.callId, 'b');
+      expect(st.debugDisplacedForTest?.callId, 'a');
+      await st.decline();
+      expect(c.read(callStateProvider)?.callId, 'a');
+      expect(st.debugDisplacedForTest, isNull);
+      await st.endAll();
+      expect(c.read(callStateProvider), isNull);
+    });
+
+    test('remote end of the hidden call drops it silently', () async {
+      final c = container();
+      final st = c.read(callStateProvider.notifier);
+      st.state = activeA();
+      await st.debugIncomingForTest(
+          callId: 'b', peerNick: 'Masha', video: false);
+      st.debugRemoteEndedForTest('a');
+      expect(st.debugDisplacedForTest, isNull);
+      expect(c.read(callStateProvider)?.callId, 'b');
+      await st.decline();
+      expect(c.read(callStateProvider), isNull);
+    });
+
+    test('remote end of the ring resurfaces the live call', () async {
+      final c = container();
+      final st = c.read(callStateProvider.notifier);
+      st.state = activeA();
+      await st.debugIncomingForTest(
+          callId: 'b', peerNick: 'Masha', video: false);
+      st.debugRemoteEndedForTest('b');
+      expect(c.read(callStateProvider)?.callId, 'a');
+      expect(st.debugDisplacedForTest, isNull);
+      await st.endAll();
+      expect(c.read(callStateProvider), isNull);
+    });
+
+    test('endAll ends both, except keeps the accepted ring', () async {
+      final c = container();
+      final st = c.read(callStateProvider.notifier);
+      st.state = activeA();
+      await st.debugIncomingForTest(
+          callId: 'b', peerNick: 'Masha', video: false);
+      await st.endAll(exceptPendingId: 'b');
+      expect(c.read(callStateProvider)?.callId, 'b');
+      expect(st.debugDisplacedForTest, isNull);
+      await st.endAll();
+      expect(c.read(callStateProvider), isNull);
     });
   });
 }

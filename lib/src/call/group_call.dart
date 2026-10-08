@@ -9,6 +9,7 @@ import '../chat/home_state.dart';
 import 'call_api.dart';
 import 'call_diagnostics.dart';
 import 'call_state.dart' show callNoticeProvider, callStateProvider;
+import 'media_session.dart';
 import 'sfu_marker.dart';
 
 enum GroupPhase { ringing, active }
@@ -174,8 +175,11 @@ class GroupCallState extends Notifier<GroupCall?> {
       required String room,
       required bool video,
       required String fromNick}) {
-    if (state != null) {
-      // Busy in another group call: decline quietly.
+    // One pending at a time (§15, §16): switching or ringing elsewhere
+    // means BUSY. A live session of any kind gets call waiting instead:
+    // group ringing holds no media, accept is a coordinator switch.
+    final coord = ref.read(mediaCoordinatorProvider.notifier);
+    if (coord.switching || coord.hasPendingIncoming()) {
       try {
         ref
             .read(groupCallApiProvider)
@@ -184,8 +188,8 @@ class GroupCallState extends Notifier<GroupCall?> {
       } catch (_) {}
       return;
     }
-    if (ref.read(callStateProvider) != null) {
-      // Busy on 1-1: decline so the caller hears it.
+    if (state != null) {
+      // Busy in another group call: decline quietly.
       try {
         ref
             .read(groupCallApiProvider)
@@ -274,6 +278,24 @@ class GroupCallState extends Notifier<GroupCall?> {
     }
     await _leaveRoom();
     state = null;
+  }
+
+  /// Coordinator primitive: end everything this engine holds. A bare ring
+  /// is declined, a live session hung up; the accepted pending
+  /// ([exceptPendingId]) is left alone. Idempotent (§38).
+  Future<void> endAll({String? exceptPendingId}) async {
+    final cur = state;
+    if (cur == null) return;
+    if (!cur.outgoing &&
+        cur.phase == GroupPhase.ringing &&
+        cur.callId == exceptPendingId) {
+      return;
+    }
+    if (!cur.outgoing && cur.phase == GroupPhase.ringing) {
+      await decline();
+    } else {
+      await hangup();
+    }
   }
 
   Future<void> toggleMute() async {
