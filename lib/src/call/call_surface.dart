@@ -108,11 +108,16 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     // Direct value assignment notifies listeners, so on a live session swap
     // it must wait a frame; on the very first build there are no listeners
     // yet and the morph must start settled.
+    //
+    // An incoming call (accept/decline showing) demands attention: it stays
+    // expanded even when minimized is set, for every engine. Otherwise the
+    // pill would strand the call with no way to accept it.
+    final mini = call.minimized && call.onAccept == null;
     if (_morphCall != call.sessionId) {
       final first = _morphCall == null && _settled == null;
-      final target = call.minimized ? 1.0 : 0.0;
+      final target = mini ? 1.0 : 0.0;
       _morphCall = call.sessionId;
-      _settled = call.minimized;
+      _settled = mini;
       if (first) {
         _morph.value = target;
       } else if (_morph.value != target) {
@@ -120,9 +125,9 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
           if (mounted) _morph.value = target;
         });
       }
-    } else if (_settled != call.minimized) {
-      _settled = call.minimized;
-      if (call.minimized) {
+    } else if (_settled != mini) {
+      _settled = mini;
+      if (mini) {
         _morph.forward();
       } else {
         _morph.reverse();
@@ -230,10 +235,16 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   }
 
   /// Central area: direct keeps its hero/PiP/identity layout verbatim (§29);
-  /// server voice renders the ParticipantGrid.
+  /// server voice and group calls render the ParticipantGrid.
   Widget _mediaFor(UnifiedCall call) {
     if (call.kind == CallKind.serverVoice) {
       return ParticipantGrid(participants: call.participants);
+    }
+    if (call.kind == CallKind.group) {
+      if (call.video && call.phase == CallPhase.active) {
+        return ParticipantGrid(participants: call.participants);
+      }
+      return _identity(call);
     }
     final direct = ref.read(callStateProvider);
     final st = ref.read(callStateProvider.notifier);
@@ -300,20 +311,28 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
 
   Widget _identity(UnifiedCall call) {
     final incoming = call.onAccept != null;
+    // Room-based calls (voice/group) already carry the context line in the
+    // window header: the identity shows avatar + name only, otherwise the
+    // status text would appear twice. Direct keeps the full block since its
+    // top bar is bare.
+    final roomBased = call.kind != CallKind.direct;
     return Column(mainAxisSize: MainAxisSize.min, children: [
       Avatar(call.title, radius: 34),
       const SizedBox(height: 10),
       Text(call.title,
           style: const TextStyle(
               fontSize: 18, fontWeight: FontWeight.w700)),
-      const SizedBox(height: 2),
-      Text(
-          incoming
-              ? call.subtitle
-              : call.phase == CallPhase.ringing
-                  ? 'Вызов…'
-                  : 'Подключено · ${formatCallDuration(_secs)}',
-          style: const TextStyle(fontSize: 13, color: Colors.grey)),
+      if (!roomBased) ...[
+        const SizedBox(height: 2),
+        Text(
+            incoming
+                ? call.subtitle
+                : call.phase == CallPhase.ringing
+                    ? 'Вызов…'
+                    : 'Подключено · ${formatCallDuration(_secs)}',
+            style:
+                const TextStyle(fontSize: 13, color: Colors.grey)),
+      ],
     ]);
   }
 }
@@ -442,7 +461,7 @@ class CallWindow extends StatelessWidget {
               await call.onDecline!();
             } catch (e) {
               if (context.mounted) {
-                Toast.show(context, friendlyCallError(e));
+                Toast.show(context, call.friendlyError(e));
               }
             }
           }),
@@ -452,7 +471,7 @@ class CallWindow extends StatelessWidget {
               await call.onAccept!();
             } catch (e) {
               if (context.mounted) {
-                Toast.show(context, friendlyCallError(e));
+                Toast.show(context, call.friendlyError(e));
               }
             }
           }),

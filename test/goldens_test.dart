@@ -11,7 +11,6 @@ import 'package:grchat_client/src/auth/auth_repository.dart';
 import 'package:grchat_client/src/call/call_state.dart';
 import 'package:grchat_client/src/call/call_surface.dart';
 import 'package:grchat_client/src/call/group_call.dart';
-import 'package:grchat_client/src/call/group_call_window.dart';
 import 'package:grchat_client/src/voice/voice_state.dart';
 import 'package:grchat_client/src/search/find_dialog.dart';
 import 'package:grchat_client/src/search/search_address.dart';
@@ -488,6 +487,7 @@ Future<void> _pumpGroup(
   addTearDown(t.view.resetPhysicalSize);
   await t.pumpWidget(ProviderScope(
       overrides: [
+        sessionProvider.overrideWith(_FakeSession.new),
         groupCallProvider.overrideWith(() => _FakeGroupCall(call)),
       ],
       child: MaterialApp(
@@ -498,9 +498,12 @@ Future<void> _pumpGroup(
               body: Stack(children: [
             Positioned.fill(
                 child: ColoredBox(color: Color(0xFF1A1A22))),
-            GroupCallHost(),
+            CallOverlayHost(),
           ])))));
-  await t.pumpAndSettle();
+  // Fixed frames: the active-call timer is periodic, settle would hang.
+  await t.pump();
+  await t.pump(const Duration(seconds: 1));
+  await t.pump();
 }
 
 GroupCall _goldenGroup(
@@ -926,14 +929,14 @@ void main() {
   testWidgets('group incoming dark', (t) async {
     await _pumpGroup(
         t, _goldenGroup(video: true), ThemeMode.dark);
-    await expectLater(find.byType(GroupCallHost),
+    await expectLater(find.byType(CallOverlayHost),
         matchesGoldenFile('goldens/group_incoming.png'));
   });
 
   testWidgets('group incoming light', (t) async {
     await _pumpGroup(
         t, _goldenGroup(video: false), ThemeMode.light);
-    await expectLater(find.byType(GroupCallHost),
+    await expectLater(find.byType(CallOverlayHost),
         matchesGoldenFile('goldens/group_incoming_light.png'));
   });
 
@@ -956,7 +959,7 @@ void main() {
                   audioMuted: true),
             ]),
         ThemeMode.dark);
-    await expectLater(find.byType(GroupCallHost),
+    await expectLater(find.byType(CallOverlayHost),
         matchesGoldenFile('goldens/group_active.png'));
   });
 
