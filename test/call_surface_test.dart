@@ -129,20 +129,24 @@ void main() {
               video: false,
               phase: CallPhase.active));
       await t.tap(find.byTooltip('Свернуть'));
-      // The morph flies the window into the pill: mid-flight both exist.
+      // Single-object morph: mid-flight there is neither the window nor
+      // the pill — one surface flying to the corner.
       // (Flush pump: the tap resolves a frame after the gesture.)
       await t.pump();
       await t.pump(const Duration(milliseconds: 150));
-      expect(find.byType(CallWindow), findsOneWidget);
-      expect(find.byType(MiniPillBody), findsOneWidget);
-      await t.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('morph-surface')), findsOneWidget);
+      expect(find.byType(CallWindow), findsNothing);
+      expect(find.byType(MiniVideoPill), findsNothing);
+      await t.pump(const Duration(milliseconds: 500));
       // Mini pill visible, session alive (no hangup).
       expect(find.byTooltip('Вернуть звонок'), findsOneWidget);
       expect(find.text('Подключено · 00:00'), findsNothing);
-      await t.tap(find.byTooltip('Вернуть звонок'));
+      // Free-area click expands (§45); hover buttons stay hidden headless.
+      await t.tapAt(t.getCenter(find.byType(MiniVideoPill)));
       await t.pump();
-      await t.pump(const Duration(milliseconds: 300));
-      expect(find.text('Подключено · 00:00'), findsOneWidget);
+      await t.pump(const Duration(milliseconds: 500));
+      // Timer text keeps ticking under the pumps: match the prefix.
+      expect(find.textContaining('Подключено ·'), findsOneWidget);
     });
 
     testWidgets('Esc minimizes instead of hanging up', (t) async {
@@ -154,7 +158,7 @@ void main() {
               phase: CallPhase.active));
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pump();
-      await t.pump(const Duration(milliseconds: 300));
+      await t.pump(const Duration(milliseconds: 500));
       expect(find.byTooltip('Вернуть звонок'), findsOneWidget);
       expect(find.byTooltip('Завершить'), findsOneWidget);
     });

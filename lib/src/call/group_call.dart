@@ -11,22 +11,28 @@ import 'call_diagnostics.dart';
 import 'call_state.dart' show callNoticeProvider, callStateProvider;
 import 'media_session.dart';
 import 'sfu_marker.dart';
+import 'speaker_focus.dart';
 
 enum GroupPhase { ringing, active }
 
 /// One remote member of the SFU room. [videoTrack] is null until a
 /// subscribed, unmuted video track exists — the UI shows an avatar then.
+/// [speaking]/[audioLevel] feed the stabilized pill preview (§38).
 class GroupPeer {
   GroupPeer({
     required this.identity,
     required this.name,
     required this.videoTrack,
     required this.audioMuted,
+    this.speaking = false,
+    this.audioLevel = 0.0,
   });
   final String identity;
   final String name;
   final VideoTrack? videoTrack;
   final bool audioMuted;
+  final bool speaking;
+  final double audioLevel;
 }
 
 /// A group call lives in a LiveKit room; our server only mints tokens
@@ -44,6 +50,7 @@ class GroupCall {
     this.muted = false,
     this.cameraOff = false,
     this.minimized = false,
+    this.displayedSpeakerId,
   });
 
   final String dmId;
@@ -63,6 +70,10 @@ class GroupCall {
   /// Presentation only: mini pill vs centered window, same as 1-1 (§46–§48).
   final bool minimized;
 
+  /// Stabilized pill preview (§38): remote identity, or null for the
+  /// first-remote fallback. Never self.
+  final String? displayedSpeakerId;
+
   GroupCall copyWith({
     GroupPhase? phase,
     String? callId,
@@ -70,6 +81,7 @@ class GroupCall {
     bool? muted,
     bool? cameraOff,
     bool? minimized,
+    String? Function()? displayedSpeakerId,
   }) =>
       GroupCall(
         dmId: dmId,
@@ -83,6 +95,9 @@ class GroupCall {
         muted: muted ?? this.muted,
         cameraOff: cameraOff ?? this.cameraOff,
         minimized: minimized ?? this.minimized,
+        displayedSpeakerId: displayedSpeakerId != null
+            ? displayedSpeakerId()
+            : this.displayedSpeakerId,
       );
 }
 
@@ -96,6 +111,11 @@ class GroupCallState extends Notifier<GroupCall?> {
   Room? _room;
   EventsListener<RoomEvent>? _roomEvents;
   StreamSubscription<Map<String, dynamic>>? _pushSub;
+
+  /// Level sampler for the stabilized pill preview (§38): 8 Hz, guarded
+  /// publishes only. Reset per session so a new room starts unbiased.
+  Timer? _levelTimer;
+  final SpeakerStabilizer _speakerFocus = SpeakerStabilizer();
 
   @override
   GroupCall? build() => null;
@@ -148,6 +168,7 @@ class GroupCallState extends Notifier<GroupCall?> {
           video: video,
           outgoing: true,
           phase: GroupPhase.active);
+      _startLevels();
       _syncPeers();
       try {
         final callId = await api.offer(
@@ -239,6 +260,7 @@ class GroupCallState extends Notifier<GroupCall?> {
         }
       }
       state = cur.copyWith(phase: GroupPhase.active);
+      _startLevels();
       _syncPeers();
       // Acknowledge over signaling so the caller tracks + records.
       // The marker sdp is convention only; media lives in the room.
@@ -356,6 +378,8 @@ class GroupCallState extends Notifier<GroupCall?> {
     final room = _room;
     if (cur == null || room == null) return;
     final peers = <GroupPeer>[];
+    final levels = <String, double>{};
+    final speaking = <String>{};
     for (final p in room.remoteParticipants.values) {
       VideoTrack? video;
       var audioMuted = true;
@@ -371,14 +395,63 @@ class GroupCallState extends Notifier<GroupCall?> {
           if (t is VideoTrack) video = t;
         }
       }
+      levels[p.identity] = p.audioLevel;
+      if (p.isSpeaking && !audioMuted) speaking.add(p.identity);
+      // Quantized like voice: raw SFU floats jitter every frame, and the
+      // 8 Hz guard below must only fire on visible change.
+      final level =
+          (p.audioLevel.clamp(0.0, 1.0) * 10).roundToDouble() / 10;
+      levels[p.identity] = level;
       peers.add(GroupPeer(
           identity: p.identity,
           name: p.name.isNotEmpty ? p.name : p.identity,
           videoTrack: video,
-          audioMuted: audioMuted));
+          audioMuted: audioMuted,
+          speaking: p.isSpeaking && !audioMuted,
+          audioLevel: level));
     }
-    dlog('group peers=${peers.length}');
-    _patchIfSame(cur, (live) => live.copyWith(peers: peers));
+    // Stabilized pill preview (§38): remotes only, silence holds last.
+    final displayed = _speakerFocus.update(
+        levels: levels,
+        speaking: speaking,
+        knownIds: levels.keys.toSet(),
+        now: DateTime.now());
+    if (_samePeers(cur.peers, peers) &&
+        cur.displayedSpeakerId == displayed) {
+      return;
+    }
+    dlog('group peers=${peers.length} focus=${displayed ?? '-'}');
+    _patchIfSame(
+        cur,
+        (live) => live.copyWith(
+            peers: peers, displayedSpeakerId: () => displayed));
+  }
+
+  /// Guard the 8 Hz sampler: publish only on visible change (§52).
+  bool _samePeers(List<GroupPeer> a, List<GroupPeer> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      final x = a[i];
+      final y = b[i];
+      if (x.identity != y.identity ||
+          x.name != y.name ||
+          x.audioMuted != y.audioMuted ||
+          x.speaking != y.speaking ||
+          x.audioLevel != y.audioLevel ||
+          !identical(x.videoTrack, y.videoTrack)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void _startLevels() {
+    _speakerFocus.reset();
+    _levelTimer?.cancel();
+    _levelTimer = Timer.periodic(const Duration(milliseconds: 120), (_) {
+      if (state == null || _room == null) return;
+      _syncPeers();
+    });
   }
 
   void _onRoomLost() {
@@ -391,6 +464,9 @@ class GroupCallState extends Notifier<GroupCall?> {
   }
 
   Future<void> _leaveRoom() async {
+    _levelTimer?.cancel();
+    _levelTimer = null;
+    _speakerFocus.reset();
     try {
       _roomEvents?.dispose();
     } catch (_) {}

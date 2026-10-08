@@ -7,6 +7,7 @@ import '../app/providers.dart';
 import '../auth/auth_repository.dart';
 import '../call/call_api.dart';
 import '../call/call_diagnostics.dart';
+import '../call/speaker_focus.dart';
 
 /// Voice channel presence (signaling only for now; media comes with SFU).
 class VoiceState extends Notifier<Map<String, Set<String>>> {
@@ -188,7 +189,8 @@ class VoiceSession {
       this.serverMutedMe = false,
       this.userLimit = 0,
       this.minimized = false,
-      this.cameraOff = true});
+      this.cameraOff = true,
+      this.displayedSpeakerId});
 
   final String channelId;
   final String title;
@@ -211,6 +213,10 @@ class VoiceSession {
   /// Camera is opt-in (Discord voice default): nothing published until set.
   final bool cameraOff;
 
+  /// Stabilized pill preview (§38): remote peer id, or null for the
+  /// first-remote fallback. Never self (§19).
+  final String? displayedSpeakerId;
+
   VoiceSession copyWith(
           {List<VoicePeer>? peers,
           bool? muted,
@@ -218,7 +224,8 @@ class VoiceSession {
           bool? serverMutedMe,
           int? userLimit,
           bool? minimized,
-          bool? cameraOff}) =>
+          bool? cameraOff,
+          String? Function()? displayedSpeakerId}) =>
       VoiceSession(
           channelId: channelId,
           title: title,
@@ -229,7 +236,10 @@ class VoiceSession {
           serverMutedMe: serverMutedMe ?? this.serverMutedMe,
           userLimit: userLimit ?? this.userLimit,
           minimized: minimized ?? this.minimized,
-          cameraOff: cameraOff ?? this.cameraOff);
+          cameraOff: cameraOff ?? this.cameraOff,
+          displayedSpeakerId: displayedSpeakerId != null
+              ? displayedSpeakerId()
+              : this.displayedSpeakerId);
 }
 
 final voiceSessionApiProvider = Provider<CallApi>((ref) {
@@ -249,6 +259,10 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
   /// event-driven (ActiveSpeakersChangedEvent → _syncPeers); the poll only
   /// refines loudness between events.
   Timer? _levelTimer;
+
+  /// Pill preview focus (§38): debounced over the polled SFU levels.
+  /// Reset on every join/leave so a new room starts unbiased.
+  final SpeakerStabilizer _speakerFocus = SpeakerStabilizer();
 
   /// Local-only mutes (deafen one person for myself). Never leaves the device.
   final Set<String> mutedPeers = {};
@@ -343,6 +357,7 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
       dlog('voice joined room=${creds.room}');
       state = VoiceSession(
           channelId: channelId, title: title, room: creds.room);
+      _speakerFocus.reset();
       _levelTimer?.cancel();
       _levelTimer =
           Timer.periodic(const Duration(milliseconds: 60), (_) {
@@ -368,6 +383,7 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     mutedPeers.clear();
     serverMuted.clear();
     _appliedSubs.clear();
+    _speakerFocus.reset();
     try {
       await ref.read(voiceStateProvider.notifier).leave();
     } catch (_) {}
@@ -595,10 +611,26 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
         mutedPeers: mutedPeers,
         serverMuted: serverMuted,
         deafened: cur.deafened);
-    // The level ticker fires 8×/s: publish only on visible change, otherwise
-    // the whole sidebar + call grid would rebuild for nothing.
-    if (!_samePeers(cur.peers, next)) {
-      state = cur.copyWith(peers: next);
+    // Stabilized pill preview (§38): remotes only, never self. Silence
+    // holds the last display; a speaker who left clears (facade falls back
+    // to the first remaining remote, §22).
+    final remoteIds = {
+      for (final p in next) if (!p.self) p.id,
+    };
+    final displayed = _speakerFocus.update(
+        levels: {for (final id in remoteIds) id: lvls[id] ?? 0.0},
+        speaking: {
+          for (final p in next)
+            if (!p.self && p.speaking) p.id,
+        },
+        knownIds: remoteIds,
+        now: DateTime.now());
+    // The level ticker fires 16×/s: publish only on visible change,
+    // otherwise the whole sidebar + call grid would rebuild for nothing.
+    if (!_samePeers(cur.peers, next) ||
+        cur.displayedSpeakerId != displayed) {
+      state = cur.copyWith(
+          peers: next, displayedSpeakerId: () => displayed);
       dlog('voice levels: ${[
         for (final p in next)
           '${p.nick}=${p.speaking ? 's' : '-'}${p.audioLevel.toStringAsFixed(1)}${p.muted ? 'm' : ''}'
