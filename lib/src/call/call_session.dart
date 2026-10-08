@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:livekit_client/livekit_client.dart';
 
+import '../app/providers.dart';
 import '../chat/home_state.dart';
 import '../voice/voice_state.dart';
 import 'call_state.dart';
@@ -58,7 +59,8 @@ class UnifiedCall {
       required this.onToggleMute,
       required this.onToggleCamera,
       required this.onToggleShare,
-      required this.onSetMinimized});
+      required this.onSetMinimized,
+      required this.friendlyError});
   final CallKind kind;
   final String sessionId;
   final String title;
@@ -79,14 +81,20 @@ class UnifiedCall {
   final void Function() onToggleCamera;
   final Future<void> Function() onToggleShare;
   final void Function(bool) onSetMinimized;
+
+  /// Maps engine errors to Russian UI copy. Direct and voice share the P2P
+  /// table; group calls have their own (NOT_MEMBER et al).
+  final String Function(Object) friendlyError;
 }
 
-/// Picks the live engine: direct P2P first, server voice second.
-/// Group calls still own their window (migrates next); the busy guards in
-/// the engines prevent two live sessions at once.
+/// Picks the live engine: direct P2P first, group SFU second, server voice
+/// third. The busy guards in the engines prevent two live sessions at
+/// once, so the order only decides which stale state wins on a race.
 final unifiedCallProvider = Provider<UnifiedCall?>((ref) {
   final direct = ref.watch(callStateProvider);
   if (direct != null) return _fromDirect(ref, direct);
+  final group = ref.watch(groupCallProvider);
+  if (group != null) return _fromGroup(ref, group);
   final voice = ref.watch(voiceSessionProvider);
   if (voice != null) return _fromVoice(ref, voice);
   return null;
@@ -136,6 +144,7 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
     onToggleCamera: () => st.toggleCamera(),
     onToggleShare: () => st.toggleScreenShare(),
     onSetMinimized: (m) => st.setMinimized(m),
+    friendlyError: friendlyCallError,
   );
 }
 
@@ -202,5 +211,71 @@ UnifiedCall _fromVoice(Ref ref, VoiceSession session) {
     onToggleCamera: () => st.toggleCamera(),
     onToggleShare: () async {},
     onSetMinimized: (m) => st.setMinimized(m),
+    friendlyError: friendlyCallError,
+  );
+}
+
+UnifiedCall _fromGroup(Ref ref, GroupCall call) {
+  final st = ref.read(groupCallProvider.notifier);
+  final incoming =
+      !call.outgoing && call.phase == GroupPhase.ringing;
+  final parts = <CallParticipant>[];
+  for (final p in call.peers) {
+    final track = p.videoTrack;
+    parts.add(CallParticipant(
+        id: p.identity,
+        nick: p.name,
+        self: false,
+        // The group engine tracks membership, not loudness: no ring yet.
+        // Same as the old group grid — presence without speaking state.
+        speaking: false,
+        muted: p.audioMuted,
+        video: track != null
+            ? ((ctx) => VideoTrackRenderer(track))
+            : null));
+  }
+  // Self tile last, like the old group grid.
+  final myNick = ref.read(sessionProvider)?.nick ?? '?';
+  final selfTrack = st.localVideoTrack;
+  parts.add(CallParticipant(
+      id: 'self',
+      nick: '$myNick · Вы',
+      self: true,
+      speaking: false,
+      muted: call.muted,
+      video: call.video && !call.cameraOff && selfTrack != null
+          ? ((ctx) => VideoTrackRenderer(selfTrack))
+          : null));
+  final n = call.peers.length;
+  return UnifiedCall(
+    kind: CallKind.group,
+    sessionId: call.callId ?? 'group:${call.dmId}',
+    title: call.title,
+    subtitle: call.phase == GroupPhase.ringing
+        ? (incoming
+            ? (call.video
+                ? 'Входящий групповой видеозвонок'
+                : 'Входящий групповой звонок')
+            : 'Вызов…')
+        : '$n ${_plural(n, 'участник', 'участника', 'участников')}',
+    video: call.video,
+    outgoing: call.outgoing,
+    phase: call.phase == GroupPhase.ringing
+        ? CallPhase.ringing
+        : CallPhase.active,
+    muted: call.muted,
+    cameraOff: call.cameraOff,
+    sharingScreen: false,
+    linkDown: false,
+    minimized: call.minimized,
+    participants: parts,
+    onAccept: incoming ? () => st.acceptIncoming() : null,
+    onDecline: incoming ? () => st.decline() : null,
+    onHangup: () => st.hangup(),
+    onToggleMute: () => st.toggleMute(),
+    onToggleCamera: () => st.toggleCamera(),
+    onToggleShare: () async {},
+    onSetMinimized: (m) => st.setMinimized(m),
+    friendlyError: friendlyGroupError,
   );
 }

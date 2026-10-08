@@ -202,7 +202,8 @@ void main() {
         onToggleMute: () {},
         onToggleCamera: () {},
         onToggleShare: () async {},
-        onSetMinimized: (_) {});
+        onSetMinimized: (_) {},
+        friendlyError: friendlyCallError);
 
     testWidgets('voice grid shows both tiles with ring', (t) async {
       await pump(t, voiceValue());
@@ -248,7 +249,8 @@ void main() {
                           onToggleShare: u.onToggleShare,
                           onSetMinimized: (_) {
                             min = true;
-                          }),
+                          },
+                          friendlyError: u.friendlyError),
                       secs: 0,
                       media: ParticipantGrid(
                           participants: u.participants))))));
