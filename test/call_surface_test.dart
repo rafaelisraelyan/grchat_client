@@ -129,12 +129,19 @@ void main() {
               video: false,
               phase: CallPhase.active));
       await t.tap(find.byTooltip('Свернуть'));
+      // The morph flies the window into the pill: mid-flight both exist.
+      // (Flush pump: the tap resolves a frame after the gesture.)
       await t.pump();
+      await t.pump(const Duration(milliseconds: 150));
+      expect(find.byType(CallWindow), findsOneWidget);
+      expect(find.byType(MiniPillBody), findsOneWidget);
+      await t.pump(const Duration(milliseconds: 300));
       // Mini pill visible, session alive (no hangup).
       expect(find.byTooltip('Вернуть звонок'), findsOneWidget);
       expect(find.text('Подключено · 00:00'), findsNothing);
       await t.tap(find.byTooltip('Вернуть звонок'));
       await t.pump();
+      await t.pump(const Duration(milliseconds: 300));
       expect(find.text('Подключено · 00:00'), findsOneWidget);
     });
 
@@ -147,6 +154,7 @@ void main() {
               phase: CallPhase.active));
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pump();
+      await t.pump(const Duration(milliseconds: 300));
       expect(find.byTooltip('Вернуть звонок'), findsOneWidget);
       expect(find.byTooltip('Завершить'), findsOneWidget);
     });

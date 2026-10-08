@@ -21,14 +21,26 @@ class CallOverlayHost extends ConsumerStatefulWidget {
   ConsumerState<CallOverlayHost> createState() => _CallOverlayHostState();
 }
 
-class _CallOverlayHostState extends ConsumerState<CallOverlayHost> {
+class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
+    with SingleTickerProviderStateMixin {
   Timer? _ticker;
   int _secs = 0;
   String? _timedCall;
 
+  /// Minimize/expand morph: 0 = expanded window, 1 = mini pill.
+  /// The engine flag flips instantly; this animates the surface behind it.
+  late final AnimationController _morph = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 280));
+
+  /// Session the morph belongs to + last settled minimized value.
+  /// A new session snaps instead of animating from a stale position.
+  String? _morphCall;
+  bool? _settled;
+
   @override
   void dispose() {
     _ticker?.cancel();
+    _morph.dispose();
     super.dispose();
   }
 
@@ -85,33 +97,136 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost> {
       });
     });
     _track(call);
-    if (call == null) return const SizedBox.shrink();
-    if (call.minimized) {
-      return MiniCallOverlay(call: call, secs: _secs);
+    if (call == null) {
+      _morphCall = null;
+      _settled = null;
+      return const SizedBox.shrink();
+    }
+    // New session: snap the morph, never animate from a stale position.
+    // Minimized flag flip: animate towards it (forward/reverse schedule
+    // frames but never build synchronously, so build-driven is safe).
+    // Direct value assignment notifies listeners, so on a live session swap
+    // it must wait a frame; on the very first build there are no listeners
+    // yet and the morph must start settled.
+    if (_morphCall != call.sessionId) {
+      final first = _morphCall == null && _settled == null;
+      final target = call.minimized ? 1.0 : 0.0;
+      _morphCall = call.sessionId;
+      _settled = call.minimized;
+      if (first) {
+        _morph.value = target;
+      } else if (_morph.value != target) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _morph.value = target;
+        });
+      }
+    } else if (_settled != call.minimized) {
+      _settled = call.minimized;
+      if (call.minimized) {
+        _morph.forward();
+      } else {
+        _morph.reverse();
+      }
     }
     final ringing = call.kind == CallKind.direct &&
         call.phase == CallPhase.ringing;
-    return Stack(children: [
-      // Slight dim while ringing only; active calls never block the chat.
-      if (ringing)
-        const IgnorePointer(
-          child: ModalBarrier(color: Colors.black38),
-        ),
-      Center(
-        child: CallbackShortcuts(
-          bindings: {
-            // Esc minimizes, never hangs up (§48).
-            const SingleActivator(LogicalKeyboardKey.escape): () =>
-                call.onSetMinimized(true),
-          },
-          child: Focus(
-            autofocus: true,
-            child: CallWindow(
-                call: call, secs: _secs, media: _mediaFor(call)),
-          ),
-        ),
-      ),
-    ]);
+    return AnimatedBuilder(
+      animation: _morph,
+      builder: (ctx, _) {
+        final t = _morph.value;
+        // Settled states render the exact pre-morph structure (Center +
+        // window, or the bare pill): zero pixel churn, goldens untouched.
+        // Only mid-flight uses the morph wrappers.
+        if (t >= 1.0) {
+          return Stack(children: [
+            MiniCallOverlay(call: call, secs: _secs),
+          ]);
+        }
+        if (t <= 0.0) {
+          return Stack(children: [
+            // Slight dim while ringing only; active calls never block chat.
+            if (ringing)
+              const IgnorePointer(
+                child: ModalBarrier(color: Colors.black38),
+              ),
+            Center(
+              child: CallbackShortcuts(
+                bindings: {
+                  // Esc minimizes, never hangs up (§48).
+                  const SingleActivator(LogicalKeyboardKey.escape):
+                      () => call.onSetMinimized(true),
+                },
+                child: Focus(
+                  autofocus: true,
+                  child: CallWindow(
+                      call: call,
+                      secs: _secs,
+                      media: _mediaFor(call)),
+                ),
+              ),
+            ),
+          ]);
+        }
+        // Mid-flight both surfaces exist: the window flies into the corner
+        // while the pill fades in (and symmetrically back on expand).
+        final showWindow = t < 1.0;
+        final showPill = t > 0.0;
+        // Flight path: center → top-right corner, shrinking; the last third
+        // is mostly a crossfade so the handoff point never pops.
+        final fly =
+            Curves.easeInOutCubic.transform((t / 0.7).clamp(0.0, 1.0));
+        final fade =
+            Curves.easeOut.transform(((t - 0.55) / 0.45).clamp(0.0, 1.0));
+        return Stack(children: [
+          // Slight dim while ringing only; active calls never block chat.
+          // Kept under the flying window until it mostly left.
+          if (ringing && t < 0.5)
+            const IgnorePointer(
+              child: ModalBarrier(color: Colors.black38),
+            ),
+          if (showWindow)
+            Positioned.fill(
+              child: Align(
+                alignment:
+                    Alignment.lerp(Alignment.center, Alignment.topRight, fly)!,
+                child: Opacity(
+                  opacity: 1.0 - fade,
+                  child: Transform.scale(
+                    scale: 1.0 - 0.78 * fly,
+                    child: CallbackShortcuts(
+                      bindings: {
+                        // Esc minimizes, never hangs up (§48).
+                        const SingleActivator(LogicalKeyboardKey.escape):
+                            () => call.onSetMinimized(true),
+                      },
+                      child: Focus(
+                        autofocus: true,
+                        child: CallWindow(
+                            call: call,
+                            secs: _secs,
+                            media: _mediaFor(call)),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          if (showPill)
+            Positioned(
+              right: 12,
+              top: 12,
+              child: Opacity(
+                opacity: fade,
+                child: Transform.scale(
+                  scale: 0.8 + 0.2 * fade,
+                  alignment: Alignment.topRight,
+                  child: MiniPillBody(call: call, secs: _secs),
+                ),
+              ),
+            ),
+        ]);
+      },
+    );
   }
 
   /// Central area: direct keeps its hero/PiP/identity layout verbatim (§29);
@@ -530,7 +645,7 @@ class ParticipantTile extends StatelessWidget {
 
 /// Minimized call pill, top right (§13/§46): title, status, mic, expand,
 /// leave. Never hangs up by itself.
-class MiniCallOverlay extends ConsumerWidget {
+class MiniCallOverlay extends StatelessWidget {
   const MiniCallOverlay(
       {super.key, required this.call, required this.secs});
 
@@ -538,16 +653,32 @@ class MiniCallOverlay extends ConsumerWidget {
   final int secs;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
+    return Positioned(
+      right: 12,
+      top: 12,
+      child: MiniPillBody(call: call, secs: secs),
+    );
+  }
+}
+
+/// The pill itself, position-free so the minimize morph can fade/scale it
+/// inside its own Positioned. Same pixels as [MiniCallOverlay].
+class MiniPillBody extends StatelessWidget {
+  const MiniPillBody(
+      {super.key, required this.call, required this.secs});
+
+  final UnifiedCall call;
+  final int secs;
+
+  @override
+  Widget build(BuildContext context) {
     final status = call.phase == CallPhase.active
         ? (call.kind == CallKind.direct
             ? formatCallDuration(secs)
             : '${call.subtitle} · ${formatCallDuration(secs)}')
         : (call.phase == CallPhase.ringing ? 'Вызов…' : call.subtitle);
-    return Positioned(
-      right: 12,
-      top: 12,
-      child: Material(
+    return Material(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(14),
         elevation: 8,
@@ -597,7 +728,6 @@ class MiniCallOverlay extends ConsumerWidget {
                 onPressed: () => call.onHangup()),
           ]),
         ),
-      ),
     );
   }
 }
