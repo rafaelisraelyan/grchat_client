@@ -64,7 +64,7 @@ Future<void> _pumpPill(WidgetTester t, ProviderContainer c) async {
 
 void main() {
   group('morph geometry (§54)', () {
-    testWidgets('pill is anchored top-right at 280x96', (t) async {
+    testWidgets('card is docked top-right at 300x224', (t) async {
       t.view.physicalSize = const Size(1280, 720);
       t.view.devicePixelRatio = 1.0;
       addTearDown(t.view.resetPhysicalSize);
@@ -75,15 +75,15 @@ void main() {
       ]);
       addTearDown(c.dispose);
       await _pumpPill(t, c);
-      final pill = find.byType(MiniVideoPill);
-      expect(pill, findsOneWidget);
-      expect(t.getSize(pill), const Size(280, 96));
-      final tr = t.getTopRight(pill);
+      final card = find.byType(MiniCallCard);
+      expect(card, findsOneWidget);
+      expect(t.getSize(card), const Size(300, 224));
+      final tr = t.getTopRight(card);
       expect(tr.dx, closeTo(1280 - 14, 1.0));
       expect(tr.dy, closeTo(14, 1.0));
     });
 
-    testWidgets('resize keeps the pill anchored (§33)', (t) async {
+    testWidgets('resize keeps the card docked (§33)', (t) async {
       t.view.physicalSize = const Size(1280, 720);
       t.view.devicePixelRatio = 1.0;
       addTearDown(t.view.resetPhysicalSize);
@@ -96,7 +96,7 @@ void main() {
       await _pumpPill(t, c);
       t.view.physicalSize = const Size(900, 600);
       await t.pump();
-      final tr = t.getTopRight(find.byType(MiniVideoPill));
+      final tr = t.getTopRight(find.byType(MiniCallCard));
       expect(tr.dx, closeTo(900 - 14, 1.0));
       expect(tr.dy, closeTo(14, 1.0));
     });
@@ -114,9 +114,9 @@ void main() {
       c.read(voiceSessionProvider.notifier).setMinimized(true);
       await t.pump();
       await t.pump(const Duration(milliseconds: 500));
-      expect(find.byType(MiniVideoPill), findsOneWidget);
-      // Restore through the pill free area.
-      await t.tapAt(t.getCenter(find.byType(MiniVideoPill)));
+      expect(find.byType(MiniCallCard), findsOneWidget);
+      // Restore through the bar expand button.
+      await t.tap(find.byTooltip('Вернуть звонок'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 500));
       expect(find.byType(CallWindow), findsOneWidget);
@@ -124,7 +124,70 @@ void main() {
       expect(fv.leaves, 0);
       expect(fv.joins, 0);
     });
+
+    testWidgets('drag docks right-middle and survives a cycle (§57)',
+        (t) async {
+      t.view.physicalSize = const Size(1280, 720);
+      t.view.devicePixelRatio = 1.0;
+      addTearDown(t.view.resetPhysicalSize);
+      final c = ProviderContainer(overrides: [
+        sessionProvider.overrideWith(_FakeSession.new),
+        voiceSessionProvider.overrideWith(
+            () => _FakeVoice(_voiceSession(minimized: true))),
+      ]);
+      addTearDown(c.dispose);
+      await _pumpPill(t, c);
+      final handle = find.byKey(const ValueKey('mini-drag-handle'));
+      expect(handle, findsOneWidget);
+      // Drag down along the right side, then release.
+      await t.drag(handle, const Offset(0, 300));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 400));
+      final card = find.byType(MiniCallCard);
+      final r = t.getRect(card);
+      // Docked right, pushed down — not a corner, not floating.
+      expect(r.right, closeTo(1280 - 14, 1.0));
+      expect(r.top, greaterThan(100));
+      expect(r.top, lessThan(400));
+      // Expand from there, minimize back: same dock (§40).
+      await t.tap(find.byTooltip('Вернуть звонок'));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 500));
+      expect(find.byType(CallWindow), findsOneWidget);
+      c.read(voiceSessionProvider.notifier).setMinimized(true);
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 500));
+      final r2 = t.getRect(find.byType(MiniCallCard));
+      expect(r2.top, closeTo(r.top, 2.0));
+      expect(r2.right, closeTo(r.right, 1.0));
+    });
   });
+
+    testWidgets('20 minimize/restore cycles leave one surface (§56)',
+        (t) async {
+      final c = ProviderContainer(overrides: [
+        sessionProvider.overrideWith(_FakeSession.new),
+        voiceSessionProvider.overrideWith(
+            () => _FakeVoice(_voiceSession(minimized: false))),
+      ]);
+      addTearDown(c.dispose);
+      await _pumpPill(t, c);
+      final st = c.read(voiceSessionProvider.notifier);
+      for (var i = 0; i < 20; i++) {
+        st.setMinimized(true);
+        await t.pump();
+        await t.pump(const Duration(milliseconds: 500));
+        expect(find.byType(MiniCallCard), findsOneWidget);
+        expect(find.byType(CallWindow), findsNothing);
+        st.setMinimized(false);
+        await t.pump();
+        await t.pump(const Duration(milliseconds: 500));
+        expect(find.byType(CallWindow), findsOneWidget);
+        expect(find.byType(MiniCallCard), findsNothing);
+      }
+      // No leaked overlay, no second surface, session untouched.
+      expect(find.byType(CallOverlayHost), findsOneWidget);
+    });
 
   group('spotlight pick (§55)', () {
     test('P2P preview is always the remote peer', () {
@@ -223,7 +286,15 @@ void main() {
               home: Scaffold(
                   body: Stack(children: [
             const Positioned.fill(child: ColoredBox(color: Colors.black)),
-            MiniCallOverlay(call: u, secs: 65),
+            Positioned.fromRect(
+              rect: const Rect.fromLTWH(986, 14, 300, 224),
+              child: MiniCallOverlay(
+                  call: u,
+                  secs: 65,
+                  onDragStart: (_) {},
+                  onDragUpdate: (_) {},
+                  onDragEnd: (_) {}),
+            ),
           ])))));
       await t.pump();
     }
@@ -241,13 +312,13 @@ void main() {
         (t) async {
       await pumpPreview(t, peer('u2', 'Second'));
       expect(find.text('Second'), findsOneWidget);
-      final box = t.getSize(find.byType(MiniVideoPill));
+      final box = t.getSize(find.byType(MiniCallCard));
       await pumpPreview(t, peer('u3', 'TestPilot'));
       await t.pump(const Duration(milliseconds: 300));
       expect(find.text('TestPilot'), findsOneWidget);
       expect(find.text('Second'), findsNothing);
       // No resize, no bounce (§25).
-      expect(t.getSize(find.byType(MiniVideoPill)), box);
+      expect(t.getSize(find.byType(MiniCallCard)), box);
     });
 
     testWidgets('camera toggle keeps identity (§58)', (t) async {
