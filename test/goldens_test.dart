@@ -472,6 +472,21 @@ VoiceSession _goldenVoice({bool minimized = false}) => VoiceSession(
           self: false),
     ]);
 
+/// Solo voice session: connected, zero remote peers → waiting visual.
+VoiceSession _goldenVoiceSolo({bool minimized = false}) => VoiceSession(
+    channelId: 'vc1',
+    title: 'voice',
+    room: 'grchat_vc_vc1',
+    minimized: minimized,
+    peers: [
+      VoicePeer(
+          id: 'u1',
+          nick: 'Rafael',
+          speaking: false,
+          muted: false,
+          self: true),
+    ]);
+
 class _FakeGroupCall extends GroupCallState {
   _FakeGroupCall(this._c);
   final GroupCall? _c;
@@ -924,6 +939,13 @@ void main() {
         t, _goldenVoice(minimized: true), ThemeMode.dark);
     await expectLater(find.byType(CallOverlayHost),
         matchesGoldenFile('goldens/voice_mini.png'));
+  });
+
+  testWidgets('voice waiting dark', (t) async {
+    await _pumpVoice(
+        t, _goldenVoiceSolo(minimized: true), ThemeMode.dark);
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/voice_waiting.png'));
   });
 
   // Morph mid-frames (§55): one surface at t≈0.25/0.5/0.75 — no second
