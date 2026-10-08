@@ -76,6 +76,7 @@ flutter:
     - assets/tray.ico
     - assets/tray.png
     - assets/logo-icon.png
+    - assets/grchat_waiting_from_reference_photo.gif
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

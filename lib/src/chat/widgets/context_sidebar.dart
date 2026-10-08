@@ -284,6 +284,8 @@ class VoiceTile extends ConsumerWidget {
           homeSt.selectVoiceScope(community, channel);
           return;
         }
+        // Warm the waiting-GIF decode in parallel with the connect.
+        precacheWaitingGif(context);
         final started = await runMediaStart(context, ref,
             title: 'Подключиться к ${channel.name}?',
             action: 'подключиться',

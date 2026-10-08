@@ -309,6 +309,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
                   ref.read(voiceSessionProvider.notifier).setMinimized(false);
                   return;
                 }
+                // Warm the waiting-GIF decode in parallel with the connect.
+                precacheWaitingGif(context);
                 await runMediaStart(context, ref,
                     title: 'Подключиться к ${ch.name}?',
                     action: 'подключиться',

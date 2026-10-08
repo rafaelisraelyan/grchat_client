@@ -352,6 +352,16 @@ Future<bool> ensureMediaSlot(BuildContext context, WidgetRef ref,
   }
 }
 
+/// Warm the waiting-GIF decode while LiveKit connects (§22): a 200-frame
+/// GIF must not sit on an empty black box at first solo join. Best effort
+/// only — never break a join over cache warming.
+void precacheWaitingGif(BuildContext context) {
+  precacheImage(
+    const AssetImage('assets/grchat_waiting_from_reference_photo.gif'),
+    context,
+  ).then((_) {}, onError: (_) {});
+}
+
 /// One-line media start for UI entry points (§43): gates through
 /// [ensureMediaSlot], runs [MediaCoordinator.switchStart], toasts busy and
 /// maps engine errors. Returns true when the start actually ran.

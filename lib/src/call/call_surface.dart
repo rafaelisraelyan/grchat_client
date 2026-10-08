@@ -347,7 +347,9 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Stack(children: [
-                  Positioned.fill(child: _riderFace(rider, call.title)),
+                  Positioned.fill(
+                      child: _riderFace(rider, call.title,
+                          _isWaiting(call) && rider == null)),
                   if (titleOut > 0)
                     Positioned(
                       top: 14,
@@ -947,16 +949,40 @@ Widget _avatarFace(String nick, {double radius = 26}) => Container(
       child: Center(child: Avatar(nick, radius: radius)),
     );
 
-/// Rider face for the morph flight: live video when the frozen rider has
-/// it, avatar otherwise. The video is the same keyed element as the grid
-/// and the pill (§4): nothing re-binds mid-flight.
-Widget _riderFace(CallParticipant? rider, String fallbackNick) {
+/// Waiting state (§26): successfully inside a Server Voice Channel (or an
+/// alone-able group LiveKit room) with zero remote peers. Exactly one
+/// meaning — never error, silence, or reconnecting. P2P never qualifies:
+/// its spotlight is always the remote peer.
+bool _isWaiting(UnifiedCall call) =>
+    call.phase == CallPhase.active &&
+    (call.kind == CallKind.serverVoice || call.kind == CallKind.group) &&
+    call.spotlight == null;
+
+/// Rider face for the morph flight: waiting GIF when alone, live video
+/// when the frozen rider has it, avatar otherwise. The video/GIF is the
+/// same keyed element as the grid and the card (§4): nothing re-binds
+/// mid-flight. The asset GIF is image-cache backed, so drag keeps it
+/// playing with no re-decode (§20–§21).
+Widget _riderFace(
+    CallParticipant? rider, String fallbackNick, bool waiting) {
+  if (waiting) return _waitingFace();
   final v = rider?.video;
   if (v != null) {
     return Container(color: Colors.black, child: Builder(builder: v));
   }
   return _avatarFace(rider?.nick ?? fallbackNick);
 }
+
+/// The waiting visual itself: a finished design, shown as-is with no
+/// extra text on top (§8), cover-cropped without deforming (§6), clipped
+/// by whatever rounded parent hosts it (§7).
+Widget _waitingFace() => Container(
+      color: Colors.black,
+      child: Image.asset(
+        'assets/grchat_waiting_from_reference_photo.gif',
+        fit: BoxFit.cover,
+      ),
+    );
 
 /// Bottom meta line shared by the morph flight and the settled pill:
 /// name, mute state, duration. Never interactive itself.
@@ -987,11 +1013,12 @@ String _pillStatus(UnifiedCall call, int secs) =>
         ? formatCallDuration(secs)
         : 'Вызов…';
 
-/// Settled pill content: the live spotlight with a short crossfade on
-/// speaker change (§24). The pill box never moves or resizes (§25); only
-/// this content fades, 180ms.
+/// Settled card content: waiting GIF when alone, otherwise the live
+/// spotlight with a short crossfade on speaker change (§9, §15). The card
+/// box never moves or resizes; only this content fades, ~180ms.
 Widget _pillPreview(UnifiedCall call) {
-  final sp = call.spotlight;
+  final waiting = _isWaiting(call);
+  final sp = waiting ? null : call.spotlight;
   final hasVideo = sp?.video != null;
   return AnimatedSwitcher(
     duration: const Duration(milliseconds: 180),
@@ -1001,14 +1028,18 @@ Widget _pillPreview(UnifiedCall call) {
       if (current != null) Positioned.fill(child: current),
       for (final p in previous) Positioned.fill(child: p),
     ]),
-    // Identity follows content, not just id: a camera toggle on the same
-    // speaker (§58) swaps avatar ↔ video without changing who is shown.
+    // Identity follows content: waiting is its own state; a camera toggle
+    // on the same speaker swaps avatar ↔ video without changing who.
     child: KeyedSubtree(
-      key: ValueKey('spot-${sp?.id ?? 'none'}-${hasVideo ? 'v' : 'a'}'),
-      child: hasVideo
-          ? Container(
-              color: Colors.black, child: Builder(builder: sp!.video!))
-          : _avatarFace(sp?.nick ?? call.title),
+      key: ValueKey(waiting
+          ? 'spot-waiting'
+          : 'spot-${sp?.id ?? 'none'}-${hasVideo ? 'v' : 'a'}'),
+      child: waiting
+          ? _waitingFace()
+          : hasVideo
+              ? Container(
+                  color: Colors.black, child: Builder(builder: sp!.video!))
+              : _avatarFace(sp?.nick ?? call.title),
     ),
   );
 }

@@ -189,6 +189,141 @@ void main() {
       expect(find.byType(CallOverlayHost), findsOneWidget);
     });
 
+  group('waiting state (§24)', () {
+    Finder waitingGif() => find.byWidgetPredicate((w) =>
+        w is Image &&
+        w.image is AssetImage &&
+        (w.image as AssetImage).assetName.contains('waiting'));
+
+    Future<void> pumpCard(WidgetTester t,
+        {required CallKind kind,
+        required List<CallParticipant> parts,
+        required CallParticipant? spot}) async {
+      final u = UnifiedCall(
+          kind: kind,
+          sessionId: 'x1',
+          title: kind == CallKind.serverVoice ? '🔊 voice' : 'Masha',
+          subtitle: kind == CallKind.direct ? 'Подключено' : '1 участник',
+          video: true,
+          outgoing: kind != CallKind.direct,
+          phase: CallPhase.active,
+          muted: false,
+          cameraOff: true,
+          sharingScreen: false,
+          linkDown: false,
+          minimized: true,
+          participants: parts,
+          onAccept: null,
+          onDecline: null,
+          onHangup: () async {},
+          onToggleMute: () {},
+          onToggleCamera: () {},
+          onToggleShare: () async {},
+          onSetMinimized: (_) {},
+          friendlyError: (_) => 'x',
+          spotlight: spot);
+      await t.pumpWidget(ProviderScope(
+          child: MaterialApp(
+              home: Scaffold(
+                  body: Stack(children: [
+            const Positioned.fill(child: ColoredBox(color: Colors.black)),
+            Positioned.fromRect(
+              rect: const Rect.fromLTWH(986, 14, 300, 224),
+              child: MiniCallOverlay(
+                  call: u,
+                  secs: 51,
+                  onDragStart: (_) {},
+                  onDragUpdate: (_) {},
+                  onDragEnd: (_) {}),
+            ),
+          ])))));
+      await t.pump();
+    }
+
+    CallParticipant selfPeer() => CallParticipant(
+        id: 'u1',
+        nick: 'Rafael · Вы',
+        self: true,
+        speaking: false,
+        muted: false);
+
+    CallParticipant remotePeer({bool video = false, bool speaking = true}) =>
+        CallParticipant(
+            id: 'u2',
+            nick: 'Second',
+            self: false,
+            speaking: speaking,
+            muted: false,
+            video: video ? ((_) => const Text('VID')) : null);
+
+    testWidgets('solo voice shows the waiting GIF', (t) async {
+      await pumpCard(t,
+          kind: CallKind.serverVoice,
+          parts: [selfPeer()],
+          spot: null);
+      expect(waitingGif(), findsOneWidget);
+    });
+
+    testWidgets('0 to 1: GIF crossfades to the participant', (t) async {
+      await pumpCard(t,
+          kind: CallKind.serverVoice,
+          parts: [selfPeer()],
+          spot: null);
+      expect(waitingGif(), findsOneWidget);
+      await pumpCard(t,
+          kind: CallKind.serverVoice,
+          parts: [selfPeer(), remotePeer()],
+          spot: remotePeer());
+      await t.pump(const Duration(milliseconds: 300));
+      expect(waitingGif(), findsNothing);
+      expect(find.text('Second'), findsOneWidget);
+    });
+
+    testWidgets('1 to 0: participant crossfades back to GIF', (t) async {
+      await pumpCard(t,
+          kind: CallKind.serverVoice,
+          parts: [selfPeer(), remotePeer()],
+          spot: remotePeer());
+      expect(waitingGif(), findsNothing);
+      await pumpCard(t,
+          kind: CallKind.serverVoice,
+          parts: [selfPeer()],
+          spot: null);
+      await t.pump(const Duration(milliseconds: 300));
+      expect(waitingGif(), findsOneWidget);
+      expect(find.text('Second'), findsNothing);
+    });
+
+    testWidgets('remote camera-off shows avatar, never GIF', (t) async {
+      await pumpCard(t,
+          kind: CallKind.serverVoice,
+          parts: [selfPeer(), remotePeer(video: false)],
+          spot: remotePeer(video: false));
+      expect(waitingGif(), findsNothing);
+      // Avatar face + bar name, no video box.
+      expect(find.text('Second'), findsWidgets);
+      expect(find.text('VID'), findsNothing);
+    });
+
+    testWidgets('silent remote stays, no GIF', (t) async {
+      await pumpCard(t,
+          kind: CallKind.serverVoice,
+          parts: [selfPeer(), remotePeer(speaking: false)],
+          spot: remotePeer(speaking: false));
+      expect(waitingGif(), findsNothing);
+      expect(find.text('Second'), findsWidgets);
+    });
+
+    testWidgets('P2P never shows the waiting GIF', (t) async {
+      await pumpCard(t,
+          kind: CallKind.direct,
+          parts: [remotePeer()],
+          spot: remotePeer());
+      expect(waitingGif(), findsNothing);
+      expect(find.text('Second'), findsWidgets);
+    });
+  });
+
   group('spotlight pick (§55)', () {
     test('P2P preview is always the remote peer', () {
       final remote = CallParticipant(
