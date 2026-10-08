@@ -926,6 +926,37 @@ void main() {
         matchesGoldenFile('goldens/voice_mini.png'));
   });
 
+  // Morph mid-frames (§55): one surface at t≈0.25/0.5/0.75 — no second
+  // window, no unclipped square video, radius following the interpolation.
+  // The animation engages on the frame after the minimize tap, so the
+  // timed pump lands the progress exactly.
+  testWidgets('voice morph quarter dark', (t) async {
+    await _pumpVoice(t, _goldenVoice(), ThemeMode.dark);
+    await t.tap(find.byTooltip('Свернуть'));
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 95));
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/voice_morph_25.png'));
+  });
+
+  testWidgets('voice morph half dark', (t) async {
+    await _pumpVoice(t, _goldenVoice(), ThemeMode.dark);
+    await t.tap(find.byTooltip('Свернуть'));
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 190));
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/voice_morph_50.png'));
+  });
+
+  testWidgets('voice morph three-quarter dark', (t) async {
+    await _pumpVoice(t, _goldenVoice(), ThemeMode.dark);
+    await t.tap(find.byTooltip('Свернуть'));
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 285));
+    await expectLater(find.byType(CallOverlayHost),
+        matchesGoldenFile('goldens/voice_morph_75.png'));
+  });
+
   testWidgets('group incoming dark', (t) async {
     await _pumpGroup(
         t, _goldenGroup(video: true), ThemeMode.dark);

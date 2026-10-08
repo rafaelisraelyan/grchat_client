@@ -10,6 +10,7 @@ import '../widgets/avatar.dart';
 import '../widgets/toast.dart';
 import 'call_session.dart';
 import 'call_state.dart';
+import 'dock_state.dart';
 import 'media_session.dart';
 
 /// Global call surface: centered CallWindow + top-right mini pill.
@@ -24,7 +25,7 @@ class CallOverlayHost extends ConsumerStatefulWidget {
 }
 
 class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   Timer? _ticker;
   int _secs = 0;
   String? _timedCall;
@@ -52,11 +53,72 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   Size? _fromSize;
   final GlobalKey _measureKey = GlobalKey();
 
+  /// Mini-card dock, per session (§39–§40, §44): edge + offset, never bare
+  /// x/y, so resizes adapt (§42–§43). Survives minimize/restore cycles and
+  /// navigation; a new session starts top-right again.
+  DockSpot _dock = DockSpot.initial;
+
+  /// Live drag position (card top-left), null when docked (§29–§32).
+  Offset? _dragPos;
+
+  /// Snap flight after release: rect interpolation + its own clock (§37).
+  Rect? _snapFrom;
+  Rect? _snapTo;
+  late final AnimationController _snap = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 220));
+
+  /// Last seen app size for gesture handlers (no context there).
+  Size _lastScreen = Size.zero;
+
   @override
   void dispose() {
     _ticker?.cancel();
     _morph.dispose();
+    _snap.dispose();
     super.dispose();
+  }
+
+  /// Card rect right now: dragging follows the cursor 1:1 (§30), a
+  /// finished snap interpolates to the dock, otherwise the dock rules.
+  Rect _cardRect(Size screen) {
+    if (_dragPos != null) {
+      return Rect.fromLTWH(_dragPos!.dx, _dragPos!.dy, kCardSize.width,
+          kCardSize.height);
+    }
+    if (_snapFrom != null && _snapTo != null && _snap.isAnimating) {
+      return Rect.lerp(_snapFrom!, _snapTo!,
+          Curves.easeOutCubic.transform(_snap.value))!;
+    }
+    return dockRect(_dock, screen, kCardSize);
+  }
+
+  void _onDragStart(DragStartDetails _) {
+    // Only the settled card drags: mid-morph the surface owns the pointer.
+    if (_morph.value != 1.0) return;
+    _snap.stop();
+    _snapFrom = null;
+    _snapTo = null;
+    _dragPos = _cardRect(_lastScreen).topLeft;
+    setState(() {});
+  }
+
+  void _onDragUpdate(DragUpdateDetails d) {
+    if (_dragPos == null) return;
+    setState(() {
+      _dragPos =
+          clampCardPos(_dragPos! + d.delta, _lastScreen, kCardSize);
+    });
+  }
+
+  void _onDragEnd(DragEndDetails _) {
+    if (_dragPos == null) return;
+    final rect = Rect.fromLTWH(_dragPos!.dx, _dragPos!.dy,
+        kCardSize.width, kCardSize.height);
+    _dock = snapDock(rect, _lastScreen, kCardSize);
+    _snapFrom = rect;
+    _snapTo = dockRect(_dock, _lastScreen, kCardSize);
+    _dragPos = null;
+    _snap.forward(from: 0);
   }
 
   void _track(UnifiedCall? call) {
@@ -131,6 +193,7 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       });
     });
     _track(call);
+    _lastScreen = MediaQuery.sizeOf(context);
     if (call == null) {
       _morphCall = null;
       _settled = null;
@@ -152,8 +215,13 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       final target = mini ? 1.0 : 0.0;
       _morphCall = call.sessionId;
       _settled = mini;
-      // A new session invalidates any stored takeoff size.
+      // A new session invalidates any stored takeoff size, drag, snap and
+      // dock: it starts top-right again (§39).
       _fromSize = null;
+      _dock = DockSpot.initial;
+      _dragPos = null;
+      _snapFrom = null;
+      _snapTo = null;
       if (first) {
         _morph.value = target;
       } else if (_morph.value != target) {
@@ -174,15 +242,23 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     final ringing = call.kind == CallKind.direct &&
         call.phase == CallPhase.ringing;
     final body = AnimatedBuilder(
-      animation: _morph,
+      animation: Listenable.merge([_morph, _snap]),
       builder: (ctx, _) {
         final t = _morph.value;
-        // Settled states render the exact pre-morph structure (Center +
-        // window, or the bare pill): zero pixel churn, goldens untouched.
-        // Only mid-flight uses the morph wrappers.
+        // Settled states render exact structures (Center + window, or the
+        // docked card): zero pixel churn, goldens untouched. Only
+        // mid-flight uses the morph wrappers.
         if (t >= 1.0) {
           return Stack(children: [
-            MiniCallOverlay(call: call, secs: _secs),
+            Positioned.fromRect(
+              rect: _cardRect(MediaQuery.sizeOf(ctx)),
+              child: MiniCallOverlay(
+                  call: call,
+                  secs: _secs,
+                  onDragStart: _onDragStart,
+                  onDragUpdate: _onDragUpdate,
+                  onDragEnd: _onDragEnd),
+            ),
           ]);
         }
         if (t <= 0.0) {
@@ -221,11 +297,12 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
             ),
           ]);
         }
-        // Single-object morph (§1–§4, §60): one container flies
-        // center → top-right while its box, radius and elevation
-        // interpolate. The rider video (same keyed element as the grid and
-        // the pill) rides full-bleed; only chrome crossfades in stages
-        // (§29): title out early, pill bar in late. Symmetric on reverse.
+        // Single-object morph (§17–§18, §64): one container flies
+        // expanded-center → current dock while its box, radius and
+        // elevation interpolate. The rider video (same keyed element as
+        // the grid and the card) rides full-bleed; only chrome crossfades
+        // in stages (§28): title out early, card bar in late. Symmetric
+        // on reverse, starting exactly from the dock (§41).
         final screen = MediaQuery.sizeOf(ctx);
         final box = callWindowSize(call, screen);
         // Prefer the measured settled box (exact, resize-live); computed
@@ -236,14 +313,10 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
             center: screen.center(Offset.zero),
             width: fromSize.width,
             height: fromSize.height);
-        final pillRect = Rect.fromLTWH(
-            screen.width - kPillMargin - kPillSize.width,
-            kPillMargin,
-            kPillSize.width,
-            kPillSize.height);
+        final dockRectNow = dockRect(_dock, screen, kCardSize);
         final e = Curves.easeInOutCubic.transform(t); // §27
-        final rect = Rect.lerp(fromRect, pillRect, e)!;
-        final radius = lerpDouble(18, kPillRadius, e)!;
+        final rect = Rect.lerp(fromRect, dockRectNow, e)!;
+        final radius = lerpDouble(18, kCardRadius, e)!;
         final elev = lerpDouble(12, 8, e)!;
         // Staging: title fades 0–0.3, pill bar fades in 0.55–1.
         final titleOut = (1.0 - t / 0.3).clamp(0.0, 1.0);
@@ -467,11 +540,11 @@ String formatCallDuration(int s) {
   return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
 }
 
-/// Compact pill geometry (§5–§6): anchored top-right of the app area with
-/// 14px margins, wide capsule-ish, big enough to actually see the peer.
-const Size kPillSize = Size(280, 96);
-const double kPillMargin = 14;
-const double kPillRadius = 48;
+/// Compact card geometry (§4): ~300px wide, bar 52 + preview 172.
+/// Wide enough to see the peer, small enough to stay out of the way.
+const Size kCardSize = Size(300, 224);
+const double kBarHeight = 52;
+const double kCardRadius = 16;
 
 /// Expanded window box for a call on [screen]. Shared by [CallWindow] and
 /// the morph start rect so the flight takes off pixel-exact. Height stays
@@ -833,25 +906,35 @@ class ParticipantTile extends StatelessWidget {
   }
 }
 
-/// Minimized live pill, top right (§5–§7, §61): a small LIVE window into
-/// the conversation, not a status bar. P2P always shows the remote peer
-/// (§8, §18); group/voice show the stabilized active remote speaker with
-/// first-remote fallback (§9, §22). Click the free area to expand (§45);
-/// hangup ends the session for real (§44), never just the pill.
+/// Minimized live card, docked in the app area (§1–§2): one floating
+/// surface = top control bar (§3) + live remote preview. Positioning is
+/// owned by the host (dock model); this widget is pure content.
+/// P2P always shows the remote peer (§7–§8); group/voice show the
+/// stabilized active remote speaker (§9). Never hangs up by itself;
+/// hangup ends the session for real.
 class MiniCallOverlay extends StatelessWidget {
   const MiniCallOverlay(
-      {super.key, required this.call, required this.secs});
+      {super.key,
+      required this.call,
+      required this.secs,
+      required this.onDragStart,
+      required this.onDragUpdate,
+      required this.onDragEnd});
 
   final UnifiedCall call;
   final int secs;
+  final GestureDragStartCallback onDragStart;
+  final GestureDragUpdateCallback onDragUpdate;
+  final GestureDragEndCallback onDragEnd;
 
   @override
   Widget build(BuildContext context) {
-    return Positioned(
-      right: kPillMargin,
-      top: kPillMargin,
-      child: MiniVideoPill(call: call, secs: secs),
-    );
+    return MiniCallCard(
+        call: call,
+        secs: secs,
+        onDragStart: onDragStart,
+        onDragUpdate: onDragUpdate,
+        onDragEnd: onDragEnd);
   }
 }
 
@@ -930,150 +1013,110 @@ Widget _pillPreview(UnifiedCall call) {
   );
 }
 
-class MiniVideoPill extends StatefulWidget {
-  const MiniVideoPill(
-      {super.key, required this.call, required this.secs});
+/// The compact call window: control bar + preview, one clipped surface.
+/// The free bar area is the drag handle (§30); the mic/expand/hangup
+/// buttons live outside it, so a tap never starts a drag (§31).
+/// Preview tap expands (§53); the tap slop tells click from drag apart.
+class MiniCallCard extends StatelessWidget {
+  const MiniCallCard(
+      {super.key,
+      required this.call,
+      required this.secs,
+      required this.onDragStart,
+      required this.onDragUpdate,
+      required this.onDragEnd});
 
   final UnifiedCall call;
   final int secs;
-
-  @override
-  State<MiniVideoPill> createState() => _MiniVideoPillState();
-}
-
-class _MiniVideoPillState extends State<MiniVideoPill> {
-  bool _hover = false;
-
-  /// Button taps also land on the expand detector below (§45): swallow the
-  /// echo so mute/hangup never expand as a side effect.
-  DateTime? _controlTap;
-
-  void _guarded(VoidCallback fn) {
-    _controlTap = DateTime.now();
-    fn();
-  }
-
-  void _expand() {
-    final guard = _controlTap;
-    if (guard != null &&
-        DateTime.now().difference(guard) <
-            const Duration(milliseconds: 350)) {
-      return;
-    }
-    widget.call.onSetMinimized(false);
-  }
+  final GestureDragStartCallback onDragStart;
+  final GestureDragUpdateCallback onDragUpdate;
+  final GestureDragEndCallback onDragEnd;
 
   @override
   Widget build(BuildContext context) {
-    final call = widget.call;
     final sp = call.spotlight;
     final speaking = sp?.speaking ?? false;
     return SizedBox(
-      width: kPillSize.width,
-      height: kPillSize.height,
-      child: MouseRegion(
-        onEnter: (_) => setState(() => _hover = true),
-        onExit: (_) => setState(() => _hover = false),
-        child: GestureDetector(
-          onTap: _expand,
-          behavior: HitTestBehavior.opaque,
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(kPillRadius),
-              // Thin speaking outline, never a size pulse (§41).
-              border: Border.all(
-                  color:
-                      speaking ? _pillSpeakGreen : Colors.transparent,
-                  width: 1.5),
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(kPillRadius - 1.5),
-              child: Material(
-                color: Theme.of(context)
-                    .colorScheme
-                    .surfaceContainerHighest,
-                elevation: 8,
-                child: Stack(children: [
-                  Positioned.fill(child: _pillPreview(call)),
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: Container(
-                      padding: const EdgeInsets.fromLTRB(12, 16, 8, 7),
-                      decoration: const BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.transparent,
-                            Colors.black87,
-                          ],
-                        ),
+      width: kCardSize.width,
+      height: kCardSize.height,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(kCardRadius),
+          border: Border.all(
+              color: speaking ? _pillSpeakGreen : Colors.transparent,
+              width: 1.5),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(kCardRadius - 1.5),
+          child: Material(
+            color:
+                Theme.of(context).colorScheme.surfaceContainerHighest,
+            elevation: 8,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              // Top control bar (§3): name, duration, mic, expand, end.
+              SizedBox(
+                height: kBarHeight,
+                child: Row(children: [
+                  Expanded(
+                    child: GestureDetector(
+                      key: const ValueKey('mini-drag-handle'),
+                      behavior: HitTestBehavior.opaque,
+                      onPanStart: onDragStart,
+                      onPanUpdate: onDragUpdate,
+                      onPanEnd: onDragEnd,
+                      child: Padding(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 12),
+                        child: Column(
+                            crossAxisAlignment:
+                                CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(sp?.nick ?? call.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w700)),
+                              Text(_pillStatus(call, secs),
+                                  style: const TextStyle(
+                                      fontSize: 11, color: Colors.grey)),
+                            ]),
                       ),
-                      child: Row(children: [
-                        Expanded(
-                          child: _pillMeta(
-                              name: sp?.nick ?? call.title,
-                              muted: sp?.muted ?? false,
-                              status: _pillStatus(call, widget.secs)),
-                        ),
-                        // Hover-revealed controls (§42): the preview stays
-                        // the hero, buttons never cover the face fully.
-                        AnimatedOpacity(
-                          duration: const Duration(milliseconds: 200),
-                          opacity: _hover ? 1.0 : 0.0,
-                          child: IgnorePointer(
-                            ignoring: !_hover,
-                            child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                      tooltip: call.muted
-                                          ? 'Включить микрофон'
-                                          : 'Выключить',
-                                      iconSize: 18,
-                                      padding: EdgeInsets.zero,
-                                      constraints:
-                                          const BoxConstraints(),
-                                      icon: Icon(
-                                          call.muted
-                                              ? Icons.mic_off
-                                              : Icons.mic,
-                                          color: Colors.white),
-                                      onPressed: () => _guarded(
-                                          () => call.onToggleMute())),
-                                  IconButton(
-                                      tooltip: 'Вернуть звонок',
-                                      iconSize: 18,
-                                      padding: EdgeInsets.zero,
-                                      constraints:
-                                          const BoxConstraints(),
-                                      icon: const Icon(
-                                          Icons.open_in_full,
-                                          color: Colors.white),
-                                      onPressed: () => _guarded(
-                                          () => call.onSetMinimized(
-                                              false))),
-                                  IconButton(
-                                      tooltip: 'Завершить',
-                                      iconSize: 18,
-                                      padding: EdgeInsets.zero,
-                                      constraints:
-                                          const BoxConstraints(),
-                                      icon: const Icon(Icons.call_end,
-                                          color: Colors.red),
-                                      onPressed: () =>
-                                          _guarded(() => call.onHangup())),
-                                ]),
-                          ),
-                        ),
-                      ]),
                     ),
                   ),
+                  IconButton(
+                      tooltip: call.muted
+                          ? 'Включить микрофон'
+                          : 'Выключить',
+                      iconSize: 20,
+                      icon: Icon(
+                          call.muted ? Icons.mic_off : Icons.mic),
+                      onPressed: () => call.onToggleMute()),
+                  IconButton(
+                      tooltip: 'Вернуть звонок',
+                      iconSize: 20,
+                      icon: const Icon(Icons.open_in_full),
+                      onPressed: () =>
+                          call.onSetMinimized(false)),
+                  IconButton(
+                      tooltip: 'Завершить',
+                      iconSize: 20,
+                      icon: const Icon(Icons.call_end,
+                          color: Colors.red),
+                      onPressed: () => call.onHangup()),
                 ]),
               ),
-            ),
+              // Live remote preview (§2, §6–§9): fills the rest, bottom
+              // corners follow the card radius — no square ghosts (§6).
+              // Tap expands; the tap slop separates click from drag (§53).
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => call.onSetMinimized(false),
+                  child: _pillPreview(call),
+                ),
+              ),
+            ]),
           ),
         ),
       ),

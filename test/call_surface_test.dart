@@ -136,13 +136,13 @@ void main() {
       await t.pump(const Duration(milliseconds: 150));
       expect(find.byKey(const ValueKey('morph-surface')), findsOneWidget);
       expect(find.byType(CallWindow), findsNothing);
-      expect(find.byType(MiniVideoPill), findsNothing);
+      expect(find.byType(MiniCallCard), findsNothing);
       await t.pump(const Duration(milliseconds: 500));
       // Mini pill visible, session alive (no hangup).
       expect(find.byTooltip('Вернуть звонок'), findsOneWidget);
       expect(find.text('Подключено · 00:00'), findsNothing);
-      // Free-area click expands (§45); hover buttons stay hidden headless.
-      await t.tapAt(t.getCenter(find.byType(MiniVideoPill)));
+      // Free-area bar is a drag handle now: restore via expand button.
+      await t.tap(find.byTooltip('Вернуть звонок'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 500));
       // Timer text keeps ticking under the pumps: match the prefix.
