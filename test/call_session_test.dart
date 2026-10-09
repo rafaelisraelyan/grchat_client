@@ -183,6 +183,7 @@ void main() {
         sharingScreen: false,
         linkDown: false,
         minimized: false,
+        presentation: CallPresentationMode.expanded,
         participants: [
           CallParticipant(
               id: 'u1',
@@ -239,6 +240,7 @@ void main() {
                           sharingScreen: u.sharingScreen,
                           linkDown: u.linkDown,
                           minimized: u.minimized,
+                          presentation: CallPresentationMode.expanded,
                           participants: u.participants,
                           onAccept: u.onAccept,
                           onDecline: u.onDecline,
@@ -302,6 +304,7 @@ void main() {
             sharingScreen: false,
             linkDown: false,
             minimized: false,
+            presentation: CallPresentationMode.expanded,
             participants: const [],
             onAccept: onAccept,
             onDecline: () async {},
@@ -345,6 +348,7 @@ void main() {
               sharingScreen: u.sharingScreen,
               linkDown: u.linkDown,
               minimized: u.minimized,
+              presentation: CallPresentationMode.expanded,
               participants: u.participants,
               onAccept: u.onAccept,
               onDecline: u.onDecline,

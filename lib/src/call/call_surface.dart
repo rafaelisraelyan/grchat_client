@@ -67,6 +67,13 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   late final AnimationController _snap = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 220));
 
+  /// Preview collapse clock (§23–§24, 220ms). The curved view drives the
+  /// card height, the SizeTransition and the fade together.
+  late final AnimationController _previewT = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 220));
+  late final Animation<double> _previewEase = CurvedAnimation(
+      parent: _previewT, curve: Curves.easeInOutCubic);
+
   /// Last seen app size for gesture handlers (no context there).
   Size _lastScreen = Size.zero;
 
@@ -75,21 +82,38 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     _ticker?.cancel();
     _morph.dispose();
     _snap.dispose();
+    _previewT.dispose();
     super.dispose();
+  }
+
+  /// Preview show/hide from the bar button (§6): presentation only, media
+  /// untouched (§28). Event context: provider writes are safe here.
+  void _onTogglePreview() {
+    final next = !ref.read(miniPreviewVisibleProvider);
+    ref.read(miniPreviewVisibleProvider.notifier).set(next);
+    ref.read(lastMiniPreviewProvider.notifier).set(next);
   }
 
   /// Card rect right now: dragging follows the cursor 1:1 (§30), a
   /// finished snap interpolates to the dock, otherwise the dock rules.
+  /// Height follows the collapse progress; dockRect anchors it per edge
+  /// (§35): top stays for top/left/right docks, bottom-anchored docks
+  /// fold upward so controls never jump.
+  /// Card outer height right now: bar + ring + visible preview slice.
+  double _cardHeight() =>
+      kBarHeight + 2 * kCardBorder + kPreviewHeight * _previewEase.value;
+
   Rect _cardRect(Size screen) {
+    final card = Size(kCardWidth, _cardHeight());
     if (_dragPos != null) {
-      return Rect.fromLTWH(_dragPos!.dx, _dragPos!.dy, kCardSize.width,
-          kCardSize.height);
+      return Rect.fromLTWH(
+          _dragPos!.dx, _dragPos!.dy, card.width, card.height);
     }
     if (_snapFrom != null && _snapTo != null && _snap.isAnimating) {
       return Rect.lerp(_snapFrom!, _snapTo!,
           Curves.easeOutCubic.transform(_snap.value))!;
     }
-    return dockRect(_dock, screen, kCardSize);
+    return dockRect(_dock, screen, card);
   }
 
   void _onDragStart(DragStartDetails _) {
@@ -104,19 +128,21 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
 
   void _onDragUpdate(DragUpdateDetails d) {
     if (_dragPos == null) return;
+    final card = Size(kCardWidth, _cardHeight());
     setState(() {
       _dragPos =
-          clampCardPos(_dragPos! + d.delta, _lastScreen, kCardSize);
+          clampCardPos(_dragPos! + d.delta, _lastScreen, card);
     });
   }
 
   void _onDragEnd(DragEndDetails _) {
     if (_dragPos == null) return;
-    final rect = Rect.fromLTWH(_dragPos!.dx, _dragPos!.dy,
-        kCardSize.width, kCardSize.height);
-    _dock = snapDock(rect, _lastScreen, kCardSize);
+    final card = Size(kCardWidth, _cardHeight());
+    final rect = Rect.fromLTWH(
+        _dragPos!.dx, _dragPos!.dy, card.width, card.height);
+    _dock = snapDock(rect, _lastScreen, card);
     _snapFrom = rect;
-    _snapTo = dockRect(_dock, _lastScreen, kCardSize);
+    _snapTo = dockRect(_dock, _lastScreen, card);
     _dragPos = null;
     _snap.forward(from: 0);
   }
@@ -210,23 +236,30 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     // expanded even when minimized is set, for every engine. Otherwise the
     // pill would strand the call with no way to accept it.
     final mini = call.minimized && call.onAccept == null;
+    final previewNow = ref.watch(miniPreviewVisibleProvider);
     if (_morphCall != call.sessionId) {
       final first = _morphCall == null && _settled == null;
       final target = mini ? 1.0 : 0.0;
       _morphCall = call.sessionId;
       _settled = mini;
       // A new session invalidates any stored takeoff size, drag, snap and
-      // dock: it starts top-right again (§39).
+      // dock: it starts top-right again (§39). Preview starts shown (§54).
       _fromSize = null;
       _dock = DockSpot.initial;
       _dragPos = null;
       _snapFrom = null;
       _snapTo = null;
       if (first) {
+        // No listeners yet: snap synchronously.
         _morph.value = target;
-      } else if (_morph.value != target) {
+        _previewT.value = mini ? 1.0 : 0.0;
+      } else {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _morph.value = target;
+          if (!mounted) return;
+          ref.read(miniPreviewVisibleProvider.notifier).set(true);
+          ref.read(lastMiniPreviewProvider.notifier).set(true);
+          _previewT.value = mini ? 1.0 : 0.0;
+          if (_morph.value != target) _morph.value = target;
         });
       }
     } else if (_settled != mini) {
@@ -238,11 +271,40 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       } else {
         _morph.reverse();
       }
+      // Provider writes wait a frame (listeners are attached); the morph
+      // itself is already flying. Minimize restores the remembered mode
+      // (§31–§32), expand records it.
+      final savePreview = previewNow;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (mini) {
+          ref.read(miniPreviewVisibleProvider.notifier).set(
+              ref.read(lastMiniPreviewProvider));
+          _previewT.value =
+              ref.read(lastMiniPreviewProvider) ? 1.0 : 0.0;
+        } else {
+          ref.read(lastMiniPreviewProvider.notifier).set(savePreview);
+        }
+      });
+    }
+    // Collapse progress follows the mode (§23–§24): toggles animate it,
+    // flights leave it frozen. forward()/reverse() only schedule frames,
+    // so build-driven is safe (same pattern as the morph itself).
+    final wantPreview =
+        call.presentation == CallPresentationMode.miniWithPreview
+            ? 1.0
+            : 0.0;
+    if (!_previewT.isAnimating && _previewT.value != wantPreview) {
+      if (wantPreview > 0) {
+        _previewT.forward();
+      } else {
+        _previewT.reverse();
+      }
     }
     final ringing = call.kind == CallKind.direct &&
         call.phase == CallPhase.ringing;
     final body = AnimatedBuilder(
-      animation: Listenable.merge([_morph, _snap]),
+      animation: Listenable.merge([_morph, _snap, _previewT]),
       builder: (ctx, _) {
         final t = _morph.value;
         // Settled states render exact structures (Center + window, or the
@@ -255,6 +317,8 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
               child: MiniCallOverlay(
                   call: call,
                   secs: _secs,
+                  preview: _previewEase,
+                  onTogglePreview: _onTogglePreview,
                   onDragStart: _onDragStart,
                   onDragUpdate: _onDragUpdate,
                   onDragEnd: _onDragEnd),
@@ -313,7 +377,7 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
             center: screen.center(Offset.zero),
             width: fromSize.width,
             height: fromSize.height);
-        final dockRectNow = dockRect(_dock, screen, kCardSize);
+        final dockRectNow = _cardRect(screen);
         final e = Curves.easeInOutCubic.transform(t); // §27
         final rect = Rect.lerp(fromRect, dockRectNow, e)!;
         final radius = lerpDouble(18, kCardRadius, e)!;
@@ -347,9 +411,15 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Stack(children: [
+                  // Rider fades with the collapse progress: minimizing
+                  // into a collapsed card flies the bar, not the video.
                   Positioned.fill(
+                    child: Opacity(
+                      opacity: _previewEase.value,
                       child: _riderFace(rider, call.title,
-                          _isWaiting(call) && rider == null)),
+                          _isWaiting(call) && rider == null),
+                    ),
+                  ),
                   if (titleOut > 0)
                     Positioned(
                       top: 14,
@@ -542,10 +612,15 @@ String formatCallDuration(int s) {
   return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
 }
 
-/// Compact card geometry (§4): ~300px wide, bar 52 + preview 172.
-/// Wide enough to see the peer, small enough to stay out of the way.
-const Size kCardSize = Size(300, 224);
+/// Compact card geometry (§4, §42): fixed 300px width in both mini
+/// modes (no horizontal jump, §14), bar 52, preview 172 when shown.
+/// Outer heights include the 1.5px speaking ring on both sides.
+const double kCardWidth = 300;
 const double kBarHeight = 52;
+const double kPreviewHeight = 172;
+const double kCardBorder = 1.5;
+const double kCardCollapsedHeight = kBarHeight + 2 * kCardBorder;
+const double kCardFullHeight = kBarHeight + kPreviewHeight + 2 * kCardBorder;
 const double kCardRadius = 16;
 
 /// Expanded window box for a call on [screen]. Shared by [CallWindow] and
@@ -919,12 +994,18 @@ class MiniCallOverlay extends StatelessWidget {
       {super.key,
       required this.call,
       required this.secs,
+      required this.preview,
+      required this.onTogglePreview,
       required this.onDragStart,
       required this.onDragUpdate,
       required this.onDragEnd});
 
   final UnifiedCall call;
   final int secs;
+
+  /// Collapse progress from the host (§23–§24).
+  final Animation<double> preview;
+  final VoidCallback onTogglePreview;
   final GestureDragStartCallback onDragStart;
   final GestureDragUpdateCallback onDragUpdate;
   final GestureDragEndCallback onDragEnd;
@@ -934,6 +1015,8 @@ class MiniCallOverlay extends StatelessWidget {
     return MiniCallCard(
         call: call,
         secs: secs,
+        preview: preview,
+        onTogglePreview: onTogglePreview,
         onDragStart: onDragStart,
         onDragUpdate: onDragUpdate,
         onDragEnd: onDragEnd);
@@ -1030,16 +1113,40 @@ Widget _pillPreview(UnifiedCall call) {
     ]),
     // Identity follows content: waiting is its own state; a camera toggle
     // on the same speaker swaps avatar ↔ video without changing who.
+    // The speaker name rides along as a small chip (the bar carries the
+    // call identity instead).
     child: KeyedSubtree(
       key: ValueKey(waiting
           ? 'spot-waiting'
           : 'spot-${sp?.id ?? 'none'}-${hasVideo ? 'v' : 'a'}'),
       child: waiting
           ? _waitingFace()
-          : hasVideo
-              ? Container(
-                  color: Colors.black, child: Builder(builder: sp!.video!))
-              : _avatarFace(sp?.nick ?? call.title),
+          : Stack(children: [
+              Positioned.fill(
+                child: hasVideo
+                    ? Container(
+                        color: Colors.black,
+                        child: Builder(builder: sp!.video!))
+                    : _avatarFace(sp?.nick ?? call.title),
+              ),
+              Positioned(
+                left: 8,
+                bottom: 6,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(sp?.nick ?? call.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.white)),
+                ),
+              ),
+            ]),
     ),
   );
 }
@@ -1053,12 +1160,19 @@ class MiniCallCard extends StatelessWidget {
       {super.key,
       required this.call,
       required this.secs,
+      required this.preview,
+      required this.onTogglePreview,
       required this.onDragStart,
       required this.onDragUpdate,
       required this.onDragEnd});
 
   final UnifiedCall call;
   final int secs;
+
+  /// Collapse progress (§23–§24): 1 = preview fully shown, 0 = bar only.
+  /// Owned by the host; the card only renders it.
+  final Animation<double> preview;
+  final VoidCallback onTogglePreview;
   final GestureDragStartCallback onDragStart;
   final GestureDragUpdateCallback onDragUpdate;
   final GestureDragEndCallback onDragEnd;
@@ -1068,8 +1182,7 @@ class MiniCallCard extends StatelessWidget {
     final sp = call.spotlight;
     final speaking = sp?.speaking ?? false;
     return SizedBox(
-      width: kCardSize.width,
-      height: kCardSize.height,
+      width: kCardWidth,
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(kCardRadius),
@@ -1084,73 +1197,181 @@ class MiniCallCard extends StatelessWidget {
                 Theme.of(context).colorScheme.surfaceContainerHighest,
             elevation: 8,
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              // Top control bar (§3): name, duration, mic, expand, end.
-              SizedBox(
-                height: kBarHeight,
-                child: Row(children: [
-                  Expanded(
+              MiniCallControlBar(
+                  call: call,
+                  secs: secs,
+                  previewVisible: preview.value > 0.5,
+                  onTogglePreview: onTogglePreview,
+                  onDragStart: onDragStart,
+                  onDragUpdate: onDragUpdate,
+                  onDragEnd: onDragEnd),
+              // Collapsible preview (§23): height + opacity ride the same
+              // progress; the box never resizes for anything else.
+              // The element stays mounted throughout (§29): no rebind,
+              // no black flash on show.
+              SizeTransition(
+                sizeFactor: preview,
+                axis: Axis.vertical,
+                alignment: Alignment.topCenter,
+                child: FadeTransition(
+                  opacity: preview,
+                  child: SizedBox(
+                    width: kCardWidth,
+                    height: kPreviewHeight,
                     child: GestureDetector(
-                      key: const ValueKey('mini-drag-handle'),
                       behavior: HitTestBehavior.opaque,
-                      onPanStart: onDragStart,
-                      onPanUpdate: onDragUpdate,
-                      onPanEnd: onDragEnd,
-                      child: Padding(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 12),
-                        child: Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.start,
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(sp?.nick ?? call.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.w700)),
-                              Text(_pillStatus(call, secs),
-                                  style: const TextStyle(
-                                      fontSize: 11, color: Colors.grey)),
-                            ]),
-                      ),
+                      onTap: () => call.onSetMinimized(false),
+                      child: _pillPreview(call),
                     ),
                   ),
-                  IconButton(
-                      tooltip: call.muted
-                          ? 'Включить микрофон'
-                          : 'Выключить',
-                      iconSize: 20,
-                      icon: Icon(
-                          call.muted ? Icons.mic_off : Icons.mic),
-                      onPressed: () => call.onToggleMute()),
-                  IconButton(
-                      tooltip: 'Вернуть звонок',
-                      iconSize: 20,
-                      icon: const Icon(Icons.open_in_full),
-                      onPressed: () =>
-                          call.onSetMinimized(false)),
-                  IconButton(
-                      tooltip: 'Завершить',
-                      iconSize: 20,
-                      icon: const Icon(Icons.call_end,
-                          color: Colors.red),
-                      onPressed: () => call.onHangup()),
-                ]),
-              ),
-              // Live remote preview (§2, §6–§9): fills the rest, bottom
-              // corners follow the card radius — no square ghosts (§6).
-              // Tap expands; the tap slop separates click from drag (§53).
-              Expanded(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => call.onSetMinimized(false),
-                  child: _pillPreview(call),
                 ),
               ),
             ]),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// One reusable control bar for every transport (§39): leading icon +
+/// name/status, then Preview → Mic → Camera → End → Full, always (§5).
+/// Layout never shifts: unavailable actions disable in place (§9, §13).
+class MiniCallControlBar extends StatelessWidget {
+  const MiniCallControlBar(
+      {super.key,
+      required this.call,
+      required this.secs,
+      required this.previewVisible,
+      required this.onTogglePreview,
+      required this.onDragStart,
+      required this.onDragUpdate,
+      required this.onDragEnd});
+
+  final UnifiedCall call;
+  final int secs;
+  final bool previewVisible;
+  final VoidCallback onTogglePreview;
+  final GestureDragStartCallback onDragStart;
+  final GestureDragUpdateCallback onDragUpdate;
+  final GestureDragEndCallback onDragEnd;
+
+  /// Camera is a real toggle where the engine supports it; where the call
+  /// is audio-only the slot stays put, disabled (§9).
+  bool get _cameraAvailable =>
+      call.kind == CallKind.serverVoice || call.video;
+
+  String get _endTooltip => switch (call.kind) {
+        CallKind.direct => 'Завершить звонок',
+        CallKind.group => 'Покинуть звонок',
+        CallKind.serverVoice => 'Выйти из голосового канала',
+      };
+
+  Widget _btn(
+      {required String tooltip,
+      required IconData icon,
+      required VoidCallback? onPressed,
+      Color? color}) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          width: 36,
+          height: 36,
+          alignment: Alignment.center,
+          child: Icon(icon,
+              size: 20, color: color ?? Colors.white),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: kBarHeight,
+      child: Row(children: [
+        if (call.kind == CallKind.direct)
+          Padding(
+            padding: const EdgeInsets.only(left: 10),
+            child: Avatar(call.title, radius: 12),
+          )
+        else
+          const Padding(
+            padding: EdgeInsets.only(left: 12),
+            child: Icon(Icons.volume_up, size: 20),
+          ),
+        Expanded(
+          child: GestureDetector(
+            key: const ValueKey('mini-drag-handle'),
+            behavior: HitTestBehavior.opaque,
+            onPanStart: onDragStart,
+            onPanUpdate: onDragUpdate,
+            onPanEnd: onDragEnd,
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(call.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w700)),
+                    Text(_pillStatus(call, secs),
+                        style: const TextStyle(
+                            fontSize: 11, color: Colors.grey)),
+                  ]),
+            ),
+          ),
+        ),
+        // 1. Preview show/hide: presentation only, never media (§6).
+        _btn(
+            tooltip: previewVisible
+                ? 'Скрыть предпросмотр'
+                : 'Показать предпросмотр',
+            icon: previewVisible
+                ? Icons.unfold_less
+                : Icons.unfold_more,
+            onPressed: onTogglePreview),
+        // 2. Local microphone only (§7).
+        _btn(
+            tooltip: call.muted
+                ? 'Включить микрофон'
+                : 'Выключить микрофон',
+            icon: call.muted ? Icons.mic_off : Icons.mic,
+            onPressed: () => call.onToggleMute()),
+        // 3. Local camera only (§8); hide-preview and camera-off are
+        // different actions and stay different buttons.
+        _btn(
+            tooltip: !_cameraAvailable
+                ? 'Камера недоступна'
+                : (call.cameraOff
+                    ? 'Включить камеру'
+                    : 'Выключить камеру'),
+            icon: call.cameraOff
+                ? Icons.videocam_off
+                : Icons.videocam,
+            onPressed: _cameraAvailable
+                ? () => call.onToggleCamera()
+                : null),
+        // 4. Destructive leave, always the same slot (§10, §44).
+        _btn(
+            tooltip: _endTooltip,
+            icon: Icons.call_end,
+            color: Colors.red,
+            onPressed: () => call.onHangup()),
+        // 5. Full expand, always last (§11).
+        _btn(
+            tooltip: 'Развернуть звонок',
+            icon: Icons.open_in_full,
+            onPressed: () => call.onSetMinimized(false)),
+        const SizedBox(width: 4),
+      ]),
     );
   }
 }

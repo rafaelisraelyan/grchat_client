@@ -77,7 +77,7 @@ void main() {
       await _pumpPill(t, c);
       final card = find.byType(MiniCallCard);
       expect(card, findsOneWidget);
-      expect(t.getSize(card), const Size(300, 224));
+      expect(t.getSize(card), const Size(300, 227));
       final tr = t.getTopRight(card);
       expect(tr.dx, closeTo(1280 - 14, 1.0));
       expect(tr.dy, closeTo(14, 1.0));
@@ -116,7 +116,7 @@ void main() {
       await t.pump(const Duration(milliseconds: 500));
       expect(find.byType(MiniCallCard), findsOneWidget);
       // Restore through the bar expand button.
-      await t.tap(find.byTooltip('Вернуть звонок'));
+      await t.tap(find.byTooltip('Развернуть звонок'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 500));
       expect(find.byType(CallWindow), findsOneWidget);
@@ -150,7 +150,7 @@ void main() {
       expect(r.top, greaterThan(100));
       expect(r.top, lessThan(400));
       // Expand from there, minimize back: same dock (§40).
-      await t.tap(find.byTooltip('Вернуть звонок'));
+      await t.tap(find.byTooltip('Развернуть звонок'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 500));
       expect(find.byType(CallWindow), findsOneWidget);
@@ -212,6 +212,7 @@ void main() {
           sharingScreen: false,
           linkDown: false,
           minimized: true,
+          presentation: CallPresentationMode.miniWithPreview,
           participants: parts,
           onAccept: null,
           onDecline: null,
@@ -228,10 +229,12 @@ void main() {
                   body: Stack(children: [
             const Positioned.fill(child: ColoredBox(color: Colors.black)),
             Positioned.fromRect(
-              rect: const Rect.fromLTWH(986, 14, 300, 224),
+              rect: const Rect.fromLTWH(986, 14, 300, 227),
               child: MiniCallOverlay(
                   call: u,
                   secs: 51,
+                  preview: const AlwaysStoppedAnimation(1.0),
+                  onTogglePreview: () {},
                   onDragStart: (_) {},
                   onDragUpdate: (_) {},
                   onDragEnd: (_) {}),
@@ -406,6 +409,7 @@ void main() {
           sharingScreen: false,
           linkDown: false,
           minimized: true,
+          presentation: CallPresentationMode.miniWithPreview,
           participants: const [],
           onAccept: null,
           onDecline: null,
@@ -422,10 +426,12 @@ void main() {
                   body: Stack(children: [
             const Positioned.fill(child: ColoredBox(color: Colors.black)),
             Positioned.fromRect(
-              rect: const Rect.fromLTWH(986, 14, 300, 224),
+              rect: const Rect.fromLTWH(986, 14, 300, 227),
               child: MiniCallOverlay(
                   call: u,
                   secs: 65,
+                  preview: const AlwaysStoppedAnimation(1.0),
+                  onTogglePreview: () {},
                   onDragStart: (_) {},
                   onDragUpdate: (_) {},
                   onDragEnd: (_) {}),
@@ -464,6 +470,242 @@ void main() {
       await t.pump(const Duration(milliseconds: 300));
       expect(find.text('Second'), findsOneWidget);
       expect(find.text('VID-u2'), findsOneWidget);
+    });
+  });
+
+  group('final presentation model (§55–§60)', () {
+    double dxOf(WidgetTester t, String tooltip) =>
+        t.getCenter(find.byTooltip(tooltip)).dx;
+
+    Future<ProviderContainer> pumpMini(WidgetTester t,
+        {required UnifiedCall Function() callOf}) async {
+      final c = ProviderContainer(overrides: [
+        sessionProvider.overrideWith(_FakeSession.new),
+      ]);
+      addTearDown(c.dispose);
+      await t.pumpWidget(UncontrolledProviderScope(
+          container: c,
+          child: MaterialApp(
+              home: Scaffold(
+                  body: Stack(children: [
+            const Positioned.fill(child: ColoredBox(color: Colors.black)),
+            Positioned.fromRect(
+              rect: const Rect.fromLTWH(986, 14, 300, 227),
+              child: MiniCallOverlay(
+                  call: callOf(),
+                  secs: 125,
+                  preview: const AlwaysStoppedAnimation(1.0),
+                  onTogglePreview: () {},
+                  onDragStart: (_) {},
+                  onDragUpdate: (_) {},
+                  onDragEnd: (_) {}),
+            ),
+          ])))));
+      await t.pump();
+      return c;
+    }
+
+    UnifiedCall miniVoiceCall() => UnifiedCall(
+        kind: CallKind.serverVoice,
+        sessionId: 'vc1',
+        title: '🔊 voice',
+        subtitle: '1 участник',
+        video: true,
+        outgoing: false,
+        phase: CallPhase.active,
+        muted: false,
+        cameraOff: false,
+        sharingScreen: false,
+        linkDown: false,
+        minimized: true,
+        presentation: CallPresentationMode.miniWithPreview,
+        participants: const [],
+        onAccept: null,
+        onDecline: null,
+        onHangup: () async {},
+        onToggleMute: () {},
+        onToggleCamera: () {},
+        onToggleShare: () async {},
+        onSetMinimized: (_) {},
+        friendlyError: (_) => 'x',
+        spotlight: CallParticipant(
+            id: 'u2',
+            nick: 'Second',
+            self: false,
+            speaking: true,
+            muted: false,
+            video: null));
+
+    testWidgets('control order is Preview Mic Camera End Full (§5)',
+        (t) async {
+      await pumpMini(t, callOf: miniVoiceCall);
+      final xs = [
+        dxOf(t, 'Скрыть предпросмотр'),
+        dxOf(t, 'Выключить микрофон'),
+        dxOf(t, 'Выключить камеру'),
+        dxOf(t, 'Выйти из голосового канала'),
+        dxOf(t, 'Развернуть звонок'),
+      ];
+      for (var i = 0; i + 1 < xs.length; i++) {
+        expect(xs[i], lessThan(xs[i + 1]));
+      }
+    });
+
+    testWidgets('end semantics differ per transport (§10)', (t) async {
+      Future<void> pumpKind(CallKind kind, String title) async {
+        final u = miniVoiceCall();
+        await t.pumpWidget(ProviderScope(
+            child: MaterialApp(
+                home: Scaffold(
+                    body: Stack(children: [
+              const Positioned.fill(child: ColoredBox(color: Colors.black)),
+              Positioned.fromRect(
+                rect: const Rect.fromLTWH(986, 14, 300, 227),
+                child: MiniCallOverlay(
+                    call: UnifiedCall(
+                        kind: kind,
+                        sessionId: u.sessionId,
+                        title: title,
+                        subtitle: u.subtitle,
+                        video: u.video,
+                        outgoing: u.outgoing,
+                        phase: u.phase,
+                        muted: u.muted,
+                        cameraOff: u.cameraOff,
+                        sharingScreen: u.sharingScreen,
+                        linkDown: u.linkDown,
+                        minimized: u.minimized,
+                        presentation: u.presentation,
+                        participants: u.participants,
+                        onAccept: u.onAccept,
+                        onDecline: u.onDecline,
+                        onHangup: u.onHangup,
+                        onToggleMute: u.onToggleMute,
+                        onToggleCamera: u.onToggleCamera,
+                        onToggleShare: u.onToggleShare,
+                        onSetMinimized: u.onSetMinimized,
+                        friendlyError: u.friendlyError,
+                        spotlight: u.spotlight),
+                    secs: 125,
+                    preview: const AlwaysStoppedAnimation(1.0),
+                    onTogglePreview: () {},
+                    onDragStart: (_) {},
+                    onDragUpdate: (_) {},
+                    onDragEnd: (_) {}),
+              ),
+            ])))));
+        await t.pump();
+      }
+
+      await pumpKind(CallKind.direct, 'Masha');
+      expect(find.byTooltip('Завершить звонок'), findsOneWidget);
+      expect(find.byTooltip('Покинуть звонок'), findsNothing);
+      await pumpKind(CallKind.group, 'Team');
+      expect(find.byTooltip('Покинуть звонок'), findsOneWidget);
+      expect(find.byTooltip('Завершить звонок'), findsNothing);
+      await pumpKind(CallKind.serverVoice, '🔊 voice');
+      expect(
+          find.byTooltip('Выйти из голосового канала'), findsOneWidget);
+    });
+
+    testWidgets('collapsed card is bar-only at 52px', (t) async {
+      final u = miniVoiceCall();
+      await t.pumpWidget(ProviderScope(
+          child: MaterialApp(
+              home: Scaffold(
+                  body: Stack(children: [
+            const Positioned.fill(child: ColoredBox(color: Colors.black)),
+            Positioned.fromRect(
+              rect: const Rect.fromLTWH(986, 14, 300, 55),
+              child: MiniCallOverlay(
+                  call: u,
+                  secs: 125,
+                  preview: const AlwaysStoppedAnimation(0.0),
+                  onTogglePreview: () {},
+                  onDragStart: (_) {},
+                  onDragUpdate: (_) {},
+                  onDragEnd: (_) {}),
+            ),
+          ])))));
+      await t.pump();
+      // Bar intact, preview gone, same width (§4, §42).
+      expect(t.getSize(find.byType(MiniCallCard)),
+          const Size(300, 55));
+      expect(find.byTooltip('Показать предпросмотр'), findsOneWidget);
+      expect(find.text('🔊 voice'), findsOneWidget);
+    });
+
+    testWidgets('hide/show preview keeps media alive (§60)', (t) async {
+      final fv = _FakeVoice(_voiceSession(minimized: true));
+      final c = ProviderContainer(overrides: [
+        sessionProvider.overrideWith(_FakeSession.new),
+        voiceSessionProvider.overrideWith(() => fv),
+      ]);
+      addTearDown(c.dispose);
+      await _pumpPill(t, c);
+      expect(t.getSize(find.byType(MiniCallCard)),
+          const Size(300, 227));
+      // Hide: bar only, engine untouched.
+      await t.tap(find.byTooltip('Скрыть предпросмотр'));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 400));
+      expect(t.getSize(find.byType(MiniCallCard)),
+          const Size(300, 55));
+      expect(fv.leaves, 0);
+      expect(fv.joins, 0);
+      // Mic still works from the bar.
+      await t.tap(find.byTooltip('Выключить микрофон'));
+      await t.pump();
+      expect(fv.leaves, 0);
+      // Show again: preview back, same session.
+      await t.tap(find.byTooltip('Показать предпросмотр'));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 400));
+      expect(t.getSize(find.byType(MiniCallCard)),
+          const Size(300, 227));
+      expect(fv.leaves, 0);
+      expect(fv.joins, 0);
+    });
+
+    testWidgets('lastMiniMode round trips through expand (§59)',
+        (t) async {
+      Future<Rect> cardRect(
+          WidgetTester t, ProviderContainer c, bool mini) async {
+        c.read(voiceSessionProvider.notifier).setMinimized(mini);
+        await t.pump();
+        await t.pump(const Duration(milliseconds: 500));
+        return t.getRect(find.byType(MiniCallCard));
+      }
+
+      final fv = _FakeVoice(_voiceSession(minimized: true));
+      final c = ProviderContainer(overrides: [
+        sessionProvider.overrideWith(_FakeSession.new),
+        voiceSessionProvider.overrideWith(() => fv),
+      ]);
+      addTearDown(c.dispose);
+      await _pumpPill(t, c);
+      // Hide → expand → minimize returns collapsed.
+      await t.tap(find.byTooltip('Скрыть предпросмотр'));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 400));
+      await t.tap(find.byTooltip('Развернуть звонок'));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 500));
+      expect(find.byType(CallWindow), findsOneWidget);
+      final collapsed = await cardRect(t, c, true);
+      expect(collapsed.height, closeTo(55, 1.0));
+      // Show → expand → minimize returns with preview.
+      await t.tap(find.byTooltip('Показать предпросмотр'));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 400));
+      await t.tap(find.byTooltip('Развернуть звонок'));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 500));
+      expect(find.byType(CallWindow), findsOneWidget);
+      final withPreview = await cardRect(t, c, true);
+      expect(withPreview.height, closeTo(227, 1.0));
+      // Same dock both times.
+      expect(withPreview.left, closeTo(collapsed.left, 1.0));
     });
   });
 }
