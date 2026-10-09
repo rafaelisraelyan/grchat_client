@@ -139,10 +139,10 @@ void main() {
       expect(find.byType(MiniCallCard), findsNothing);
       await t.pump(const Duration(milliseconds: 500));
       // Mini pill visible, session alive (no hangup).
-      expect(find.byTooltip('Вернуть звонок'), findsOneWidget);
+      expect(find.byTooltip('Развернуть звонок'), findsOneWidget);
       expect(find.text('Подключено · 00:00'), findsNothing);
       // Free-area bar is a drag handle now: restore via expand button.
-      await t.tap(find.byTooltip('Вернуть звонок'));
+      await t.tap(find.byTooltip('Развернуть звонок'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 500));
       // Timer text keeps ticking under the pumps: match the prefix.
@@ -159,8 +159,8 @@ void main() {
       await t.sendKeyEvent(LogicalKeyboardKey.escape);
       await t.pump();
       await t.pump(const Duration(milliseconds: 500));
-      expect(find.byTooltip('Вернуть звонок'), findsOneWidget);
-      expect(find.byTooltip('Завершить'), findsOneWidget);
+      expect(find.byTooltip('Развернуть звонок'), findsOneWidget);
+      expect(find.byTooltip('Завершить звонок'), findsOneWidget);
     });
 
     testWidgets('hangup ends the session', (t) async {

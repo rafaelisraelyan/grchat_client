@@ -13,6 +13,36 @@ import 'media_session.dart';
 /// Call engine behind the universal window.
 enum CallKind { direct, group, serverVoice }
 
+/// One surface, three presentations (§2): never a pile of booleans that
+/// can combine into impossible states.
+enum CallPresentationMode { expanded, miniWithPreview, miniCollapsed }
+
+/// Preview visibility inside mini, per session. Reset on session change;
+/// drives the collapse animation, never the media (§4–§5).
+///
+/// Plain bool holder (Riverpod 3 has no StateProvider).
+class _PreviewFlag extends Notifier<bool> {
+  _PreviewFlag(this._initial);
+  final bool _initial;
+
+  @override
+  bool build() => _initial;
+
+  /// External writes go through here: raw `.state` sets are
+  /// test/engine-only by framework rules.
+  void set(bool value) {
+    if (state != value) state = value;
+  }
+}
+
+final miniPreviewVisibleProvider =
+    NotifierProvider<_PreviewFlag, bool>(() => _PreviewFlag(true));
+
+/// Remembered mini mode for expand→minimize round trips (§31): the mode
+/// that was showing when the user last expanded.
+final lastMiniPreviewProvider =
+    NotifierProvider<_PreviewFlag, bool>(() => _PreviewFlag(true));
+
 /// Engine-agnostic participant for the ParticipantGrid.
 ///
 /// Video is engine-specific (flutter_webrtc vs LiveKit), so a tile carries a
@@ -71,7 +101,8 @@ class UnifiedCall {
       required this.onSetMinimized,
       required this.friendlyError,
       this.switchDetail,
-      this.spotlight});
+      this.spotlight,
+      required this.presentation});
   final CallKind kind;
   final String sessionId;
   final String title;
@@ -106,6 +137,9 @@ class UnifiedCall {
   /// speaker with first-remote fallback (§9, §22). Null = no remote peers:
   /// the pill shows the call avatar instead.
   final CallParticipant? spotlight;
+
+  /// Which of the three presentations to render (§2).
+  final CallPresentationMode presentation;
 }
 
 /// Picks the live engine: direct P2P first, group SFU second, server voice
@@ -136,6 +170,16 @@ void minimizeLiveCall(Ref ref) {
   if (group != null && !group.minimized) {
     ref.read(groupCallProvider.notifier).setMinimized(true);
   }
+}
+
+/// Engine minimized flag + session preview visibility → the one
+/// presentation mode (§2). Engines keep their bool untouched; the mapping
+/// lives here, in one place.
+CallPresentationMode _presentationOf(Ref ref, bool minimized) {
+  if (!minimized) return CallPresentationMode.expanded;
+  return ref.watch(miniPreviewVisibleProvider)
+      ? CallPresentationMode.miniWithPreview
+      : CallPresentationMode.miniCollapsed;
 }
 
 UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
@@ -180,6 +224,7 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
     linkDown: call.linkDown,
     minimized: call.minimized,
     participants: [remote],
+    presentation: _presentationOf(ref, call.minimized),
     // Accept is an atomic coordinator switch (§3): the live session (if
     // any) ends first, the new media starts only after. Decline keeps the
     // current session untouched.
@@ -267,6 +312,7 @@ UnifiedCall _fromVoice(Ref ref, VoiceSession session) {
     linkDown: false,
     minimized: session.minimized,
     participants: parts,
+    presentation: _presentationOf(ref, session.minimized),
     onAccept: null,
     onDecline: null,
     // Leave ends media, then returns to the last text scope when the voice
@@ -346,6 +392,7 @@ UnifiedCall _fromGroup(Ref ref, GroupCall call) {
     linkDown: false,
     minimized: call.minimized,
     participants: parts,
+    presentation: _presentationOf(ref, call.minimized),
     onAccept: incoming
         ? () => coord.acceptIncoming(
             kind: MediaSessionKind.group, pendingId: call.callId!)
