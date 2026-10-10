@@ -93,6 +93,45 @@ void main() {
           [_rep('o1', 'outbound-rtp', {'kind': 'audio'})]);
       expect(s.selectedCandidateType, 'unknown');
       expect(s.outboundAudioBytes, 0);
+      expect(s.rttMs, -1);
+      expect(s.inboundAudioJitterMs, -1);
+    });
+
+    test('extracts RTT, jitter, loss and video frames', () {
+      final reports = [
+        _rep('i1', 'inbound-rtp', {
+          'kind': 'audio',
+          'bytesReceived': 50,
+          'packetsReceived': 10,
+          'jitter': 0.012,
+          'packetsLost': 2,
+        }),
+        _rep('i2', 'inbound-rtp', {
+          'kind': 'video',
+          'bytesReceived': 9000,
+          'packetsReceived': 90,
+          'packetsLost': 5,
+          'framesDecoded': 120,
+          'framesDropped': 3,
+          'frameWidth': 1280,
+          'frameHeight': 720,
+        }),
+        _rep('lc1', 'local-candidate', {'candidateType': 'host'}),
+        _rep('cp1', 'candidate-pair', {
+          'selected': true,
+          'localCandidateId': 'lc1',
+          'currentRoundTripTime': 0.043,
+        }),
+      ];
+      final s = StatsSummary.summarize(reports);
+      expect(s.rttMs, 43);
+      expect(s.inboundAudioJitterMs, 12);
+      expect(s.inboundAudioLost, 2);
+      expect(s.inboundVideoLost, 5);
+      expect(s.videoFramesDecoded, 120);
+      expect(s.videoFramesDropped, 3);
+      expect(s.videoWidth, 1280);
+      expect(s.videoHeight, 720);
     });
   });
 
@@ -141,6 +180,8 @@ void main() {
       expect(text, contains('connection=connected'));
       expect(text, contains('video=no'));
       expect(text, contains('Selected ICE: unknown'));
+      expect(text, contains('rtt=-1ms'));
+      expect(text, contains('jitter=-1ms'));
     });
   });
 }

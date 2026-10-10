@@ -103,8 +103,10 @@ class IceBuffer<T> {
   bool get isEmpty => _queue.isEmpty;
 }
 
-/// getStats digest (§25–§26): RTP byte/packet counters plus the selected
-/// candidate-pair's local type (host/srflx/relay).
+/// getStats digest (§25–§26): RTP byte/packet counters, the selected
+/// candidate-pair's local type (host/srflx/relay) plus live quality:
+/// RTT, inbound jitter/loss, decoded vs dropped video frames and the
+/// received frame size. Missing keys stay zero — never guessed.
 class StatsSummary {
   StatsSummary(
       {required this.outboundAudioBytes,
@@ -115,7 +117,15 @@ class StatsSummary {
       required this.outboundVideoPackets,
       required this.inboundAudioPackets,
       required this.inboundVideoPackets,
-      required this.selectedCandidateType});
+      required this.selectedCandidateType,
+      required this.rttMs,
+      required this.inboundAudioJitterMs,
+      required this.inboundAudioLost,
+      required this.inboundVideoLost,
+      required this.videoFramesDecoded,
+      required this.videoFramesDropped,
+      required this.videoWidth,
+      required this.videoHeight});
 
   final int outboundAudioBytes;
   final int outboundVideoBytes;
@@ -129,10 +139,30 @@ class StatsSummary {
   /// host/srflx/relay/unknown.
   final String selectedCandidateType;
 
+  /// Selected pair round-trip, ms. -1 when the pair reports none.
+  final int rttMs;
+
+  /// Inbound audio jitter, ms. -1 when unreported.
+  final int inboundAudioJitterMs;
+  final int inboundAudioLost;
+  final int inboundVideoLost;
+  final int videoFramesDecoded;
+  final int videoFramesDropped;
+  final int videoWidth;
+  final int videoHeight;
+
   static int _num(Map<dynamic, dynamic> v, String key) {
     final n = v[key];
     if (n is num) return n.toInt();
     return int.tryParse(n?.toString() ?? '') ?? 0;
+  }
+
+  /// Seconds-valued stat (jitter, RTT) → whole ms, -1 when absent.
+  static int _ms(Map<dynamic, dynamic> v, String key) {
+    final n = v[key];
+    if (n is num) return (n * 1000).round();
+    final d = double.tryParse(n?.toString() ?? '');
+    return d == null ? -1 : (d * 1000).round();
   }
 
   static StatsSummary summarize(List<StatsReport> reports) {
@@ -144,6 +174,13 @@ class StatsSummary {
     var outVideoP = 0;
     var inAudioP = 0;
     var inVideoP = 0;
+    var audioJitter = -1;
+    var audioLost = 0;
+    var videoLost = 0;
+    var framesDec = 0;
+    var framesDrop = 0;
+    var width = 0;
+    var height = 0;
     final byId = <String, StatsReport>{};
     for (final r in reports) {
       byId[r.id] = r;
@@ -161,13 +198,23 @@ class StatsSummary {
         if (media == 'audio') {
           inAudioB += _num(r.values, 'bytesReceived');
           inAudioP += _num(r.values, 'packetsReceived');
+          audioJitter = _ms(r.values, 'jitter');
+          audioLost += _num(r.values, 'packetsLost');
         } else if (media == 'video') {
           inVideoB += _num(r.values, 'bytesReceived');
           inVideoP += _num(r.values, 'packetsReceived');
+          videoLost += _num(r.values, 'packetsLost');
+          framesDec += _num(r.values, 'framesDecoded');
+          framesDrop += _num(r.values, 'framesDropped');
+          final w = _num(r.values, 'frameWidth');
+          final h = _num(r.values, 'frameHeight');
+          if (w > width) width = w;
+          if (h > height) height = h;
         }
       }
     }
     var selected = 'unknown';
+    var rtt = -1;
     for (final r in reports) {
       if (r.type == 'candidate-pair' &&
           (r.values['selected'] == true ||
@@ -178,6 +225,7 @@ class StatsSummary {
         final type = local?.values['candidateType']?.toString();
         if (type != null && type.isNotEmpty) {
           selected = type;
+          rtt = _ms(r.values, 'currentRoundTripTime');
           break;
         }
       }
@@ -191,7 +239,15 @@ class StatsSummary {
         outboundVideoPackets: outVideoP,
         inboundAudioPackets: inAudioP,
         inboundVideoPackets: inVideoP,
-        selectedCandidateType: selected);
+        selectedCandidateType: selected,
+        rttMs: rtt,
+        inboundAudioJitterMs: audioJitter,
+        inboundAudioLost: audioLost,
+        inboundVideoLost: videoLost,
+        videoFramesDecoded: framesDec,
+        videoFramesDropped: framesDrop,
+        videoWidth: width,
+        videoHeight: height);
   }
 }
 
@@ -222,7 +278,13 @@ String buildDebugSummary({
       'video=${stats.outboundVideoBytes}B/${stats.outboundVideoPackets}p\n'
       'RTP in: audio=${stats.inboundAudioBytes}B/${stats.inboundAudioPackets}p '
       'video=${stats.inboundVideoBytes}B/${stats.inboundVideoPackets}p\n'
-      'Selected ICE: ${stats.selectedCandidateType}';
+      'Selected ICE: ${stats.selectedCandidateType} '
+      'rtt=${stats.rttMs}ms\n'
+      'Quality in: audio jitter=${stats.inboundAudioJitterMs}ms '
+      'lost=${stats.inboundAudioLost}p, '
+      'video lost=${stats.inboundVideoLost}p '
+      'frames=${stats.videoFramesDecoded}dec/${stats.videoFramesDropped}drop '
+      '${stats.videoWidth}x${stats.videoHeight}';
 }
 
 /// Short ICE candidate digest: protocol + type + host/family.

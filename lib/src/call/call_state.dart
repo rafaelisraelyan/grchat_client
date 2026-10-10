@@ -114,6 +114,11 @@ class CallState extends Notifier<ActiveCall?> {
   RTCRtpSender? _videoSender;
   MediaStream? _screen;
   Timer? _ringTimer;
+  /// Quality sampler: while a call is active, a getStats digest lands in
+  /// the desktop log every 10s (dlog only — no UI, no uploads). Gives real
+  /// RTT/jitter/loss/frames for the next "плохо слышно/видно" report
+  /// instead of guessing.
+  Timer? _statsTimer;
   StreamSubscription<Map<String, dynamic>>? _pushSub;
   final _pendingIce = <Map<String, String?>>[];
   String? _callId;
@@ -393,6 +398,19 @@ class CallState extends Notifier<ActiveCall?> {
     }
   }
 
+  /// Starts the 10s quality sampler; idempotent. Stopped in [_cleanup].
+  void _armStatsTick() {
+    _statsTimer?.cancel();
+    var n = 0;
+    _statsTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      final cur = state;
+      if (cur == null || cur.phase != CallPhase.active || _pc == null) {
+        return;
+      }
+      unawaited(_logStatsSnapshot('tick-${++n}'));
+    });
+  }
+
   /// Unanswered-outgoing watchdog: redial offer (§94) instead of ringing
   /// into the server sweep. Re-armed when a displaced dial-out resurfaces
   /// after a declined/waiting incoming.
@@ -452,6 +470,7 @@ class CallState extends Notifier<ActiveCall?> {
       // Patch the live state instead of writing back the pre-await snapshot:
       // onTrack may have delivered a remote video track meanwhile.
       state = state?.copyWith(phase: CallPhase.active);
+      _armStatsTick();
     } catch (e) {
       await decline();
       rethrow;
@@ -749,6 +768,7 @@ class CallState extends Notifier<ActiveCall?> {
       state = state?.copyWith(phase: CallPhase.active);
       // Answered: media is live, the ringback must die right here.
       unawaited(_stopRingback());
+      _armStatsTick();
     } catch (_) {
       await hangup();
     }
@@ -938,6 +958,8 @@ class CallState extends Notifier<ActiveCall?> {
     _remoteIce.clear();
     _ringTimer?.cancel();
     _ringTimer = null;
+    _statsTimer?.cancel();
+    _statsTimer = null;
     await _stopRingback();
     await _closeTransport();
     // Cleanup races test/dispose teardowns across an async gap: never
