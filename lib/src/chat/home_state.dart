@@ -568,7 +568,7 @@ class HomeState extends Notifier<HomeData> {
           state = state.copyWith(unread: {...state.unread}
             ..update(key, (v) => v + 1, ifAbsent: () => 1));
         }
-        if (msg.dmId != null) _refreshDms();
+        if (msg.dmId != null) refreshDms();
         _maybeNotify(msg, key);
       case 'message_edited':
         state = state.copyWith(
@@ -619,7 +619,9 @@ class HomeState extends Notifier<HomeData> {
     }
   }
 
-  Future<void> _refreshDms() async {
+  /// Reloads the DM list (new/changed threads). Public for call
+  /// escalation, which creates a group DM mid-call.
+  Future<void> refreshDms() async {
     try {
       final dms = await ref.read(chatRepositoryProvider).dmList();
       state = state.copyWith(dms: dms);

@@ -1,10 +1,16 @@
 import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:riverpod/riverpod.dart';
+import 'package:grchat_client/src/auth/auth_repository.dart';
 import 'package:grchat_client/src/call/call_state.dart';
 import 'package:grchat_client/src/call/group_call.dart';
 import 'package:grchat_client/src/call/media_session.dart';
+import 'package:grchat_client/src/chat/home_state.dart';
+import 'package:grchat_client/src/chat/chat_repository.dart';
+import 'package:grchat_client/src/chat/models.dart';
+import 'package:grchat_client/src/transport/grchat_connection.dart';
 import 'package:grchat_client/src/voice/voice_state.dart';
 
 /// One realtime session, enforced by [MediaCoordinator] (§1, §47–§52).
@@ -95,6 +101,22 @@ class _FakeGroup extends GroupCallState {
   }
 
   @override
+  Future<void> join(
+      {required String dmId,
+      required String title,
+      required bool video}) async {
+    calls.add('group-join:$dmId');
+    _c = GroupCall(
+        dmId: dmId,
+        title: title,
+        room: 'grchat_$dmId',
+        video: video,
+        outgoing: true,
+        phase: GroupPhase.active);
+    state = _c;
+  }
+
+  @override
   Future<void> endAll({String? exceptPendingId}) async {
     final c = _c;
     if (c != null &&
@@ -108,6 +130,22 @@ class _FakeGroup extends GroupCallState {
     _c = null;
     state = null;
   }
+}
+
+class _FakeChatRepo extends ChatRepository {
+  _FakeChatRepo()
+      : super(GrchatConnection(),
+            Session(userId: 'u1', nick: 'Rafael', token: 't'));
+  final opened = <List<String>>[];
+
+  @override
+  Future<DmThread> openGroupDm(List<String> nicks) async {
+    opened.add(nicks);
+    return DmThread(id: 'gdm1', isGroup: true, members: const []);
+  }
+
+  @override
+  Future<List<DmThread>> dmList() async => const [];
 }
 
 class _FakeVoice extends VoiceSessionState {
@@ -405,6 +443,123 @@ void main() {
       final g = c.read(groupCallProvider);
       expect(g?.phase, GroupPhase.ringing);
       expect(_liveCount(c), 1);
+    });
+  });
+
+  group('confirm dialog drives the switch', () {
+    Future<ProviderContainer> pumpButton(
+        WidgetTester t,
+        ProviderContainer c,
+        Future<bool> Function(WidgetRef ref) onTap) async {
+      await t.pumpWidget(UncontrolledProviderScope(
+          container: c,
+          child: MaterialApp(
+              home: Scaffold(
+                  body: Builder(builder: (context) {
+            return Consumer(builder: (_, ref, _) {
+              return FilledButton(
+                  onPressed: () => onTap(ref),
+                  child: const Text('Call X'));
+            });
+          })))));
+      await t.pump();
+      return c;
+    }
+
+    testWidgets('confirm ends the old call, then starts the new one',
+        (t) async {
+      final fd = _FakeDirect(_activeDirect('a', 'Alex'));
+      final order = <String>[];
+      final c = _container(direct: fd);
+      await pumpButton(t, c, (ref) async {
+        order.add('tap');
+        return runMediaStart(
+            // ignore: use_build_context_synchronously
+            t.element(find.text('Call X')),
+            ref,
+            title: 'Позвонить X?',
+            action: 'позвонить',
+            start: () async {
+              order.add('start-direct');
+            },
+            label: 'direct X',
+            friendlyError: (_) => 'e');
+      });
+      await t.tap(find.text('Call X'));
+      await t.pump();
+      expect(find.text('Завершить и позвонить'), findsOneWidget);
+      await t.tap(find.text('Завершить и позвонить'));
+      await t.pump();
+      expect(order, ['tap', 'start-direct']);
+      expect(fd.calls, ['direct-endAll']);
+      expect(find.text('Завершить и позвонить'), findsNothing);
+    });
+
+    testWidgets('group choice escalates peers into a room', (t) async {
+      final fd = _FakeDirect(_activeDirect('a', 'Alex'));
+      final fg = _FakeGroup();
+      final repo = _FakeChatRepo();
+      final c = ProviderContainer(overrides: [
+        callStateProvider.overrideWith(() => fd),
+        groupCallProvider.overrideWith(() => fg),
+        chatRepositoryProvider.overrideWith((_) => repo),
+      ]);
+      addTearDown(c.dispose);
+      c.read(mediaCoordinatorProvider.notifier).endTimeout =
+          const Duration(milliseconds: 100);
+      await pumpButton(t, c, (ref) async {
+        return runMediaStart(
+            // ignore: use_build_context_synchronously
+            t.element(find.text('Call X')),
+            ref,
+            title: 'Позвонить X?',
+            action: 'позвонить',
+            start: () async {},
+            label: 'direct X',
+            friendlyError: (_) => 'e',
+            groupNicks: const ['Alex', 'X'],
+            groupVideo: false,
+            onGroupEscalate: (nicks, v) => ref
+                .read(mediaCoordinatorProvider.notifier)
+                .escalateToGroup(nicks: nicks, video: v));
+      });
+      await t.tap(find.text('Call X'));
+      await t.pump();
+      expect(find.text('Групповой звонок'), findsOneWidget);
+      await t.tap(find.text('Групповой звонок'));
+      await t.pump();
+      expect(repo.opened, [
+        ['Alex', 'X']
+      ]);
+      expect(fd.calls, ['direct-endAll']);
+      expect(fg.calls, ['group-join:gdm1']);
+      expect(find.text('Групповой звонок'), findsNothing);
+    });
+
+    testWidgets('cancel leaves everything untouched', (t) async {
+      final fd = _FakeDirect(_activeDirect('a', 'Alex'));
+      var started = false;
+      final c = _container(direct: fd);
+      await pumpButton(t, c, (ref) async {
+        return runMediaStart(
+            // ignore: use_build_context_synchronously
+            t.element(find.text('Call X')),
+            ref,
+            title: 'Позвонить X?',
+            action: 'позвонить',
+            start: () async {
+              started = true;
+            },
+            label: 'direct X',
+            friendlyError: (_) => 'e');
+      });
+      await t.tap(find.text('Call X'));
+      await t.pump();
+      await t.tap(find.text('Отмена'));
+      await t.pump();
+      expect(started, isFalse);
+      expect(fd.calls, isEmpty);
+      expect(c.read(callStateProvider)?.callId, 'a');
     });
   });
 }

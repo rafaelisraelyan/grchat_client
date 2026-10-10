@@ -146,13 +146,25 @@ class CallCard extends ConsumerWidget {
           .toList();
       if (others.isEmpty) return;
       final nick = others.first.nick;
+      final active = ref
+          .read(mediaCoordinatorProvider.notifier)
+          .activeMedia();
+      final groupPeer =
+          active != null && active.kind == MediaSessionKind.direct
+              ? active.label
+              : null;
       await runMediaStart(context, ref,
           title: 'Позвонить $nick?',
           action: 'позвонить',
           start: () => notifier.startCall(
               peerNick: nick, video: message.call!.video),
           label: 'direct $nick',
-          friendlyError: friendlyCallError);
+          friendlyError: friendlyCallError,
+          groupNicks: groupPeer == null ? null : [groupPeer, nick],
+          groupVideo: message.call!.video,
+          onGroupEscalate: (nicks, v) => ref
+              .read(mediaCoordinatorProvider.notifier)
+              .escalateToGroup(nicks: nicks, video: v));
     } else {
       await runMediaStart(context, ref,
           title: 'Позвонить в группу?',

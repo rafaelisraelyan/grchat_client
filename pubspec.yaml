@@ -48,6 +48,7 @@ dependencies:
   launch_at_startup: ^0.0.1
   nativeapi: ^0.4.0
   local_notifier: ^0.1.6
+  audioplayers: ^6.8.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -77,6 +78,8 @@ flutter:
     - assets/tray.png
     - assets/logo-icon.png
     - assets/grchat_waiting_from_reference_photo.gif
+    - assets/call/ringback.wav
+    - assets/call/end.wav
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

@@ -11,6 +11,7 @@ import '../widgets/toast.dart';
 import 'call_session.dart';
 import 'call_state.dart';
 import 'dock_state.dart';
+import 'group_call.dart' show friendlyGroupError;
 import 'media_session.dart';
 
 /// Global call surface: centered CallWindow + top-right mini pill.
@@ -763,6 +764,20 @@ class CallWindow extends StatelessWidget {
       // says what it does — ends it — instead of silently tearing down.
       final detail = call.switchDetail;
       if (detail != null) {
+        Future<void> acceptAsGroup() async {
+          if (call.onAcceptAsGroup == null) return;
+          try {
+            final r = await call.onAcceptAsGroup!();
+            if (r == SwitchResult.busy && context.mounted) {
+              Toast.show(context, 'Дождитесь переключения звонка');
+            }
+          } catch (e) {
+            if (context.mounted) {
+              Toast.show(context, friendlyGroupError(e));
+            }
+          }
+        }
+
         return Column(mainAxisSize: MainAxisSize.min, children: [
           const Text('Вы уже участвуете в другом разговоре.',
               textAlign: TextAlign.center,
@@ -771,12 +786,25 @@ class CallWindow extends StatelessWidget {
               textAlign: TextAlign.center,
               style: const TextStyle(fontSize: 12, color: Colors.grey)),
           const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          // Wrap, not Row: three actions must survive narrow windows
+          // (and the test font, which runs wider than production).
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               _roundBtn(
                   Colors.red, Icons.call_end, 'Отклонить', decline),
-              const SizedBox(width: 12),
+              if (call.onAcceptAsGroup != null)
+                Tooltip(
+                  message: 'Продолжить в групповом звонке',
+                  child: FilledButton.tonalIcon(
+                    onPressed: acceptAsGroup,
+                    icon: const Icon(Icons.group_add, size: 18),
+                    label: const Text('В группу'),
+                  ),
+                ),
               Tooltip(
                 message: 'Завершить текущий и принять',
                 child: FilledButton.tonalIcon(

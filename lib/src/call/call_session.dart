@@ -94,6 +94,7 @@ class UnifiedCall {
       required this.participants,
       required this.onAccept,
       required this.onDecline,
+      this.onAcceptAsGroup,
       required this.onHangup,
       required this.onToggleMute,
       required this.onToggleCamera,
@@ -118,6 +119,11 @@ class UnifiedCall {
   final List<CallParticipant> participants;
   final Future<void> Function()? onAccept;
   final Future<void> Function()? onDecline;
+
+  /// Escalate-into-group for a direct incoming over a live direct call:
+  /// end the peer, decline the ring, continue together in a room.
+  /// Null everywhere else (members unknown or nothing live).
+  final Future<SwitchResult> Function()? onAcceptAsGroup;
   final Future<void> Function() onHangup;
   final void Function() onToggleMute;
   final void Function() onToggleCamera;
@@ -233,7 +239,28 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
             kind: MediaSessionKind.direct, pendingId: call.callId)
         : null,
     onDecline: incoming ? () => st.decline() : null,
-    onHangup: () => st.hangup(),
+    // Escalate: live direct peer + ringing caller continue in a room.
+    // Only when both nicks are known (direct over direct).
+    onAcceptAsGroup: incoming
+        ? () {
+            final active = coord.activeMedia();
+            if (active == null ||
+                active.kind != MediaSessionKind.direct) {
+              ref
+                  .read(callNoticeProvider.notifier)
+                  .show('Звонок уже завершён');
+              return Future.value(SwitchResult.aborted);
+            }
+            return coord.escalateToGroup(
+                nicks: [active.label, call.peerNick], video: call.video);
+          }
+        : null,
+    // User-pressed hangup: audible end first, then the engine ends.
+    // Coordinator switches use endAll directly and stay silent.
+    onHangup: () {
+      st.toneForLocalEnd();
+      return st.hangup();
+    },
     onToggleMute: () => st.toggleMute(),
     onToggleCamera: () => st.toggleCamera(),
     onToggleShare: () => st.toggleScreenShare(),

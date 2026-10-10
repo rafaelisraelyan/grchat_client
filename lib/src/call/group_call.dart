@@ -505,6 +505,7 @@ String friendlyGroupError(Object e) {
     return switch (e.code) {
       'NOT_MEMBER' => 'Нет доступа к звонку',
       'NOT_FOUND' => 'Чат не найден',
+      'BAD_NICK' => 'Проверьте ник',
       'ALREADY_IN_CALL' => 'Вы уже сейчас в звонке',
       _ => 'Не вышло позвонить',
     };

@@ -8,6 +8,7 @@ import '../app/providers.dart';
 import '../auth/auth_repository.dart';
 import 'call_api.dart';
 import 'call_diagnostics.dart';
+import 'call_tones.dart';
 import 'group_call.dart' show groupCallProvider;
 import 'media_session.dart';
 import 'sfu_marker.dart';
@@ -138,6 +139,31 @@ class CallState extends Notifier<ActiveCall?> {
   /// fired by then - a fresh object would silently drop the flag and leave
   /// the callee staring at "Подключение видео…" forever.
   bool _remoteVideoArrived = false;
+
+  /// Call tones (P2P only): RU ringback while dialling, a short blip when
+  /// a call ends or an outgoing attempt fails. Delegated to [CallTones]:
+  /// audioplayers touches a platform channel whose headless init cannot be
+  /// try/caught, so engine code never constructs AudioPlayer directly.
+  Future<void> _startRingback() =>
+      ref.read(callTonesProvider).startRingback();
+
+  Future<void> _stopRingback() => ref.read(callTonesProvider).stopRingback();
+
+  Future<void> _playEndTone() async {
+    ref.read(callTonesProvider).endBlip();
+  }
+
+  /// User-facing end blip: the current call audibly ended or a dial failed.
+  /// Read-only wrt state; safe to call from UI hangup buttons and the
+  /// redial watchdog. The coordinator NEVER calls this — session switches
+  /// stay silent by construction (no cancel blip on accept).
+  void toneForLocalEnd() {
+    final cur = state;
+    if (cur == null) return;
+    if (cur.phase == CallPhase.active || cur.outgoing) {
+      unawaited(_playEndTone());
+    }
+  }
 
   RTCVideoRenderer? get localRenderer => _localR;
   RTCVideoRenderer? get remoteRenderer => _remoteR;
@@ -293,6 +319,8 @@ class CallState extends Notifier<ActiveCall?> {
     final name = peerNick ?? 'Группа';
     state = ActiveCall(
         callId: '', peerNick: name, video: video, outgoing: true, phase: CallPhase.ringing);
+    // Dialling feedback starts with the ring, not with the network.
+    unawaited(_startRingback());
     try {
       _pc = await _newPc('');
       await _addLocal(_pc!, video);
@@ -359,6 +387,8 @@ class CallState extends Notifier<ActiveCall?> {
           peerNick: peerNick,
           dmId: dmId,
           video: video));
+      // Unanswered dial: audible cancel before teardown.
+      toneForLocalEnd();
       await hangup();
     });
   }
@@ -688,12 +718,18 @@ class CallState extends Notifier<ActiveCall?> {
       _ringTimer?.cancel();
       // Patch the live state, not the pre-await snapshot (see acceptIncoming).
       state = state?.copyWith(phase: CallPhase.active);
+      // Answered: media is live, the ringback must die right here.
+      unawaited(_stopRingback());
     } catch (_) {
       await hangup();
     }
   }
 
   void _onEnded(Map<String, dynamic> ev) {
+    unawaited(_onEndedAsync(ev));
+  }
+
+  Future<void> _onEndedAsync(Map<String, dynamic> ev) async {
     final cur = state;
     if (cur == null || ev['call_id'] != cur.callId) {
       // Late end for a call hidden under a ring (§39): it is already gone
@@ -704,12 +740,21 @@ class CallState extends Notifier<ActiveCall?> {
         _displaced = null;
         _closeTransport();
         _pendingIce.clear();
+        // It was live until the remote end: audible feedback applies.
+        unawaited(_playEndTone());
       }
       return;
     }
     final reason = ev['reason']?.toString() ?? '';
     final by = (ev['by_nick'] ?? cur.peerNick).toString();
     final wasPending = !cur.outgoing && cur.phase == CallPhase.ringing;
+    // Audible end: a live call torn down remotely, or a dial that failed.
+    // A dismissed incoming stays silent; a resurfaced displaced call never
+    // ended from the user's perspective.
+    if (cur.phase == CallPhase.active ||
+        (cur.phase == CallPhase.ringing && cur.outgoing)) {
+      unawaited(_playEndTone());
+    }
     if (cur.phase == CallPhase.ringing) {
       if (cur.outgoing) {
         // Unanswered either way (decline or timeout race): redial §94.
@@ -741,7 +786,7 @@ class CallState extends Notifier<ActiveCall?> {
       }
       return;
     }
-    _cleanup();
+    await _cleanup();
   }
 
   /// Test seam: drive a dry-ring incoming without WebRTC (headless-safe:
@@ -759,10 +804,11 @@ class CallState extends Notifier<ActiveCall?> {
   @visibleForTesting
   ActiveCall? get debugDisplacedForTest => _displaced;
 
-  /// Test seam: remote ended a call by id.
+  /// Test seam: remote ended a call by id. Awaits the async teardown so
+  /// tests can assert the settled state (push path itself is fire-and-forget).
   @visibleForTesting
-  void debugRemoteEndedForTest(String callId) =>
-      _onEnded({'call_id': callId});
+  Future<void> debugRemoteEndedForTest(String callId) =>
+      _onEndedAsync({'call_id': callId});
 
   Future<void> _prepareIncoming(Map<String, dynamic> ev) async {
     ActiveCall? stashed;
@@ -863,7 +909,11 @@ class CallState extends Notifier<ActiveCall?> {
     _remoteIce.clear();
     _ringTimer?.cancel();
     _ringTimer = null;
+    await _stopRingback();
     await _closeTransport();
+    // Cleanup races test/dispose teardowns across an async gap: never
+    // assign state on a dead provider (Riverpod throws).
+    if (!ref.mounted) return;
     state = null;
   }
 

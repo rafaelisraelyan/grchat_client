@@ -197,6 +197,15 @@ class _DmInfoPanelState extends ConsumerState<DmInfoPanel> {
 
   Future<void> _call(
       WidgetRef ref, BuildContext context, String nick, bool video) async {
+    // Escalate option: a live P2P peer plus this target can continue
+    // together in a group room instead of hanging up.
+    final active = ref
+        .read(mediaCoordinatorProvider.notifier)
+        .activeMedia();
+    final groupPeer =
+        active != null && active.kind == MediaSessionKind.direct
+            ? active.label
+            : null;
     await runMediaStart(context, ref,
         title: 'Позвонить $nick?',
         action: 'позвонить',
@@ -204,7 +213,12 @@ class _DmInfoPanelState extends ConsumerState<DmInfoPanel> {
             .read(callStateProvider.notifier)
             .startCall(peerNick: nick, video: video),
         label: 'direct $nick',
-        friendlyError: friendlyCallError);
+        friendlyError: friendlyCallError,
+        groupNicks: groupPeer == null ? null : [groupPeer, nick],
+        groupVideo: video,
+        onGroupEscalate: (nicks, v) => ref
+            .read(mediaCoordinatorProvider.notifier)
+            .escalateToGroup(nicks: nicks, video: v));
   }
 }
 

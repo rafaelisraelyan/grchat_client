@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app/providers.dart';
+import '../chat/home_state.dart';
 import '../voice/voice_state.dart';
 import '../widgets/toast.dart';
 import 'call_diagnostics.dart';
@@ -226,6 +228,23 @@ class MediaCoordinator extends Notifier<bool> {
     }
   }
 
+  /// Escalate to a group call with [nicks] (current peer + third): one
+  /// atomic switch — end everything, open the group DM, join the room.
+  /// The invite fan-out reaches whoever is online; an offline third simply
+  /// misses it (unlike P2P, which hard-fails offline). Uses the
+  /// coordinator's own ref, so UI (WidgetRef) and mappers (Ref) share it.
+  Future<SwitchResult> escalateToGroup(
+      {required List<String> nicks, required bool video}) {
+    return switchStart(() async {
+      final thread =
+          await ref.read(chatRepositoryProvider).openGroupDm(nicks);
+      await ref.read(homeStateProvider.notifier).refreshDms();
+      final myId = ref.read(sessionProvider)?.userId ?? '';
+      await ref.read(groupCallProvider.notifier).join(
+          dmId: thread.id, title: thread.title(myId), video: video);
+    }, 'group ${nicks.join(',')}');
+  }
+
   /// End everything except the accepted pending (see [endAll] on the
   /// engines). Idempotent (§38), each engine timeout-guarded (§24).
   Future<void> endOthers(
@@ -315,24 +334,32 @@ class MediaCoordinator extends Notifier<bool> {
 final mediaCoordinatorProvider =
     NotifierProvider<MediaCoordinator, bool>(MediaCoordinator.new);
 
-/// Gate a user-initiated media start (§43): free → true; switching → toast
-/// + false; live session → confirm dialog → true only when the user accepts
-/// ending it. The caller then runs `coordinator.switchStart(start, label)`
-/// inside its own try/catch (engine-specific error copy stays at the site).
-Future<bool> ensureMediaSlot(BuildContext context, WidgetRef ref,
-    {required String title, required String action}) async {
+/// Gate a user-initiated media start (§43): free → endAndStart with no
+/// dialog; switching → toast + cancel; live session → confirm dialog.
+/// With [groupNicks], the dialog offers escalating to a group call as a
+/// third option (end P2P, continue together in a room). Returns the
+/// choice; the caller runs the switch itself.
+/// What the media-slot dialog resolved to: plain cancel, end the live
+/// session and start the requested one, or escalate both peers into a
+/// group call instead.
+enum MediaChoice { cancel, endAndStart, group }
+
+Future<MediaChoice> ensureMediaSlot(BuildContext context, WidgetRef ref,
+    {required String title,
+    required String action,
+    List<String>? groupNicks}) async {
   final coord = ref.read(mediaCoordinatorProvider.notifier);
   switch (coord.requestSlot(title)) {
     case SessionRequest.free:
-      return true;
+      return MediaChoice.endAndStart;
     case SessionRequest.busy:
       if (context.mounted) {
         Toast.show(context, 'Дождитесь переключения звонка');
       }
-      return false;
+      return MediaChoice.cancel;
     case SessionRequest.confirm:
-      if (!context.mounted) return false;
-      final go = await showDialog<bool>(
+      if (!context.mounted) return MediaChoice.cancel;
+      final go = await showDialog<MediaChoice>(
           context: context,
           builder: (ctx) => AlertDialog(
                 title: Text(title,
@@ -341,14 +368,22 @@ Future<bool> ensureMediaSlot(BuildContext context, WidgetRef ref,
                     'Текущий ${coord.describeCurrent()} будет завершён.'),
                 actions: [
                   TextButton(
-                      onPressed: () => Navigator.pop(ctx, false),
+                      onPressed: () =>
+                          Navigator.pop(ctx, MediaChoice.cancel),
                       child: const Text('Отмена')),
+                  if (groupNicks != null)
+                    FilledButton.tonal(
+                      onPressed: () =>
+                          Navigator.pop(ctx, MediaChoice.group),
+                      child: const Text('Групповой звонок'),
+                    ),
                   FilledButton(
-                      onPressed: () => Navigator.pop(ctx, true),
+                      onPressed: () =>
+                          Navigator.pop(ctx, MediaChoice.endAndStart),
                       child: Text('Завершить и $action')),
                 ],
               ));
-      return go ?? false;
+      return go ?? MediaChoice.cancel;
   }
 }
 
@@ -364,17 +399,31 @@ void precacheWaitingGif(BuildContext context) {
 
 /// One-line media start for UI entry points (§43): gates through
 /// [ensureMediaSlot], runs [MediaCoordinator.switchStart], toasts busy and
-/// maps engine errors. Returns true when the start actually ran.
+/// maps engine errors. With [groupNicks], a group choice escalates both
+/// peers into a room instead. Returns true when something started.
 Future<bool> runMediaStart(BuildContext context, WidgetRef ref,
     {required String title,
     required String action,
     required Future<void> Function() start,
     required String label,
-    required String Function(Object) friendlyError}) async {
+    required String Function(Object) friendlyError,
+    List<String>? groupNicks,
+    bool groupVideo = false,
+    Future<SwitchResult> Function(List<String> nicks, bool video)?
+        onGroupEscalate}) async {
   try {
-    final ok = await ensureMediaSlot(context, ref,
-        title: title, action: action);
-    if (!ok) return false;
+    final choice = await ensureMediaSlot(context, ref,
+        title: title, action: action, groupNicks: groupNicks);
+    if (choice == MediaChoice.cancel) return false;
+    if (choice == MediaChoice.group) {
+      if (onGroupEscalate == null) return false;
+      final r = await onGroupEscalate(groupNicks ?? const [], groupVideo);
+      if (r == SwitchResult.busy && context.mounted) {
+        Toast.show(context, 'Дождитесь переключения звонка');
+        return false;
+      }
+      return true;
+    }
     final r = await ref
         .read(mediaCoordinatorProvider.notifier)
         .switchStart(start, label);

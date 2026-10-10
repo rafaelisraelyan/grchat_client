@@ -290,7 +290,9 @@ void main() {
       expect(find.byType(GridView), findsOneWidget);
     });
 
-    UnifiedCall waitingValue({required Future<void> Function() onAccept}) =>
+    UnifiedCall waitingValue(
+            {required Future<void> Function() onAccept,
+            Future<SwitchResult> Function()? onAcceptAsGroup}) =>
         UnifiedCall(
             kind: CallKind.direct,
             sessionId: 'c2',
@@ -308,6 +310,7 @@ void main() {
             participants: const [],
             onAccept: onAccept,
             onDecline: () async {},
+            onAcceptAsGroup: onAcceptAsGroup,
             onHangup: () async {},
             onToggleMute: () {},
             onToggleCamera: () {},
@@ -329,6 +332,26 @@ void main() {
       expect(find.byTooltip('Принять'), findsNothing);
       await t.tap(find.text('Завершить и принять'));
       expect(accepted, isTrue);
+    });
+
+    testWidgets('waiting shows group-escalate only when eligible',
+        (t) async {
+      var grouped = false;
+      await pump(
+          t,
+          waitingValue(
+              onAccept: () async {},
+              onAcceptAsGroup: () async {
+                grouped = true;
+                return SwitchResult.switched;
+              }));
+      expect(find.text('В группу'), findsOneWidget);
+      await t.tap(find.text('В группу'));
+      expect(grouped, isTrue);
+      // Without eligibility the row stays two-button.
+      await pump(t, waitingValue(onAccept: () async {}));
+      expect(find.text('В группу'), findsNothing);
+      expect(find.text('Завершить и принять'), findsOneWidget);
     });
 
     testWidgets('free incoming keeps the plain accept row', (t) async {

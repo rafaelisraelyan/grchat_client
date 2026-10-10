@@ -712,6 +712,13 @@ class _ChatViewState extends ConsumerState<ChatView> {
     final group = scope.thread.isGroup || others.length != 1;
     if (!group) {
       final nick = others.first.nick;
+      final active = ref
+          .read(mediaCoordinatorProvider.notifier)
+          .activeMedia();
+      final groupPeer =
+          active != null && active.kind == MediaSessionKind.direct
+              ? active.label
+              : null;
       await runMediaStart(context, ref,
           title: 'Позвонить $nick?',
           action: 'позвонить',
@@ -719,7 +726,12 @@ class _ChatViewState extends ConsumerState<ChatView> {
               .read(callStateProvider.notifier)
               .startCall(peerNick: nick, video: video),
           label: 'direct $nick',
-          friendlyError: friendlyCallError);
+          friendlyError: friendlyCallError,
+          groupNicks: groupPeer == null ? null : [groupPeer, nick],
+          groupVideo: video,
+          onGroupEscalate: (nicks, v) => ref
+              .read(mediaCoordinatorProvider.notifier)
+              .escalateToGroup(nicks: nicks, video: v));
     } else {
       // Group DMs go through the SFU; 1-1 stays on direct P2P.
       final title = scope.thread.title(myId ?? '');

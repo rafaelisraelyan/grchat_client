@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grchat_client/src/call/call_state.dart';
+import 'package:grchat_client/src/call/call_tones.dart';
 
 /// Regression: the callee used to rebuild its ringing state from scratch
 /// *after* `setRemoteDescription`, which silently discarded the
@@ -72,9 +73,72 @@ void main() {
     });
   });
 
-  /// Call waiting on the real engine, headless: dry ring creates no
-  /// transport, so prepare/decline never touch WebRTC here. Every scenario
-  /// ends hung up: no 58s ring timer may leak out of the test.
+  /// Call tones delegate to [CallTones]: headless tests override with a
+  /// recording fake (real AudioPlayer touches a platform channel and dies
+  /// outside try/catch). Verifies the wiring rules, not the WAV bytes.
+  group('call tones headless-safe', () {
+    ProviderContainer container({FakeTones? tones}) {
+      final t = tones ?? FakeTones();
+      final c = ProviderContainer(overrides: [
+        callTonesProvider.overrideWith((_) => t),
+      ]);
+      addTearDown(c.dispose);
+      return c;
+    }
+
+    test('toneForLocalEnd is silent when idle', () {
+      final tones = FakeTones();
+      final c = container(tones: tones);
+      c.read(callStateProvider.notifier).toneForLocalEnd();
+      expect(c.read(callStateProvider), isNull);
+      expect(tones.endBlips, 0);
+    });
+
+    test('toneForLocalEnd on a live call does not disturb state', () {
+      final tones = FakeTones();
+      final c = container(tones: tones);
+      final st = c.read(callStateProvider.notifier);
+      st.state = ActiveCall(
+          callId: 'a',
+          peerNick: 'Alex',
+          video: false,
+          outgoing: true,
+          phase: CallPhase.active);
+      st.toneForLocalEnd();
+      expect(c.read(callStateProvider)?.callId, 'a');
+      expect(tones.endBlips, 1);
+    });
+
+    test('remote end of a live call completes with tone path', () async {
+      final tones = FakeTones();
+      final c = container(tones: tones);
+      final st = c.read(callStateProvider.notifier);
+      st.state = ActiveCall(
+          callId: 'a',
+          peerNick: 'Alex',
+          video: false,
+          outgoing: true,
+          phase: CallPhase.active);
+      await st.debugRemoteEndedForTest('a');
+      expect(c.read(callStateProvider), isNull);
+      expect(tones.endBlips, 1);
+    });
+
+    test('dismissed incoming stays silent', () async {
+      final tones = FakeTones();
+      final c = container(tones: tones);
+      final st = c.read(callStateProvider.notifier);
+      st.state = ActiveCall(
+          callId: 'b',
+          peerNick: 'Masha',
+          video: true,
+          outgoing: false,
+          phase: CallPhase.ringing);
+      await st.debugRemoteEndedForTest('b');
+      expect(tones.endBlips, 0);
+    });
+  });
+
   group('displaced live call under a dry ring', () {
     ActiveCall activeA() => ActiveCall(
         callId: 'a',
@@ -84,7 +148,9 @@ void main() {
         phase: CallPhase.active);
 
     ProviderContainer container() {
-      final c = ProviderContainer();
+      final c = ProviderContainer(overrides: [
+        callTonesProvider.overrideWith((_) => FakeTones()),
+      ]);
       addTearDown(c.dispose);
       return c;
     }
@@ -123,7 +189,7 @@ void main() {
       st.state = activeA();
       await st.debugIncomingForTest(
           callId: 'b', peerNick: 'Masha', video: false);
-      st.debugRemoteEndedForTest('a');
+      await st.debugRemoteEndedForTest('a');
       expect(st.debugDisplacedForTest, isNull);
       expect(c.read(callStateProvider)?.callId, 'b');
       await st.decline();
@@ -136,7 +202,7 @@ void main() {
       st.state = activeA();
       await st.debugIncomingForTest(
           callId: 'b', peerNick: 'Masha', video: false);
-      st.debugRemoteEndedForTest('b');
+      await st.debugRemoteEndedForTest('b');
       expect(c.read(callStateProvider)?.callId, 'a');
       expect(st.debugDisplacedForTest, isNull);
       await st.endAll();
@@ -156,4 +222,25 @@ void main() {
       expect(c.read(callStateProvider), isNull);
     });
   });
+}
+
+class FakeTones implements CallTones {
+  int rings = 0;
+  int stops = 0;
+  int endBlips = 0;
+
+  @override
+  Future<void> startRingback() async {
+    rings++;
+  }
+
+  @override
+  Future<void> stopRingback() async {
+    stops++;
+  }
+
+  @override
+  void endBlip() {
+    endBlips++;
+  }
 }

@@ -175,6 +175,18 @@ class ChatRepository {
     return r['dm_id'] as String;
   }
 
+  /// Creates a group DM with [nicks] (server adds me automatically) and
+  /// resolves the fresh thread for its id/title. Used by call escalation:
+  /// ending a P2P to continue as a group. Unknown nicks throw NOT_FOUND.
+  Future<DmThread> openGroupDm(List<String> nicks) async {
+    final r = await _conn.request(
+        'dm_open_group', fields: {..._auth, 'nicks': nicks});
+    _throwIfError(r);
+    final id = r['dm_id'] as String;
+    final all = await dmList();
+    return all.firstWhere((d) => d.id == id);
+  }
+
   Future<({String userId, String nick})> findUser(String nick) async {
     final r = await _conn.request('find_user', fields: {..._auth, 'nick': nick});
     _throwIfError(r);
