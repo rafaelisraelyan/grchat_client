@@ -111,6 +111,26 @@ class _FakeFiles extends FileApi {
   }
 }
 
+class _FakeHomePresence extends HomeState {
+  @override
+  HomeData build() {
+    final thread = DmThread(id: 'd1', isGroup: false, members: [
+      DmMember(userId: 'u1', nick: 'Rafael'),
+      DmMember(userId: 'u2', nick: 'Second'),
+    ]);
+    return HomeData(
+      dms: [thread],
+      scope: DmScope(thread, 'u1'),
+      messages: const [],
+      members: const [],
+      loading: false,
+      presence: {
+        'u2': PeerPresence(userId: 'u2', online: true),
+      },
+    );
+  }
+}
+
 void main() {
   group('DmInfoPanel', () {
     Future<_FakeCall> pump(WidgetTester t) async {
@@ -158,6 +178,23 @@ void main() {
       expect(find.bySemanticsLabel('Аудио'), findsOneWidget);
       expect(find.bySemanticsLabel('Видео'), findsOneWidget);
       handle.dispose();
+    });
+
+    testWidgets('online peer shows presence, unknown shows nothing',
+        (t) async {
+      await t.pumpWidget(ProviderScope(
+          overrides: [
+            sessionProvider.overrideWith(_FakeSession.new),
+            homeStateProvider.overrideWith(_FakeHomePresence.new),
+            callStateProvider.overrideWith(_FakeCall.new),
+            fileApiProvider.overrideWith((ref) => _FakeFiles()),
+          ],
+          child: MaterialApp(
+              theme: grchatLight,
+              darkTheme: grchatDark,
+              home: const Scaffold(body: DmInfoPanel()))));
+      await t.pumpAndSettle();
+      expect(find.text('в сети'), findsOneWidget);
     });
   });
 }

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../home_state.dart';
+import '../presence_text.dart';
 import '../../voice/voice_state.dart';
 import '../../call/media_session.dart';
 import '../../desktop/desktop_log.dart';
@@ -117,9 +118,19 @@ class _ChatViewState extends ConsumerState<ChatView> {
                         .withValues(alpha: 0.3)))),
         child: Row(children: [
           Expanded(
-              child: Text(scope?.title ?? 'Выбери чат',
+              child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(scope?.title ?? 'Выбери чат',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.w700))),
+                      fontSize: 16, fontWeight: FontWeight.w700)),
+              if (scope is DmScope && !scope.thread.isGroup)
+                _DmHeaderStatus(scope: scope),
+            ],
+          )),
           if (scope is ChannelScope) ...[
             if (scope.channel.alias.isNotEmpty)
               IconButton(
@@ -829,6 +840,32 @@ class _ChatViewState extends ConsumerState<ChatView> {
 }
 
 /// Telegram-style edit banner above the composer: original text + cancel.
+/// Presence subtitle under a 1-1 DM title. Unknown renders as nothing —
+/// the header keeps its single-line height instead of a fake status.
+class _DmHeaderStatus extends ConsumerWidget {
+  const _DmHeaderStatus({required this.scope});
+  final DmScope scope;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final myId = ref.watch(sessionProvider)?.userId ?? '';
+    final others =
+        scope.thread.members.where((m) => m.userId != myId).toList();
+    if (others.isEmpty) return const SizedBox.shrink();
+    final p = ref.watch(homeStateProvider).presence[others.first.userId];
+    final text = formatPresence(p, DateTime.now());
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Text(text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+            fontSize: 12,
+            color: (p?.online ?? false)
+                ? const Color(0xFF57F287)
+                : Colors.grey));
+  }
+}
+
 class _EditBanner extends ConsumerWidget {
   const _EditBanner();
 

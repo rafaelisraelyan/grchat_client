@@ -215,6 +215,30 @@ class DmMember {
   final String nick;
 }
 
+/// Online/last-seen snapshot for one user (server `presence`).
+/// [lastSeen] is null when the user was never seen offline (fresh or
+/// currently online): the UI shows "в сети", never a fake timestamp.
+class PeerPresence {
+  PeerPresence(
+      {required this.userId, required this.online, this.lastSeen});
+  final String userId;
+  final bool online;
+  final DateTime? lastSeen;
+
+  static PeerPresence fromJson(Map<String, dynamic> j) {
+    DateTime? seen;
+    final raw = j['last_seen']?.toString();
+    if (raw != null && raw.isNotEmpty) {
+      seen = DateTime.tryParse(raw);
+    }
+    return PeerPresence(
+      userId: (j['user_id'] ?? '').toString(),
+      online: (j['online'] ?? false) as bool,
+      lastSeen: seen,
+    );
+  }
+}
+
 class DmThread {
   DmThread(
       {required this.id,

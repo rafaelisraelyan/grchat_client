@@ -193,6 +193,20 @@ class ChatRepository {
     return (userId: r['user_id'] as String, nick: r['nick'] as String);
   }
 
+  /// Online/last-seen snapshot for [nicks], keyed by user id. Unknown
+  /// nicks are skipped server-side; transport errors throw as usual.
+  Future<Map<String, PeerPresence>> presence(List<String> nicks) async {
+    final r = await _conn.request(
+        'presence', fields: {..._auth, 'nicks': nicks});
+    _throwIfError(r);
+    final out = <String, PeerPresence>{};
+    for (final u in ((r['users'] as List?) ?? const [])) {
+      final p = PeerPresence.fromJson(u as Map<String, dynamic>);
+      if (p.userId.isNotEmpty) out[p.userId] = p;
+    }
+    return out;
+  }
+
   Future<({String communityId, String alias})> createCommunity(String name,
       {String? alias, bool isPrivate = false}) async {
     final r = await _conn.request('create_community', fields: {

@@ -12,11 +12,13 @@ import '../../widgets/avatar.dart';
 import '../../widgets/toast.dart';
 import '../home_state.dart';
 import '../models.dart';
+import '../presence_text.dart';
 
 /// Right column for a 1-1 DM: peer profile + shared media from the
 /// attachments index (full history, newest first — not just the loaded
-/// page). No presence/last-seen: the backend has no presence feed,
-/// so nothing is faked. Group DMs keep the members list instead.
+/// page). Presence comes from the server feed (snapshot on open + pushes);
+/// unknown renders as nothing, never a fake status. Group DMs keep the
+/// members list instead.
 class DmInfoPanel extends ConsumerStatefulWidget {
   const DmInfoPanel({super.key});
 
@@ -105,6 +107,7 @@ class _DmInfoPanelState extends ConsumerState<DmInfoPanel> {
                     style: const TextStyle(
                         fontSize: 16, fontWeight: FontWeight.w700)),
               ),
+              _PeerStatus(peer.userId),
               Center(
                 child: InkWell(
                   onTap: () {
@@ -219,6 +222,45 @@ class _DmInfoPanelState extends ConsumerState<DmInfoPanel> {
         onGroupEscalate: (nicks, v) => ref
             .read(mediaCoordinatorProvider.notifier)
             .escalateToGroup(nicks: nicks, video: v));
+  }
+}
+
+class _PeerStatus extends ConsumerWidget {
+  const _PeerStatus(this.userId);
+  final String userId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final p = ref.watch(homeStateProvider).presence[userId];
+    final text = formatPresence(p, DateTime.now());
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: (p?.online ?? false)
+                    ? const Color(0xFF57F287)
+                    : Colors.grey,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(text,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: (p?.online ?? false)
+                        ? const Color(0xFF57F287)
+                        : Colors.grey)),
+          ],
+        ),
+      ),
+    );
   }
 }
 

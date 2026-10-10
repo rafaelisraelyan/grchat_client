@@ -54,6 +54,7 @@ class HomeData {
     this.typing = const {},
     this.unread = const {},
     this.missed = const [],
+    this.presence = const {},
     this.loading = true,
     this.loadingOlder = false,
     this.hasMore = true,
@@ -76,6 +77,9 @@ class HomeData {
   final Map<String, int> unread;
   /// Missed calls accumulated while offline (server clears flags on read).
   final List<MissedCall> missed;
+  /// Online/last-seen by user id (server `presence` snapshots + pushes).
+  /// Absent = unknown: the UI shows nothing, never a fake status.
+  final Map<String, PeerPresence> presence;
   final bool loading;
   final bool loadingOlder;
   final bool hasMore;
@@ -92,6 +96,7 @@ class HomeData {
     Set<String>? typing,
     Map<String, int>? unread,
     List<MissedCall>? missed,
+    Map<String, PeerPresence>? presence,
     bool? loading,
     bool? loadingOlder,
     bool? hasMore,
@@ -110,6 +115,7 @@ class HomeData {
         typing: typing ?? this.typing,
         unread: unread ?? this.unread,
         missed: missed ?? this.missed,
+        presence: presence ?? this.presence,
         loading: loading ?? this.loading,
         loadingOlder: loadingOlder ?? this.loadingOlder,
         hasMore: hasMore ?? this.hasMore,
@@ -460,6 +466,25 @@ class HomeState extends Notifier<HomeData> {
     } catch (e) {
       state = state.copyWith(loading: false, error: e.toString());
     }
+    // 1-1 peer presence, best effort: a missing snapshot leaves the
+    // status unknown (no fake "offline"), pushes keep it fresh after.
+    if (!thread.isGroup) {
+      final others =
+          thread.members.where((m) => m.userId != myId).toList();
+      if (others.isNotEmpty) refreshPresence([others.first.nick]);
+    }
+  }
+
+  /// Refreshes online/last-seen for [nicks] into [HomeData.presence].
+  /// Silent on failure (old servers lack the endpoint): unknown stays
+  /// unknown instead of flashing a wrong status.
+  Future<void> refreshPresence(List<String> nicks) async {
+    if (nicks.isEmpty) return;
+    try {
+      final fresh = await ref.read(chatRepositoryProvider).presence(nicks);
+      if (fresh.isEmpty) return;
+      state = state.copyWith(presence: {...state.presence, ...fresh});
+    } catch (_) {}
   }
 
   /// The DM stand: DMs only, no channels. Keeps the selected DM if any.
@@ -591,8 +616,14 @@ class HomeState extends Notifier<HomeData> {
       case 'message_deleted':
         state = state.copyWith(messages:
             state.messages.where((m) => m.id != ev['message_id']).toList());
-      case 'typing':
-        final scopeKey = ev['channel_id'] != null
+      case 'presence':
+        // Online transition or offline stamp for one user. Keyed by
+        // user id, so the 1-1 header/panel pick it up without a refetch.
+        final p = PeerPresence.fromJson(ev);
+        if (p.userId.isEmpty) return;
+        state = state.copyWith(
+            presence: {...state.presence, p.userId: p});
+      case 'typing':        final scopeKey = ev['channel_id'] != null
             ? 'c:${ev['channel_id']}'
             : 'd:${ev['dm_id']}';
         final nick = (ev['nick'] ?? '?').toString();
