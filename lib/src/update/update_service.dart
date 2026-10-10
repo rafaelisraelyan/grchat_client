@@ -248,26 +248,15 @@ class UpdateCenter extends Notifier<UpdateUiState> {
     }
   }
 
-  /// Two-stage Windows install: a ps1 script waits for this process to
-  /// exit, unpacks the bundle over the install dir and restarts the app.
-  ///
-  /// Hardened after the silent 1.4.0→1.5.0 failure (download ok, process
-  /// gone, nothing applied): the script now (1) closes sibling clients
-  /// sharing this install dir — a second running instance locks the exe
-  /// and DLLs, which kills Expand-Archive mid-flight; (2) uses
-  /// -ErrorAction Stop + try/catch so any failure is caught instead of
-  /// silently killing the script; (3) always appends to apply.log next
-  /// to the script, so the next failure explains itself instead of going
-  /// dark; (4) restarts the app even on failure, so the user is never
-  /// left with a dead client and no trace.
-  Future<void> _apply(File zip, String version) async {
-    final exe = Platform.resolvedExecutable;
-    final dir = File(exe).parent.path;
-    final tmpDir = zip.parent.path;
-    final script = File('$tmpDir\\apply.ps1');
-    final log = '$tmpDir\\apply.log';
-    await script.writeAsString(
-        '\$pid0 = $pid\n'
+  /// Builds the updater script. Pure (testable): all paths baked in, no
+  /// Dart interpolation surprises at runtime — see update_service_test.
+  static String buildApplyScript(
+      {required int pid,
+      required String zipPath,
+      required String dir,
+      required String exe,
+      required String log}) {
+    return '\$pid0 = $pid\n'
         '"START " + (Get-Date -Format o) + " pid=\$pid0" | Out-File -Append "$log"\n'
         'Wait-Process -Id \$pid0 -ErrorAction SilentlyContinue\n'
         'try {\n'
@@ -288,23 +277,67 @@ class UpdateCenter extends Notifier<UpdateUiState> {
         '}\n'
         'Start-Sleep -Seconds 2\n'
         'try {\n'
-        '  Expand-Archive -Path "${zip.path}" -DestinationPath "$dir" -Force -ErrorAction Stop\n'
+        '  Expand-Archive -Path "$zipPath" -DestinationPath "$dir" -Force -ErrorAction Stop\n'
         '  "OK " + (Get-Date -Format o) | Out-File -Append "$log"\n'
         '} catch {\n'
         '  "FAIL " + \$Error[0] | Out-File -Append "$log"\n'
         '}\n'
         'Start-Process "$exe" -WorkingDirectory "$dir"\n'
-        'Remove-Item "${zip.path}" -Force -ErrorAction SilentlyContinue\n'
-        'Remove-Item \$PSCommandPath -Force -ErrorAction SilentlyContinue\n',
+        'Remove-Item "$zipPath" -Force -ErrorAction SilentlyContinue\n'
+        'Remove-Item \$PSCommandPath -Force -ErrorAction SilentlyContinue\n';
+  }
+
+  /// Two-stage Windows install: a ps1 script waits for this process to
+  /// exit, unpacks the bundle over the install dir and restarts the app.
+  ///
+  /// Hardened after two silent failures:
+  /// - 1.4.0→1.5.0: a sibling client locked the install dir, killing
+  ///   Expand-Archive with no trace. The script now stops siblings and
+  ///   logs every step to apply.log.
+  /// - 1.5.1→1.5.2: `ProcessStartMode.detached` children never execute
+  ///   on this Dart/Windows setup (proven by spawn probes: attached runs,
+  ///   detached is dead on arrival, with or without parent exit). The
+  ///   updater is therefore launched via `cmd /c start` (a real
+  ///   daemonize), which provably survives the parent.
+  /// Daemonize argv for the updater script. Pure (testable).
+  ///
+  /// Two hard-won rules live here:
+  /// - launch goes through `cmd /c start`: Dart's detached children never
+  ///   execute on this setup (proven by spawn probes), while a `start`ed
+  ///   grandchild provably survives the parent exit;
+  /// - the script path stays BARE: Dart quotes argv with spaces itself,
+  ///   and pre-quoted paths get mangled into `"""..."""`, which kills the
+  ///   launch silently (proven by the sim: quoted died, bare lived).
+  static List<String> updaterArgv(String scriptPath) => [
+        '/c',
+        'start',
+        '""',
+        'powershell.exe',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-WindowStyle',
+        'Hidden',
+        '-File',
+        scriptPath,
+      ];
+
+  Future<void> _apply(File zip, String version) async {
+    final exe = Platform.resolvedExecutable;
+    final dir = File(exe).parent.path;
+    final tmpDir = zip.parent.path;
+    final script = File('$tmpDir\\apply.ps1');
+    final log = '$tmpDir\\apply.log';
+    await script.writeAsString(
+        buildApplyScript(
+            pid: pid,
+            zipPath: zip.path,
+            dir: dir,
+            exe: exe,
+            log: log),
         flush: true);
     dlog('update applying $version over $dir');
-    await Process.start('powershell.exe', [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      script.path,
-    ], mode: ProcessStartMode.detached);
+    await Process.start('cmd.exe', updaterArgv(script.path));
     exit(0);
   }
 
