@@ -123,7 +123,7 @@ class UpdateCenter extends Notifier<UpdateUiState> {
             message: 'Файл обновления повреждён');
         return;
       }
-      await _apply(zip);
+      await _apply(zip, info.version);
       // _apply exits the process; if we are still here it failed.
       state = UpdateUiState(
           status: UpdateStatus.error,
@@ -250,18 +250,54 @@ class UpdateCenter extends Notifier<UpdateUiState> {
 
   /// Two-stage Windows install: a ps1 script waits for this process to
   /// exit, unpacks the bundle over the install dir and restarts the app.
-  Future<void> _apply(File zip) async {
+  ///
+  /// Hardened after the silent 1.4.0→1.5.0 failure (download ok, process
+  /// gone, nothing applied): the script now (1) closes sibling clients
+  /// sharing this install dir — a second running instance locks the exe
+  /// and DLLs, which kills Expand-Archive mid-flight; (2) uses
+  /// -ErrorAction Stop + try/catch so any failure is caught instead of
+  /// silently killing the script; (3) always appends to apply.log next
+  /// to the script, so the next failure explains itself instead of going
+  /// dark; (4) restarts the app even on failure, so the user is never
+  /// left with a dead client and no trace.
+  Future<void> _apply(File zip, String version) async {
     final exe = Platform.resolvedExecutable;
     final dir = File(exe).parent.path;
-    final script = File('${zip.parent.path}\\apply.ps1');
+    final tmpDir = zip.parent.path;
+    final script = File('$tmpDir\\apply.ps1');
+    final log = '$tmpDir\\apply.log';
     await script.writeAsString(
         '\$pid0 = $pid\n'
-        'Wait-Process -Id \$pid0\n'
-        'Expand-Archive -Path "${zip.path}" -DestinationPath "$dir" -Force\n'
-        'Start-Process "$exe"\n'
-        'Remove-Item "${zip.path}" -Force\n'
-        'Remove-Item \$PSCommandPath -Force\n',
+        '"START " + (Get-Date -Format o) + " pid=\$pid0" | Out-File -Append "$log"\n'
+        'Wait-Process -Id \$pid0 -ErrorAction SilentlyContinue\n'
+        'try {\n'
+        '  foreach (\$p in (Get-Process grchat_client -ErrorAction SilentlyContinue)) {\n'
+        '    if (\$p.Id -ne \$pid0) {\n'
+        '      try {\n'
+        '        if (\$p.Path -eq "$exe") {\n'
+        '          Stop-Process -Id \$p.Id -Force -ErrorAction Stop\n'
+        '          "STOPPED sibling " + \$p.Id | Out-File -Append "$log"\n'
+        '        }\n'
+        '      } catch {\n'
+        '        "SIBLING-SKIP " + \$Error[0] | Out-File -Append "$log"\n'
+        '      }\n'
+        '    }\n'
+        '  }\n'
+        '} catch {\n'
+        '  "SIBLING-SCAN-FAIL " + \$Error[0] | Out-File -Append "$log"\n'
+        '}\n'
+        'Start-Sleep -Seconds 2\n'
+        'try {\n'
+        '  Expand-Archive -Path "${zip.path}" -DestinationPath "$dir" -Force -ErrorAction Stop\n'
+        '  "OK " + (Get-Date -Format o) | Out-File -Append "$log"\n'
+        '} catch {\n'
+        '  "FAIL " + \$Error[0] | Out-File -Append "$log"\n'
+        '}\n'
+        'Start-Process "$exe" -WorkingDirectory "$dir"\n'
+        'Remove-Item "${zip.path}" -Force -ErrorAction SilentlyContinue\n'
+        'Remove-Item \$PSCommandPath -Force -ErrorAction SilentlyContinue\n',
         flush: true);
+    dlog('update applying $version over $dir');
     await Process.start('powershell.exe', [
       '-NoProfile',
       '-ExecutionPolicy',
