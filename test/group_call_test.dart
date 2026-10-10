@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grchat_client/src/auth/auth_repository.dart';
+import 'package:grchat_client/src/call/call_tones.dart';
 import 'package:grchat_client/src/call/group_call.dart';
 
 /// Headless-safe paths only (no native WebRTC): join()/accept() need a
@@ -129,4 +130,72 @@ void main() {
       expect(call?.room, 'grchat_d1');
     });
   });
+
+  group('group end tones', () {
+    ProviderContainer container(_RecordingTones tones) {
+      final c = ProviderContainer(overrides: [
+        callTonesProvider.overrideWith((_) => tones),
+      ]);
+      addTearDown(c.dispose);
+      return c;
+    }
+
+    void ring(ProviderContainer c) {
+      c.read(groupCallProvider.notifier).incoming(
+          callId: 'k1',
+          dmId: 'd1',
+          room: 'grchat_d1',
+          video: false,
+          fromNick: 'Second');
+    }
+
+    test('toneForLocalEnd is silent when idle', () {
+      final tones = _RecordingTones();
+      final c = container(tones);
+      c.read(groupCallProvider.notifier).toneForLocalEnd();
+      expect(tones.endBlips, 0);
+    });
+
+    test('dismissed bare ring stays silent', () async {
+      final tones = _RecordingTones();
+      final c = container(tones);
+      ring(c);
+      final n = c.read(groupCallProvider.notifier);
+      n.toneForLocalEnd();
+      expect(tones.endBlips, 0);
+      await n.decline();
+      expect(c.read(groupCallProvider), isNull);
+      expect(tones.endBlips, 0);
+    });
+
+    test('live room blips on local end', () {
+      final tones = _RecordingTones();
+      final c = container(tones);
+      final n = c.read(groupCallProvider.notifier);
+      n.state = GroupCall(
+          dmId: 'd1',
+          title: 'Группа',
+          room: 'grchat_d1',
+          video: false,
+          outgoing: true,
+          phase: GroupPhase.active);
+      n.toneForLocalEnd();
+      expect(tones.endBlips, 1);
+    });
+  });
+}
+
+class _RecordingTones implements CallTones {
+  int endBlips = 0;
+
+  @override
+  Future<void> startRingback() async {}
+
+  @override
+  Future<void> stopRingback() async {}
+
+  @override
+  void endBlip() {
+    endBlips++;
+  }
 }

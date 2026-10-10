@@ -9,6 +9,7 @@ import '../chat/home_state.dart';
 import 'call_api.dart';
 import 'call_diagnostics.dart';
 import 'call_state.dart' show callNoticeProvider, callStateProvider;
+import 'call_tones.dart';
 import 'media_session.dart';
 import 'sfu_marker.dart';
 import 'speaker_focus.dart';
@@ -302,6 +303,18 @@ class GroupCallState extends Notifier<GroupCall?> {
     state = null;
   }
 
+  /// User-facing end blip: a live room audibly ended. Read-only wrt state;
+  /// safe to call from the UI hangup button. The coordinator NEVER calls
+  /// this — session switches stay silent by construction. A dismissed bare
+  /// ring stays silent; there is no dial ringback for group by design (an
+  /// outgoing dial lands in the room immediately, no callee-answer moment).
+  void toneForLocalEnd() {
+    final cur = state;
+    if (cur != null && cur.phase == GroupPhase.active) {
+      ref.read(callTonesProvider).endBlip();
+    }
+  }
+
   /// Coordinator primitive: end everything this engine holds. A bare ring
   /// is declined, a live session hung up; the accepted pending
   /// ([exceptPendingId]) is left alone. Idempotent (§38).
@@ -459,6 +472,9 @@ class GroupCallState extends Notifier<GroupCall?> {
     // Never vanish silently: the window is gone, so the toast is the only
     // trace of why. The user redials by hand from the DM.
     ref.read(callNoticeProvider.notifier).show('Соединение с комнатой потеряно');
+    if (state?.phase == GroupPhase.active) {
+      ref.read(callTonesProvider).endBlip();
+    }
     _leaveRoom();
     state = null;
   }
@@ -490,6 +506,10 @@ class GroupCallState extends Notifier<GroupCall?> {
           return;
         }
         dlog('group ended by signaling');
+        // A torn-down live room is audible; a dismissed bare ring is not.
+        if (cur.phase == GroupPhase.active) {
+          ref.read(callTonesProvider).endBlip();
+        }
         _leaveRoom();
         state = null;
     }

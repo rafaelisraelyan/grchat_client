@@ -425,7 +425,12 @@ UnifiedCall _fromGroup(Ref ref, GroupCall call) {
             kind: MediaSessionKind.group, pendingId: call.callId!)
         : null,
     onDecline: incoming ? () => st.decline() : null,
-    onHangup: () => st.hangup(),
+    // User-pressed hangup: audible end first, then the engine ends.
+    // Coordinator switches use endAll directly and stay silent.
+    onHangup: () {
+      st.toneForLocalEnd();
+      return st.hangup();
+    },
     onToggleMute: () => st.toggleMute(),
     onToggleCamera: () => st.toggleCamera(),
     onToggleShare: () async {},

@@ -1,7 +1,7 @@
 import 'package:audioplayers/audioplayers.dart';
 import 'package:riverpod/riverpod.dart';
 
-/// Playback seam for P2P call tones.
+/// Playback seam for call tones.
 ///
 /// Production uses [AudioCallTones] (audioplayers, asset WAVs). Tests
 /// override [callTonesProvider] with [_SilentTones]-like fakes: the
@@ -9,6 +9,10 @@ import 'package:riverpod/riverpod.dart';
 /// throws MissingPluginException headless — an unhandled async error that
 /// no try/catch at the call site can swallow. Never construct AudioPlayer
 /// inside engine code directly.
+///
+/// Asset paths are relative to the `assets/` prefix (AudioCache default):
+/// pass 'call/ringback.wav', never 'assets/call/...' — the latter resolves
+/// to assets/assets/... and fails silently inside the try/catch.
 abstract class CallTones {
   Future<void> startRingback();
   Future<void> stopRingback();
@@ -26,7 +30,7 @@ class AudioCallTones implements CallTones {
       final p = AudioPlayer();
       _ring = p;
       await p.setReleaseMode(ReleaseMode.loop);
-      await p.play(AssetSource('assets/call/ringback.wav'));
+      await p.play(AssetSource('call/ringback.wav'));
     } catch (_) {
       _ring = null;
     }
@@ -46,7 +50,7 @@ class AudioCallTones implements CallTones {
   void endBlip() {
     try {
       final p = AudioPlayer();
-      p.play(AssetSource('assets/call/end.wav')).then((_) {
+      p.play(AssetSource('call/end.wav')).then((_) {
         p.onPlayerComplete.first.then((_) async {
           try {
             await p.dispose();
