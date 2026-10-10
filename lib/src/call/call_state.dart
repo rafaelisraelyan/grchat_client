@@ -9,6 +9,7 @@ import '../auth/auth_repository.dart';
 import 'call_api.dart';
 import 'call_diagnostics.dart';
 import 'call_tones.dart';
+import 'sdp_tuning.dart';
 import 'group_call.dart' show groupCallProvider;
 import 'media_session.dart';
 import 'sfu_marker.dart';
@@ -290,8 +291,31 @@ class CallState extends Notifier<ActiveCall?> {
   }
 
   Future<void> _addLocal(RTCPeerConnection pc, bool video) async {
-    _local = await navigator.mediaDevices
-        .getUserMedia({'audio': true, 'video': video});
+    // Strict first: AEC/NS/AGC for voice, 720p cap for video (1080p+
+    // melts laptop CPUs for talking heads). Legacy bool fallback keeps
+    // odd devices calling instead of failing with a constraint error.
+    try {
+      _local = await navigator.mediaDevices.getUserMedia({
+        'audio': {
+          'echoCancellation': true,
+          'noiseSuppression': true,
+          'autoGainControl': true,
+        },
+        'video': video
+            ? {
+                'facingMode': 'user',
+                'width': {'ideal': 1280},
+                'height': {'ideal': 720},
+                'frameRate': {'ideal': 30},
+              }
+            : false,
+      });
+      dlog('getUserMedia strict constraints');
+    } catch (e) {
+      dlog('getUserMedia strict failed, legacy fallback: $e');
+      _local = await navigator.mediaDevices
+          .getUserMedia({'audio': true, 'video': video});
+    }
     final tracks = _local!.getTracks();
     dlog('getUserMedia audio=${_local!.getAudioTracks().length} '
         'video=${_local!.getVideoTracks().length}');
@@ -325,7 +349,10 @@ class CallState extends Notifier<ActiveCall?> {
       _pc = await _newPc('');
       await _addLocal(_pc!, video);
       final offer = await _pc!.createOffer({});
-      await _pc!.setLocalDescription(offer);
+      // Pin Opus/FEC + video cap before the description goes live.
+      final tunedOffer = tuneLocalSdp(offer.sdp ?? '');
+      await _pc!.setLocalDescription(
+          RTCSessionDescription(tunedOffer, 'offer'));
       final sdp = (await _pc!.getLocalDescription())?.sdp ?? '';
       dlog('offer ${SdpSummary.parse(sdp)}');
       final callId =
@@ -415,7 +442,9 @@ class CallState extends Notifier<ActiveCall?> {
         }
       }
       final answer = await _pc!.createAnswer({});
-      await _pc!.setLocalDescription(answer);
+      final tunedAnswer = tuneLocalSdp(answer.sdp ?? '');
+      await _pc!.setLocalDescription(
+          RTCSessionDescription(tunedAnswer, 'answer'));
       final sdp = (await _pc!.getLocalDescription())?.sdp ?? '';
       dlog('answer ${SdpSummary.parse(sdp)}');
       await api.answer(callId: cur.callId, accept: true, sdp: sdp);

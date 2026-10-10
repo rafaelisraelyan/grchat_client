@@ -10,6 +10,7 @@ import 'call_api.dart';
 import 'call_diagnostics.dart';
 import 'call_state.dart' show callNoticeProvider, callStateProvider;
 import 'call_tones.dart';
+import 'room_options.dart';
 import 'media_session.dart';
 import 'sfu_marker.dart';
 import 'speaker_focus.dart';
@@ -149,7 +150,7 @@ class GroupCallState extends Notifier<GroupCall?> {
     }
     final api = ref.read(groupCallApiProvider);
     final creds = await api.livekitToken(dmId);
-    final room = Room();
+    final room = Room(roomOptions: grchatRoomOptions());
     try {
       _attach(room);
       await room.connect(creds.url, creds.token);
@@ -247,7 +248,7 @@ class GroupCallState extends Notifier<GroupCall?> {
       return;
     }
     final api = ref.read(groupCallApiProvider);
-    final room = Room();
+    final room = Room(roomOptions: grchatRoomOptions());
     try {
       _attach(room);
       final creds = await api.livekitToken(cur.dmId);

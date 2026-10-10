@@ -7,6 +7,7 @@ import '../app/providers.dart';
 import '../auth/auth_repository.dart';
 import '../call/call_api.dart';
 import '../call/call_diagnostics.dart';
+import '../call/room_options.dart';
 import '../call/speaker_focus.dart';
 
 /// Voice channel presence (signaling only for now; media comes with SFU).
@@ -349,7 +350,7 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
       } catch (_) {}
       rethrow;
     }
-    final room = Room();
+    final room = Room(roomOptions: grchatRoomOptions());
     try {
       _attach(room);
       await room.connect(creds.url, creds.token);
