@@ -8,8 +8,9 @@ import 'package:grchat_client/src/call/dock_state.dart';
 /// reuses the Mini Call Card dock model (edge + normalized offset), so
 /// these assertions pin the CONTRACT the overlay leans on.
 void main() {
-  // The overlay's own size and a roomy video area to dock in.
-  const pip = Size(180, 240);
+  // The overlay's own size (16:9 aspect, default width per §34/§43) and a
+  // roomy video area to dock in.
+  final pip = Size(kSelfPipDefaultW, selfPipHeightFor(kSelfPipDefaultW));
   final area = Size(880, 560);
 
   test('default dock is RIGHT with a middle-ish offset', () {
@@ -109,6 +110,93 @@ void main() {
     expect(kSelfPipMinW, lessThan(kSelfPipDefaultW));
     expect(kSelfPipDefaultW,
         lessThan(selfPipMaxWidthFor(const Size(1200, 700))));
+  });
+
+  test('zones: corners WIN over edges (§4)', () {
+    expect(selfPipZoneFor(const Offset(2, 2), pip), SelfPipZone.topLeft);
+    expect(selfPipZoneFor(Offset(pip.width - 2, pip.height - 2), pip),
+        SelfPipZone.bottomRight);
+    expect(selfPipZoneFor(Offset(2, pip.height / 2), pip),
+        SelfPipZone.left);
+    expect(selfPipZoneFor(Offset(pip.width / 2, pip.height / 2), pip),
+        SelfPipZone.center);
+  });
+
+  test('resize anchors the OPPOSITE side (§13–§14): drag right edge '
+      'on a left-docked preview keeps LEFT flush', () {
+    final start = dockRect(
+        const DockSpot(DockEdge.left, 0.5), area, pip);
+    final r = selfPipResizedRect(
+        start: start,
+        pointerDelta: const Offset(60, 0),
+        zone: SelfPipZone.right,
+        dock: DockEdge.left,
+        media: area);
+    expect(r.left, closeTo(start.left, 0.01),
+        reason: 'drag RIGHT edge → LEFT side anchored (§13)');
+    expect(r.width, greaterThan(start.width));
+    expect(selfPipHeightFor(r.width), closeTo(r.height, 0.01),
+        reason: 'aspect ratio stays 16:9 (§11)');
+  });
+
+  test('resize honors the docked edge flush (§15): docked RIGHT stays '
+      'right-flush while growing', () {
+    final start = dockRect(
+        const DockSpot(DockEdge.right, 0.4), area, pip);
+    final r = selfPipResizedRect(
+        start: start,
+        pointerDelta: const Offset(-40, 0),
+        zone: SelfPipZone.left,
+        dock: DockEdge.right,
+        media: area);
+    expect(r.right, closeTo(start.right, 0.01),
+        reason: 'docked RIGHT: the flush edge never moves (§15)');
+    expect(r.width, greaterThan(start.width));
+    expect(r.left, greaterThanOrEqualTo(kDockMargin - 0.5));
+  });
+
+  test('bottom edge resize is height-driven, width re-derives (§12)',
+      () {
+    final start = dockRect(
+        const DockSpot(DockEdge.right, 0.4), area, pip);
+    final r = selfPipResizedRect(
+        start: start,
+        pointerDelta: const Offset(0, 40),
+        zone: SelfPipZone.bottom,
+        dock: DockEdge.right,
+        media: area);
+    expect(r.height, greaterThan(start.height));
+    expect(r.width, closeTo(r.height * 16 / 9, 0.01));
+  });
+
+  test('resize limits apply LIVE (§17–§18): max width = hard cap', () {
+    // A wide-enough area where the 35% budget exceeds the hard cap so
+    // the cap itself binds (§35: 420 needs ≥1200 usable width).
+    final wide = Size(1200, 700);
+    final start = dockRect(
+        const DockSpot(DockEdge.left, 0.4), wide, pip);
+    final r = selfPipResizedRect(
+        start: start,
+        pointerDelta: const Offset(100000, 0),
+        zone: SelfPipZone.right,
+        dock: DockEdge.left,
+        media: wide);
+    expect(r.width, kSelfPipHardMaxW);
+    expect(r.right, lessThanOrEqualTo(wide.width - kDockMargin + 0.01));
+  });
+
+  test('resize min width floors at 180 (§18)', () {
+    final start = dockRect(
+        const DockSpot(DockEdge.right, 0.4), area, pip);
+    final r = selfPipResizedRect(
+        start: start,
+        pointerDelta: const Offset(100000, 0),
+        zone: SelfPipZone.left,
+        dock: DockEdge.right,
+        media: area);
+    expect(r.width, kSelfPipMinW);
+    expect(r.right, closeTo(start.right, 0.01),
+        reason: 'anchored right side stays put even at the min');
   });
 
   test('size policy: matching spec §39 example 800×500 (§36, §39)', () {
