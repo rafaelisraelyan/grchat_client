@@ -514,7 +514,10 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     final local = st.localRenderer;
     final hasRemote =
         (direct?.remoteVideo ?? false) && remote != null;
-    if (call.video && call.phase == CallPhase.active) {
+    // Remote video can arrive mid-call even when this side never sent
+    // theirs (late peer camera): the hero view opens for that too.
+    final videoNow = call.video || call.remoteVideo;
+    if (videoNow && call.phase == CallPhase.active) {
       return _videoArea(context, call, remote, local, hasRemote);
     }
     return _identity(call);
@@ -630,7 +633,8 @@ const double kCardRadius = 16;
 /// from the live window at takeoff instead.
 ({double width, double? height}) callWindowSize(
     UnifiedCall call, Size screen) {
-  final wideVideo = call.video && call.phase == CallPhase.active;
+  final wideVideo =
+      (call.video || call.remoteVideo) && call.phase == CallPhase.active;
   if (wideVideo) {
     return (
       width: (screen.width - 96).clamp(320.0, 880.0),
@@ -827,6 +831,10 @@ class CallWindow extends StatelessWidget {
         ],
       );
     }
+    // The camera is reachable in every direct call: a call that started
+    // on voice only turns the device on here (renegotiation), so the
+    // button shows even before the initial `video` flag exists.
+    final cameraLive = call.video && !call.cameraOff;
     return Row(mainAxisAlignment: MainAxisAlignment.center, children: [
       _roundBtn(
           call.muted ? Colors.red : null,
@@ -834,13 +842,14 @@ class CallWindow extends StatelessWidget {
           call.muted ? 'Включить микрофон' : 'Выключить микрофон',
           () => call.onToggleMute()),
       const SizedBox(width: 12),
-      if (call.video)
+      if (call.kind == CallKind.direct || call.video) ...[
         _roundBtn(
-            call.cameraOff ? Colors.red : null,
+            call.video && call.cameraOff ? Colors.red : null,
             call.cameraOff ? Icons.videocam_off : Icons.videocam,
-            call.cameraOff ? 'Включить камеру' : 'Выключить камеру',
+            cameraLive ? 'Выключить камеру' : 'Включить камеру',
             () => call.onToggleCamera()),
-      if (call.video) const SizedBox(width: 12),
+        const SizedBox(width: 12),
+      ],
       if (call.kind == CallKind.direct &&
           call.video &&
           call.phase == CallPhase.active)
@@ -1285,9 +1294,13 @@ class MiniCallControlBar extends StatelessWidget {
   final GestureDragEndCallback onDragEnd;
 
   /// Camera is a real toggle where the engine supports it; where the call
-  /// is audio-only the slot stays put, disabled (§9).
+  /// is audio-only the slot stays put, disabled (§9). Direct is special:
+  /// the late camera enable (renegotiation) makes the toggle reachable in
+  /// a voice-only call — pressing it turns the device on.
   bool get _cameraAvailable =>
-      call.kind == CallKind.serverVoice || call.video;
+      call.kind == CallKind.serverVoice ||
+      call.kind == CallKind.direct ||
+      (call.kind == CallKind.group && call.video);
 
   String get _endTooltip => switch (call.kind) {
         CallKind.direct => 'Завершить звонок',

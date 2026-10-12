@@ -65,11 +65,14 @@ class ActiveCall {
     bool? remoteVideo,
     bool? linkDown,
     bool? minimized,
+    bool? video,
   }) =>
       ActiveCall(
         callId: callId,
         peerNick: peerNick,
-        video: video,
+        // Mutable: the camera can be enabled midway through a call
+        // (renegotiation, voice-channel behavior).
+        video: video ?? this.video,
         outgoing: outgoing,
         phase: phase ?? this.phase,
         muted: muted ?? this.muted,
@@ -141,6 +144,16 @@ class CallState extends Notifier<ActiveCall?> {
   /// transport keeps running untouched (dry ring) until decline restores
   /// it or an atomic switch ends it. Null in the common case.
   ActiveCall? _displaced;
+
+  /// Video-only capture from a mid-call camera enable: the call started
+  /// as a voice channel and the video track joined later, in a separate
+  /// getUserMedia. Disposed with the transport like [_local].
+  MediaStream? _localVideo;
+
+  /// Mid-call renegotiation (late camera enable) is serialized: one
+  /// offer/answer round at a time, the progress signalled by [_renegoWait].
+  bool _renegoLock = false;
+  Completer<bool>? _renegoWait;
 
   /// A remote video track has arrived at least once. Tracked separately from
   /// [ActiveCall.remoteVideo] because _prepareIncoming rebuilds the ringing
@@ -465,29 +478,59 @@ class CallState extends Notifier<ActiveCall?> {
 
   /// Camera/mic capture. flutter_webrtc on desktop has no per-device
   /// capability query and drivers open "whatever they can", so the probe
-  /// asks candidate profiles one by one, reads the REAL result via
-  /// getSettings(), keeps the best capture (most pixels, then fps) and
-  /// frees the rest. The winner is recommended to the tier logic as the
-  /// device's actual mode (capture height from the driver, not guessed).
+  /// asks candidate profiles one by one, reads the REAL result (frames via
+  /// a temporary renderer), keeps the best capture and frees the rest. The
+  /// winner is recommended to the tier logic as the device's actual mode
+  /// (capture height from the driver, not guessed).
   Future<MediaStream> _openLocalMedia(bool video) async {
     // Echo cancellation, noise suppression and auto gain stay on; the
     // high-pass filter removes desk/fan rumble that costs bits and clarity.
+    final audio = await _micConstraints();
+    if (!video) {
+      return navigator.mediaDevices
+          .getUserMedia({'audio': audio, 'video': false});
+    }
+    // Call start: microphone and camera ride one stream. A null ladder
+    // result (device busy in another instance, or nothing delivered
+    // frames) means the call goes audio-only and stays a receiver.
+    final s = await _captureCamera(audio);
+    if (s == null) {
+      dlog('camera unavailable at dial, joining audio-only');
+      return navigator.mediaDevices
+          .getUserMedia({'audio': audio, 'video': false});
+    }
+    if (s.getAudioTracks().isNotEmpty) return s;
+    return navigator.mediaDevices
+        .getUserMedia({'audio': audio, 'video': false});
+  }
+
+  /// The user-picked (or OBS-preferred) microphone. A stale pick (e.g.
+  /// NVIDIA Broadcast was closed) falls back to the platform default
+  /// silently: an exact-miss must not take the whole call down.
+  Future<Map<String, dynamic>> _micConstraints() async {
     final audio = <String, dynamic>{
       'echoCancellation': true,
       'noiseSuppression': true,
       'autoGainControl': true,
       'highpassFilter': true,
     };
-    // The user-picked (or OBS-preferred) microphone. A stale pick (e.g.
-    // NVIDIA Broadcast was closed) falls back to the platform default
-    // silently: an exact-miss must not take the whole call down.
     final micId = await MediaPrefs.preferredMicId();
     if (micId != null && micId.isNotEmpty) {
       audio['deviceId'] = {'exact': micId};
     }
+    return audio;
+  }
+
+  /// Open the camera ONLY (no audio) through the probe ladder. Used by
+  /// [_openLocalMedia] with the mic constraints attached, and alone for a
+  /// late camera enable mid-call ([enableCamera]). Returns null when the
+  /// camera cannot deliver: another grchat instance owns it (CameraLock),
+  /// every profile is refused, or the last-resort open throws. Callers
+  /// decide the fallback; the lock is held for the whole call otherwise.
+  Future<MediaStream?> _captureCamera(Map<String, dynamic>? audio) async {
     // The user-picked (or OBS-preferred) camera; empty id = the platform
     // default, every probe candidate then carries it.
-    final camId = video ? await MediaPrefs.preferredCameraId() : null;
+    final camId = await MediaPrefs.preferredCameraId();
     Map<String, dynamic> cam(int w, int h, int fps) {
       final c = <String, dynamic>{
         'width': {'ideal': w},
@@ -500,17 +543,12 @@ class CallState extends Notifier<ActiveCall?> {
       return c;
     }
 
-    if (!video) {
-      return navigator.mediaDevices
-          .getUserMedia({'audio': audio, 'video': false});
-    }
     // Cross-process arbitration: another grchat instance may already own
     // the camera. Rather than both sides "opening" the device and getting
-    // zero frames, this instance goes audio-only and stays a receiver.
+    // zero frames, the caller goes audio-only and stays a receiver.
     if (!CameraLock.acquire()) {
-      dlog('camera busy (another grchat instance owns it), joining audio-only');
-      return navigator.mediaDevices
-          .getUserMedia({'audio': audio, 'video': false});
+      dlog('camera busy (another grchat instance owns it), staying audio-only');
+      return null;
     }
     const candidates = [(1920, 1080, 30), (1280, 720, 60), (1280, 720, 30),
         (640, 480, 30)];
@@ -519,8 +557,9 @@ class CallState extends Notifier<ActiveCall?> {
     for (final c in candidates) {
       MediaStream s;
       try {
-        s = await navigator.mediaDevices
-            .getUserMedia({'audio': audio, 'video': cam(c.$1, c.$2, c.$3)});
+        final constraints = <String, dynamic>{'video': cam(c.$1, c.$2, c.$3)};
+        if (audio != null) constraints['audio'] = audio;
+        s = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (e) {
         // The ask was refused outright: the mode does not exist at all.
         dlog('camera probe ${c.$1}x${c.$2}@${c.$3} refused ($e)');
@@ -553,7 +592,7 @@ class CallState extends Notifier<ActiveCall?> {
       }
       await s.dispose();
     }
-    final stream = chosen;
+    var stream = chosen;
     if (stream == null) {
       // Every candidate "opened" but delivered nothing (driver wedged, a
       // foreign holder, or the persisted device is gone). Last resort
@@ -561,13 +600,19 @@ class CallState extends Notifier<ActiveCall?> {
       // a dead pick must not poison the fallback either.
       dlog('camera: no profile delivered frames, falling back');
       final profile = cam(1280, 720, 30);
-      final Map<String, dynamic> video;
       if (profile['deviceId'] != null) {
         profile.remove('deviceId');
         dlog('camera fallback: persisted deviceId dropped');
       }
-      video = profile;
-      return navigator.mediaDevices.getUserMedia({'audio': audio, 'video': video});
+      try {
+        final constraints = <String, dynamic>{'video': profile};
+        if (audio != null) constraints['audio'] = audio;
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (e) {
+        CameraLock.release();
+        dlog('camera fallback failed: $e');
+        return null;
+      }
     }
     // TRUE capture height for the tier scale: verified by actual frames.
     if (realH > _captureHeight) {
@@ -859,6 +904,100 @@ class CallState extends Notifier<ActiveCall?> {
     _pendingIce.clear();
   }
 
+  /// All camera tracks across the call-start stream ([_local]) and the
+  /// late-enabled capture ([_localVideo]), deduped by track id.
+  List<MediaStreamTrack> _cameraTracks() {
+    final byId = <String, MediaStreamTrack>{};
+    for (final s in [_local, _localVideo]) {
+      for (final t in s?.getVideoTracks() ?? const []) {
+        byId[t.id] = t;
+      }
+    }
+    return byId.values.toList();
+  }
+
+  /// Voice-channel behavior: turn the camera ON in an ongoing call. OFF is
+  /// always cheap (track.enabled, no renegotiation); ON needs a real one —
+  /// a fresh offer rides `call_renegotiate` over the same ICE transport,
+  /// the peer replies with the same push, answer:true.
+  Future<void> enableCamera() async {
+    final cur = state;
+    final pc = _pc;
+    if (cur == null ||
+        pc == null ||
+        cur.video ||
+        cur.phase != CallPhase.active ||
+        _screen != null) {
+      return;
+    }
+    if (_renegoLock) {
+      dlog('enable camera: renegotiation already running, skipped');
+      return;
+    }
+    _renegoLock = true;
+    try {
+      final cam = await _captureCamera(null);
+      if (cam == null) {
+        dlog('enable camera: device unavailable');
+        _notice('Камера недоступна или занята другим окном grchat');
+        return;
+      }
+      _localVideo = cam;
+      final track = cam.getVideoTracks().first;
+      // Adopt the track into the main local stream where toggles and the
+      // screen-share switchback expect to find it.
+      try {
+        await _local?.addTrack(track);
+      } catch (_) {
+        // Some platforms refuse cross-stream adoption; [_cameraTracks]
+        // covers the extra container either way.
+      }
+      final sender = await pc.addTrack(track, cam);
+      _videoSender = sender;
+      dlog('late camera enabled: track=${track.id}');
+      state = state?.copyWith(video: true, cameraOff: false);
+      _localR = RTCVideoRenderer();
+      await _localR!.initialize();
+      _localR!.srcObject = cam;
+      // One offer/answer round on top of the live transport. The peer's
+      // answer arrives as a push and completes the completer.
+      final wait = Completer<bool>();
+      _renegoWait = wait;
+      try {
+        final rawOffer = await pc.createOffer({});
+        final offer = RTCSessionDescription(
+            tuneOpusSdp(rawOffer.sdp ?? ''), rawOffer.type);
+        await pc.setLocalDescription(offer);
+        final sdp = (await pc.getLocalDescription())?.sdp ?? '';
+        dlog('renegotiate offer ${SdpSummary.parse(sdp)}');
+        await ref
+            .read(callApiProvider)
+            .renegotiate(callId: cur.callId, sdp: sdp);
+        final ok = await wait.future.timeout(
+            const Duration(seconds: 15),
+            onTimeout: () => false);
+        if (!ok) {
+          dlog('renegotiation answer missing: peer stays video-less');
+          // Keep our capture alive: the frames are just muted for the
+          // peer until they answer a later renegotiation.
+          _notice('Собеседник не подтвердил камеру');
+        } else {
+          dlog('renegotiation complete: video m-line live');
+        }
+      } catch (e) {
+        dlog('renegotiate offer failed: $e');
+        _notice('Не вышло включить камеру');
+      }
+      _startQuality();
+    } catch (e) {
+      dlog('enable camera failed: $e');
+      _notice('Не вышло включить камеру');
+    } finally {
+      _renegoWait = null;
+      _renegoLock = false;
+    }
+  }
+
   void toggleMute() {
     final cur = state;
     if (cur == null) return;
@@ -867,11 +1006,21 @@ class CallState extends Notifier<ActiveCall?> {
     state = cur.copyWith(muted: muted);
   }
 
-  void toggleCamera() {
+  /// Camera toggle, now also the entry point for the late enable: a call
+  /// without a local video track routes to [enableCamera] (renegotiation),
+  /// a call with one stays on the cheap enabled flip.
+  Future<void> toggleCamera() async {
     final cur = state;
-    if (cur == null || !cur.video) return;
+    if (cur == null) return;
+    if (_cameraTracks().isEmpty) {
+      if (cur.phase != CallPhase.active || cur.sharingScreen) return;
+      await enableCamera();
+      return;
+    }
     final off = !cur.cameraOff;
-    _local?.getVideoTracks().forEach((t) => t.enabled = !off);
+    for (final t in _cameraTracks()) {
+      t.enabled = !off;
+    }
     state = cur.copyWith(cameraOff: off);
   }
 
@@ -915,9 +1064,9 @@ class CallState extends Notifier<ActiveCall?> {
         _holdLearning();
         _applyTier();
       } else {
-        final cam = _local?.getVideoTracks();
+        final cam = _cameraTracks();
         final sender = _videoSender;
-        if (sender != null && cam != null && cam.isNotEmpty) {
+        if (sender != null && cam.isNotEmpty) {
           await sender.replaceTrack(cam.first);
         }
         for (final t in _screen!.getTracks()) {
@@ -1023,6 +1172,8 @@ class CallState extends Notifier<ActiveCall?> {
         _onAccepted(ev);
       case 'ice':
         _onRemoteIce(ev);
+      case 'call_renegotiate':
+        _onRenegotiate(ev);
       case 'call_ended':
         _onEnded(ev);
     }
@@ -1043,6 +1194,67 @@ class CallState extends Notifier<ActiveCall?> {
         room: marker.room,
         video: marker.video,
         fromNick: (ev['from_nick'] ?? '?').toString());
+  }
+
+  /// Peer renegotiation. Two shapes, separated by the `answer` flag:
+  /// • offer (peer enabled their camera): apply, answer back;
+  /// • answer (to OUR earlier offer): completes [enableCamera]'s wait.
+  void _onRenegotiate(Map<String, dynamic> ev) {
+    final cur = state;
+    if (cur == null || ev['call_id'] != cur.callId || _pc == null) return;
+    if ((ev['answer'] ?? false) == true) {
+      unawaited(_applyRenegeAnswer(ev));
+    } else {
+      unawaited(_applyRenegeOffer(ev));
+    }
+  }
+
+  Future<void> _applyRenegeAnswer(Map<String, dynamic> ev) async {
+    final wait = _renegoWait;
+    try {
+      final sdp = (ev['sdp'] ?? '').toString();
+      if (sdp.isEmpty) throw StateError('empty renegotiate answer');
+      dlog('renegotiate answer ${SdpSummary.parse(sdp)}');
+      await _pc?.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
+      _remoteDescSet = true;
+      await _flushRemoteIce();
+      if (wait != null && !wait.isCompleted) wait.complete(true);
+    } catch (e) {
+      dlog('renegotiate answer failed: $e');
+      if (wait != null && !wait.isCompleted) wait.complete(false);
+    }
+  }
+
+  /// Peer enabled the camera mid-call: same shape as the initial answer
+  /// handshake, but with roles swapped — we set their offer, answer, and
+  /// send the answer back through the same verb.
+  Future<void> _applyRenegeOffer(Map<String, dynamic> ev) async {
+    final cur = state;
+    final pc = _pc;
+    if (cur == null || pc == null || cur.phase != CallPhase.active) return;
+    try {
+      final sdp = (ev['sdp'] ?? '').toString();
+      if (sdp.isEmpty) return;
+      dlog('peer renegotiate offer ${SdpSummary.parse(sdp)}');
+      // Mirror the dial-time rule: a video m-line in the offer makes this
+      // a video call for us too (wide window, camera button available).
+      state = state?.copyWith(video: state!.video || sdp.contains('m=video'));
+      await pc.setRemoteDescription(RTCSessionDescription(sdp, 'offer'));
+      _remoteDescSet = true;
+      await _flushRemoteIce();
+      final rawAnswer = await pc.createAnswer({});
+      final answer = RTCSessionDescription(
+          tuneOpusSdp(rawAnswer.sdp ?? ''), rawAnswer.type);
+      await pc.setLocalDescription(answer);
+      final out = (await pc.getLocalDescription())?.sdp ?? '';
+      dlog('renegotiate answer ${SdpSummary.parse(out)}');
+      await ref
+          .read(callApiProvider)
+          .renegotiate(callId: cur.callId, sdp: out, answer: true);
+      dlog('peer renegotiation answered');
+    } catch (e) {
+      dlog('peer renegotiate failed: $e');
+    }
   }
 
   /// Caller side: the answer SDP must become the remote description,
@@ -1276,6 +1488,10 @@ class CallState extends Notifier<ActiveCall?> {
     _remoteVideoArrived = false;
     _stopQuality();
     _videoSender = null;
+    // A pending late-camera wait must not outlive the call.
+    _renegoWait?.complete(false);
+    _renegoWait = null;
+    _renegoLock = false;
     if (_screen != null) {
       for (final t in _screen!.getTracks()) {
         try {
@@ -1295,6 +1511,10 @@ class CallState extends Notifier<ActiveCall?> {
       await _local?.dispose();
     } catch (_) {}
     _local = null;
+    try {
+      await _localVideo?.dispose();
+    } catch (_) {}
+    _localVideo = null;
     // Video cameras serve one grabber on Windows; free our claim so the
     // next call (here or in another instance) can take the device.
     CameraLock.release();

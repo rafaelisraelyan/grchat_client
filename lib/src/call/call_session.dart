@@ -103,6 +103,7 @@ class UnifiedCall {
       required this.friendlyError,
       this.switchDetail,
       this.spotlight,
+      this.remoteVideo = false,
       required this.presentation});
   final CallKind kind;
   final String sessionId;
@@ -137,6 +138,10 @@ class UnifiedCall {
   /// Call-waiting context for the incoming window (§31–§33), e.g.
   /// 'Вы сейчас в голосовом канале «Studio».' Null = free, plain accept.
   final String? switchDetail;
+
+  /// A remote video track arrived (late peer camera in a voice-started
+  /// call): opens the wide hero view even when this side never sent video.
+  final bool remoteVideo;
 
   /// Live pill preview (§61): the remote peer to watch while minimized.
   /// P2P = the peer, always (§18). Group/voice = stabilized active remote
@@ -270,6 +275,7 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
         incoming ? coord.switchWarningFor(MediaSessionKind.direct) : null,
     // P2P spotlight is always the remote peer (§18), even mid-sentence.
     spotlight: remote,
+    remoteVideo: call.remoteVideo,
   );
 }
 

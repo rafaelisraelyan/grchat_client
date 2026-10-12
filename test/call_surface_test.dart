@@ -83,7 +83,7 @@ void main() {
       expect(find.text('Вызов…'), findsOneWidget);
     });
 
-    testWidgets('active audio has mic+end, no camera upgrade',
+    testWidgets('active audio keeps the camera reachable (late enable)',
         (t) async {
       await _pumpHost(
           t,
@@ -94,7 +94,10 @@ void main() {
       expect(find.text('Подключено · 00:00'), findsOneWidget);
       expect(find.byIcon(Icons.mic), findsOneWidget);
       expect(find.byIcon(Icons.call_end), findsOneWidget);
-      expect(find.byIcon(Icons.videocam), findsNothing);
+      // Voice-channel behavior: the camera button is present in an
+      // audio-only call, pressing it renegotiates the device in.
+      expect(find.byIcon(Icons.videocam), findsOneWidget);
+      expect(find.byTooltip('Включить камеру'), findsOneWidget);
     });
 
     testWidgets('video without remote track shows avatar',

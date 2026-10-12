@@ -53,6 +53,21 @@ class CallApi {
     _throwIfError(r);
   }
 
+  /// Mid-call renegotiation (late camera enable, P2P): a fresh offer rides
+  /// this verb to the peer, the peer's answer comes back as the same push
+  /// with `answer:true` (see CallState._onRenegotiate). Group calls
+  /// negotiate through the SFU and never use this.
+  Future<void> renegotiate(
+      {required String callId, required String sdp, bool answer = false}) async {
+    final r = await _conn.request('call_renegotiate', fields: {
+      ..._auth,
+      'call_id': callId,
+      'sdp': sdp,
+      'answer': answer,
+    });
+    _throwIfError(r);
+  }
+
   Future<void> hangup(String callId) async {
     final r = await _conn.request('call_hangup',
         fields: {..._auth, 'call_id': callId});
