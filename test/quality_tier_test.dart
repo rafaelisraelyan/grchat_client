@@ -473,6 +473,16 @@ void main() {
     });
   });
 
+  group('frameRateConstraint (mandatory-min probe §fork-decision)', () {
+    test('default shape is ideal (today behaviour)', () {
+      expect(frameRateConstraint(30, mandatory: false), {'ideal': 30});
+    });
+
+    test('mandatory shape uses min: incapable stacks must refuse', () {
+      expect(frameRateConstraint(60, mandatory: true), {'min': 60});
+    });
+  });
+
   group('FpsCapLearn (capture fps floor)', () {
     test('commits only after two stable below-tier ticks', () {
       final l = FpsCapLearn();

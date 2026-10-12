@@ -50,6 +50,14 @@ class TierParams {
   final int maxBitrate;
 }
 
+/// frameRate constraint shape (§mandatory-min probe). 'ideal' lets the
+/// DirectShow stack open ANY mode it can (historically the 15-fps default
+/// seat); 'min' makes the rate part of the contract - an incapable stack
+/// must refuse the call (OverconstrainedError) instead of silently
+/// downgrading to 15.
+Map<String, dynamic> frameRateConstraint(int fps, {required bool mandatory}) =>
+    mandatory ? {'min': fps} : {'ideal': fps};
+
 /// [captureHeight]/[captureFps] come from the track settings; 0 = unknown.
 /// A tier never upscales and never asks for more fps than the camera gives.
 TierParams tierParams(VideoTier t,

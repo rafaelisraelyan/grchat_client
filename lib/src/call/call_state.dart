@@ -604,11 +604,24 @@ class CallState extends Notifier<ActiveCall?> {
     // The user-picked (or OBS-preferred) camera; empty id = the platform
     // default, every probe candidate then carries it.
     final camId = await MediaPrefs.preferredCameraId();
-    Map<String, dynamic> cam(int w, int h, int fps) {
+    // 10-minute fork-decision probe (§mandatory-min): with
+    // GRCHAT_VIDEOMINFPS=1 every candidate asks frameRate as a mandatory
+    // min instead of an ideal. Two outcomes decide the libwebrtc fork:
+    // the plugin honours it -> fps lands 30/60, the DS chooser was the
+    // whole budget and constraints suffice; it ignores it (or the DS
+    // capability list has no >=min mode) -> flat 15 persists with an
+    // expressed min and the fork is the only road.
+    final mandatoryMin =
+        (int.tryParse(const String.fromEnvironment('GRCHAT_VIDEOMINFPS')) ??
+                0) >
+            0;
+    if (mandatoryMin) dlog('video mandatory-min probe active');
+    Map<String, dynamic> cam(int w, int h, int fps, {bool mandatory = false}) {
       final c = <String, dynamic>{
         'width': {'ideal': w},
         'height': {'ideal': h},
-        'frameRate': {'ideal': fps},
+        'frameRate': frameRateConstraint(fps,
+            mandatory: mandatory && mandatoryMin),
       };
       if (camId != null && camId.isNotEmpty) {
         c['deviceId'] = {'ideal': camId};
@@ -623,14 +636,20 @@ class CallState extends Notifier<ActiveCall?> {
       dlog('camera busy (another grchat instance owns it), staying audio-only');
       return null;
     }
-    const candidates = [(1920, 1080, 30), (1280, 720, 60), (1280, 720, 30),
-        (640, 480, 30)];
+    const candidates = [
+      (1920, 1080, 30),
+      (1280, 720, 60),
+      (1280, 720, 30),
+      (640, 480, 30),
+    ];
     MediaStream? chosen;
     int realH = 0;
     for (final c in candidates) {
       MediaStream s;
       try {
-        final constraints = <String, dynamic>{'video': cam(c.$1, c.$2, c.$3)};
+        final constraints = <String, dynamic>{
+          'video': cam(c.$1, c.$2, c.$3, mandatory: true)
+        };
         if (audio != null) constraints['audio'] = audio;
         s = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (e) {
@@ -672,6 +691,9 @@ class CallState extends Notifier<ActiveCall?> {
       // keeps the call connectable — and drops the persisted deviceId:
       // a dead pick must not poison the fallback either.
       dlog('camera: no profile delivered frames, falling back');
+      // The fallback must stay guarantee-compatible: an ask with the same
+      // mandatory min that starved the ladder would starve here too, so
+      // this one keeps the classic ideal shape.
       final profile = cam(1280, 720, 30);
       if (profile['deviceId'] != null) {
         profile.remove('deviceId');
