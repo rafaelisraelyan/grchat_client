@@ -302,14 +302,20 @@ class CallState extends Notifier<ActiveCall?> {
       _remoteR?.srcObject ??= remote;
       if (track.kind == 'video') {
         _remoteVideoArrived = true;
-        // The renderer was bound while the stream was still audio-only;
-        // its native sink never saw the late-added video track (reneg-
-        // negotiated late camera). Force a re-bind: without it the engine
-        // decodes frames while the texture stays black.
+        // The video track can ride its OWN msid (late camera enable binds
+        // a fresh gUM stream, the SDP then carries that id), so the renderer
+        // must point at the stream that actually holds the video track —
+        // the old audio stream's native video_tracks() stays empty and the
+        // texture stays black even while the engine decodes frames.
         try {
-          _remoteR?.srcObject = remote;
-        } catch (_) {}
-        dlog('remote video rebind (late track ${track.id})');
+          final vs =
+              ev.streams.isNotEmpty ? ev.streams.first : remote;
+          _remoteR?.srcObject = vs;
+          dlog('remote video rebind to stream '
+              '${vs.id} (late track ${track.id})');
+        } catch (e) {
+          dlog('remote video rebind failed: $e');
+        }
         state = state?.copyWith(remoteVideo: true);
       } else {
         state = state?.copyWith();
