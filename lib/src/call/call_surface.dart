@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'call_diagnostics.dart' show dlog;
+
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../widgets/avatar.dart';
@@ -39,7 +40,9 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// One normalized progress drives everything (§28): rect, radius,
   /// elevation and content staging. 380ms, emphasized but snappy (§26).
   late final AnimationController _morph = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 380));
+    vsync: this,
+    duration: const Duration(milliseconds: 380),
+  );
 
   /// Session the morph belongs to + last settled minimized value.
   /// A new session snaps instead of animating from a stale position.
@@ -76,8 +79,7 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     _pipTick.value++;
   }
 
-  void _onPipDragUpdate(
-      DragUpdateDetails d, Size mediaArea, Size pipSize) {
+  void _onPipDragUpdate(DragUpdateDetails d, Size mediaArea, Size pipSize) {
     if (_pipDragPos == null) return;
     _pipDragPos = clampCardPos(_pipDragPos! + d.delta, mediaArea, pipSize);
     _pipTick.value++;
@@ -86,14 +88,20 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   void _onPipDragEnd(Size mediaArea, Size pipSize) {
     if (_pipDragPos == null) return;
     final rect = Rect.fromLTWH(
-        _pipDragPos!.dx, _pipDragPos!.dy, pipSize.width, pipSize.height);
+      _pipDragPos!.dx,
+      _pipDragPos!.dy,
+      pipSize.width,
+      pipSize.height,
+    );
     // Magnetic snap AFTER release only (§13–§15): nearest edge wins, the
     // offset along it is preserved (§60); no snap during the drag (§11).
     _pipDock = snapDock(rect, mediaArea, pipSize);
     _pipSnapFrom = rect;
     _pipSnapTo = dockRect(_pipDock, mediaArea, pipSize);
-    dlog('SELF_PREVIEW_DRAG_END edge=${_pipDock.edge} '
-        'offset=${_pipDock.offset.toStringAsFixed(2)}');
+    dlog(
+      'SELF_PREVIEW_DRAG_END edge=${_pipDock.edge} '
+      'offset=${_pipDock.offset.toStringAsFixed(2)}',
+    );
     _pipDragPos = null;
     _pipTick.value++;
     _pipSnap.forward(from: 0);
@@ -111,14 +119,11 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   SelfPipZone _pipHoverZone = SelfPipZone.center;
 
   /// Interaction mode (§22): a single enum, never a bool soup. Derived
-  /// from the active gesture + hovered/resize zone.
+  /// from the active gesture + hovered/resize zone. Corners carry resize;
+  /// straight edges are plain drag (§1–§5, §32).
   _PipMode get _pipMode {
     if (_pipResizeZone != null) {
       return switch (_pipResizeZone!) {
-        SelfPipZone.left => _PipMode.resizingLeft,
-        SelfPipZone.right => _PipMode.resizingRight,
-        SelfPipZone.top => _PipMode.resizingTop,
-        SelfPipZone.bottom => _PipMode.resizingBottom,
         SelfPipZone.topLeft => _PipMode.resizingTopLeft,
         SelfPipZone.topRight => _PipMode.resizingTopRight,
         SelfPipZone.bottomLeft => _PipMode.resizingBottomLeft,
@@ -132,7 +137,10 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// Resize START (§23): zone, start rect, start pointer; the running
   /// snap animation is stopped immediately (§16).
   void _onPipResizeStart(
-      Offset globalPointer, Rect startRect, SelfPipZone zone) {
+    Offset globalPointer,
+    Rect startRect,
+    SelfPipZone zone,
+  ) {
     _pipSnap.stop();
     _pipSnapFrom = null;
     _pipSnapTo = null;
@@ -140,22 +148,24 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     _pipResizeStart = startRect;
     _pipResizeRect = startRect;
     _pipResizePointer = globalPointer;
-    dlog('SELF_PREVIEW_RESIZE_START zone=$zone rect=${startRect.width.toStringAsFixed(0)}x${startRect.height.toStringAsFixed(0)}');
+    dlog(
+      'SELF_PREVIEW_RESIZE_START zone=$zone rect=${startRect.width.toStringAsFixed(0)}x${startRect.height.toStringAsFixed(0)}',
+    );
     _pipTick.value++;
   }
 
   /// Resize UPDATE (§24–§25): rect derived from startRect + TOTAL delta
   /// every frame — no accumulated drift, no implicit tween lag (§8–§9).
-  void _onPipResizeUpdate(
-      Offset globalPos, Size mediaArea, Size pipSizeStart) {
+  void _onPipResizeUpdate(Offset globalPos, Size mediaArea, Size pipSizeStart) {
     if (_pipResizeZone == null) return;
     final delta = globalPos - _pipResizePointer;
     _pipResizeRect = selfPipResizedRect(
-        start: _pipResizeStart,
-        pointerDelta: delta,
-        zone: _pipResizeZone!,
-        dock: _pipDock.edge,
-        media: mediaArea);
+      start: _pipResizeStart,
+      pointerDelta: delta,
+      zone: _pipResizeZone!,
+      dock: _pipDock.edge,
+      media: mediaArea,
+    );
     _pipUserW = _pipResizeRect!.width;
     _pipTick.value++;
   }
@@ -173,33 +183,43 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       return;
     }
     final maxX = math.max(
-        kDockMargin, mediaArea.width - kDockMargin - rect.width);
+      kDockMargin,
+      mediaArea.width - kDockMargin - rect.width,
+    );
     final maxY = math.max(
-        kDockMargin, mediaArea.height - kDockMargin - rect.height);
+      kDockMargin,
+      mediaArea.height - kDockMargin - rect.height,
+    );
     double off;
     switch (_pipDock.edge) {
       case DockEdge.left || DockEdge.right:
         off = (maxY <= kDockMargin)
             ? 0.5
-            : ((rect.top - kDockMargin) / (maxY - kDockMargin))
-                .clamp(0.0, 1.0);
+            : ((rect.top - kDockMargin) / (maxY - kDockMargin)).clamp(0.0, 1.0);
       case DockEdge.top || DockEdge.bottom:
         off = (maxX <= kDockMargin)
             ? 0.5
-            : ((rect.left - kDockMargin) / (maxX - kDockMargin))
-                .clamp(0.0, 1.0);
+            : ((rect.left - kDockMargin) / (maxX - kDockMargin)).clamp(
+                0.0,
+                1.0,
+              );
     }
     _pipDock = DockSpot(_pipDock.edge, off);
-    final settled =
-        dockRect(_pipDock, mediaArea, Size(rect.width, rect.height));
+    final settled = dockRect(
+      _pipDock,
+      mediaArea,
+      Size(rect.width, rect.height),
+    );
     if (settled.topLeft != rect.topLeft) {
       // Small clamp correction animates (§10); the resize itself never did.
       _pipSnapFrom = rect;
       _pipSnapTo = settled;
       _pipSnap.forward(from: 0);
     }
-    dlog('SELF_PREVIEW_RESIZE_END w=${rect.width.toStringAsFixed(0)} '
-        'dock=$_pipDock');
+    dlog(
+      'SELF_PREVIEW_RESIZE_END w=${rect.width.toStringAsFixed(0)} '
+      'dock=$_pipDock',
+    );
     _pipTick.value++;
   }
 
@@ -214,12 +234,9 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     }
     if (_pipDragPos != null) {
       final safe = clampCardPos(_pipDragPos!, mediaArea, pipSize);
-      return Rect.fromLTWH(
-          safe.dx, safe.dy, pipSize.width, pipSize.height);
+      return Rect.fromLTWH(safe.dx, safe.dy, pipSize.width, pipSize.height);
     }
-    if (_pipSnapFrom != null &&
-        _pipSnapTo != null &&
-        !_pipSnap.isCompleted) {
+    if (_pipSnapFrom != null && _pipSnapTo != null && !_pipSnap.isCompleted) {
       return Rect.lerp(_pipSnapFrom!, _pipSnapTo!, _pipEase.value)!;
     }
     return dockRect(_pipDock, mediaArea, pipSize);
@@ -232,7 +249,9 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   Rect? _snapFrom;
   Rect? _snapTo;
   late final AnimationController _snap = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 220));
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+  );
 
   /// Self-preview dock INSIDE the expanded video area. Same model as the
   /// mini card (edge + normalized offset, never bare x/y) but a separate
@@ -262,16 +281,24 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   }
 
   late final AnimationController _pipSnap = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 220));
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+  );
   late final Animation<double> _pipEase = CurvedAnimation(
-      parent: _pipSnap, curve: Curves.easeOutCubic);
+    parent: _pipSnap,
+    curve: Curves.easeOutCubic,
+  );
 
   /// Preview collapse clock (§23–§24, 220ms). The curved view drives the
   /// card height, the SizeTransition and the fade together.
   late final AnimationController _previewT = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 220));
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+  );
   late final Animation<double> _previewEase = CurvedAnimation(
-      parent: _previewT, curve: Curves.easeInOutCubic);
+    parent: _previewT,
+    curve: Curves.easeInOutCubic,
+  );
 
   /// Last seen app size for gesture handlers (no context there).
   Size _lastScreen = Size.zero;
@@ -307,12 +334,14 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   Rect _cardRect(Size screen) {
     final card = Size(kCardWidth, _cardHeight());
     if (_dragPos != null) {
-      return Rect.fromLTWH(
-          _dragPos!.dx, _dragPos!.dy, card.width, card.height);
+      return Rect.fromLTWH(_dragPos!.dx, _dragPos!.dy, card.width, card.height);
     }
     if (_snapFrom != null && _snapTo != null && _snap.isAnimating) {
-      return Rect.lerp(_snapFrom!, _snapTo!,
-          Curves.easeOutCubic.transform(_snap.value))!;
+      return Rect.lerp(
+        _snapFrom!,
+        _snapTo!,
+        Curves.easeOutCubic.transform(_snap.value),
+      )!;
     }
     return dockRect(_dock, screen, card);
   }
@@ -331,8 +360,7 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     if (_dragPos == null) return;
     final card = Size(kCardWidth, _cardHeight());
     setState(() {
-      _dragPos =
-          clampCardPos(_dragPos! + d.delta, _lastScreen, card);
+      _dragPos = clampCardPos(_dragPos! + d.delta, _lastScreen, card);
     });
   }
 
@@ -340,7 +368,11 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     if (_dragPos == null) return;
     final card = Size(kCardWidth, _cardHeight());
     final rect = Rect.fromLTWH(
-        _dragPos!.dx, _dragPos!.dy, card.width, card.height);
+      _dragPos!.dx,
+      _dragPos!.dy,
+      card.width,
+      card.height,
+    );
     _dock = snapDock(rect, _lastScreen, card);
     _snapFrom = rect;
     _snapTo = dockRect(_dock, _lastScreen, card);
@@ -375,49 +407,48 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       if (next == null) return;
       final redial = next;
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(
-            content: Text(redial.reason),
-            action: SnackBarAction(
-              label: 'Позвонить снова',
-              onPressed: () async {
-                ref.read(callRedialProvider.notifier).clear();
-                // A redial never kills a live session silently: free starts,
-                // anything else gets a toast, never a confirm dialog from
-                // a snackbar action.
-                final coord =
-                    ref.read(mediaCoordinatorProvider.notifier);
-                switch (coord.requestSlot('redial')) {
-                  case SessionRequest.free:
-                    try {
-                      final st =
-                          ref.read(callStateProvider.notifier);
-                      await st.startCall(
+          .showSnackBar(
+            SnackBar(
+              content: Text(redial.reason),
+              action: SnackBarAction(
+                label: 'Позвонить снова',
+                onPressed: () async {
+                  ref.read(callRedialProvider.notifier).clear();
+                  // A redial never kills a live session silently: free starts,
+                  // anything else gets a toast, never a confirm dialog from
+                  // a snackbar action.
+                  final coord = ref.read(mediaCoordinatorProvider.notifier);
+                  switch (coord.requestSlot('redial')) {
+                    case SessionRequest.free:
+                      try {
+                        final st = ref.read(callStateProvider.notifier);
+                        await st.startCall(
                           peerNick: redial.peerNick,
                           dmId: redial.dmId,
-                          video: redial.video);
-                    } catch (e) {
-                      if (context.mounted) {
-                        Toast.show(context, friendlyCallError(e));
+                          video: redial.video,
+                        );
+                      } catch (e) {
+                        if (context.mounted) {
+                          Toast.show(context, friendlyCallError(e));
+                        }
                       }
-                    }
-                  case SessionRequest.confirm:
-                    if (context.mounted) {
-                      Toast.show(
-                          context, 'Завершите текущий звонок');
-                    }
-                  case SessionRequest.busy:
-                    if (context.mounted) {
-                      Toast.show(
-                          context, 'Дождитесь переключения звонка');
-                    }
-                }
-              },
+                    case SessionRequest.confirm:
+                      if (context.mounted) {
+                        Toast.show(context, 'Завершите текущий звонок');
+                      }
+                    case SessionRequest.busy:
+                      if (context.mounted) {
+                        Toast.show(context, 'Дождитесь переключения звонка');
+                      }
+                  }
+                },
+              ),
             ),
-          ))
+          )
           .closed
           .then((_) {
-        ref.read(callRedialProvider.notifier).clear();
-      });
+            ref.read(callRedialProvider.notifier).clear();
+          });
     });
     _track(call);
     _lastScreen = MediaQuery.sizeOf(context);
@@ -490,10 +521,10 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         if (mini) {
-          ref.read(miniPreviewVisibleProvider.notifier).set(
-              ref.read(lastMiniPreviewProvider));
-          _previewT.value =
-              ref.read(lastMiniPreviewProvider) ? 1.0 : 0.0;
+          ref
+              .read(miniPreviewVisibleProvider.notifier)
+              .set(ref.read(lastMiniPreviewProvider));
+          _previewT.value = ref.read(lastMiniPreviewProvider) ? 1.0 : 0.0;
         } else {
           ref.read(lastMiniPreviewProvider.notifier).set(savePreview);
         }
@@ -503,9 +534,7 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     // flights leave it frozen. forward()/reverse() only schedule frames,
     // so build-driven is safe (same pattern as the morph itself).
     final wantPreview =
-        call.presentation == CallPresentationMode.miniWithPreview
-            ? 1.0
-            : 0.0;
+        call.presentation == CallPresentationMode.miniWithPreview ? 1.0 : 0.0;
     if (!_previewT.isAnimating && _previewT.value != wantPreview) {
       if (wantPreview > 0) {
         _previewT.forward();
@@ -513,8 +542,8 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
         _previewT.reverse();
       }
     }
-    final ringing = call.kind == CallKind.direct &&
-        call.phase == CallPhase.ringing;
+    final ringing =
+        call.kind == CallKind.direct && call.phase == CallPhase.ringing;
     final body = AnimatedBuilder(
       animation: Listenable.merge([_morph, _snap, _previewT]),
       builder: (ctx, _) {
@@ -523,55 +552,59 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
         // docked card): zero pixel churn, goldens untouched. Only
         // mid-flight uses the morph wrappers.
         if (t >= 1.0) {
-          return Stack(children: [
-            Positioned.fromRect(
-              rect: _cardRect(MediaQuery.sizeOf(ctx)),
-              child: MiniCallOverlay(
+          return Stack(
+            children: [
+              Positioned.fromRect(
+                rect: _cardRect(MediaQuery.sizeOf(ctx)),
+                child: MiniCallOverlay(
                   call: call,
                   secs: _secs,
                   preview: _previewEase,
                   onTogglePreview: _onTogglePreview,
                   onDragStart: _onDragStart,
                   onDragUpdate: _onDragUpdate,
-                  onDragEnd: _onDragEnd),
-            ),
-          ]);
+                  onDragEnd: _onDragEnd,
+                ),
+              ),
+            ],
+          );
         }
         if (t <= 0.0) {
-          return Stack(children: [
-            // Slight dim while ringing only; active calls never block chat.
-            if (ringing)
-              const IgnorePointer(
-                child: ModalBarrier(color: Colors.black38),
-              ),
-            Center(
-              child: CallbackShortcuts(
-                bindings: {
-                  // Esc minimizes, never hangs up (§48).
-                  const SingleActivator(LogicalKeyboardKey.escape):
-                      () => call.onSetMinimized(true),
-                },
-                child: Focus(
-                  autofocus: true,
-                  child: NotificationListener<SizeChangedLayoutNotification>(
-                    onNotification: (_) {
-                      // Post-layout report (never build): the next flight
-                      // takes off from exactly this box.
-                      _fromSize = _measureKey.currentContext?.size;
-                      return true;
-                    },
-                    child: SizeChangedLayoutNotifier(
-                      child: CallWindow(
+          return Stack(
+            children: [
+              // Slight dim while ringing only; active calls never block chat.
+              if (ringing)
+                const IgnorePointer(child: ModalBarrier(color: Colors.black38)),
+              Center(
+                child: CallbackShortcuts(
+                  bindings: {
+                    // Esc minimizes, never hangs up (§48).
+                    const SingleActivator(LogicalKeyboardKey.escape): () =>
+                        call.onSetMinimized(true),
+                  },
+                  child: Focus(
+                    autofocus: true,
+                    child: NotificationListener<SizeChangedLayoutNotification>(
+                      onNotification: (_) {
+                        // Post-layout report (never build): the next flight
+                        // takes off from exactly this box.
+                        _fromSize = _measureKey.currentContext?.size;
+                        return true;
+                      },
+                      child: SizeChangedLayoutNotifier(
+                        child: CallWindow(
                           key: _measureKey,
                           call: call,
                           secs: _secs,
-                          media: _mediaFor(call)),
+                          media: _mediaFor(call),
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ]);
+            ],
+          );
         }
         // Single-object morph (§17–§18, §64): one container flies
         // expanded-center → current dock while its box, radius and
@@ -583,12 +616,12 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
         final box = callWindowSize(call, screen);
         // Prefer the measured settled box (exact, resize-live); computed
         // width with a fallback height otherwise.
-        final fromSize =
-            _fromSize ?? Size(box.width, box.height ?? 360.0);
+        final fromSize = _fromSize ?? Size(box.width, box.height ?? 360.0);
         final fromRect = Rect.fromCenter(
-            center: screen.center(Offset.zero),
-            width: fromSize.width,
-            height: fromSize.height);
+          center: screen.center(Offset.zero),
+          width: fromSize.width,
+          height: fromSize.height,
+        );
         final dockRectNow = _cardRect(screen);
         final e = Curves.easeInOutCubic.transform(t); // §27
         final rect = Rect.lerp(fromRect, dockRectNow, e)!;
@@ -598,113 +631,122 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
         final titleOut = (1.0 - t / 0.3).clamp(0.0, 1.0);
         final barIn = ((t - 0.55) / 0.45).clamp(0.0, 1.0);
         final rider = _rider;
-        return Stack(key: const ValueKey('morph-surface'), children: [
-          // Slight dim while ringing only; active calls never block chat.
-          // Kept under the flying surface until it mostly left.
-          if (ringing && t < 0.5)
-            const IgnorePointer(
-              child: ModalBarrier(color: Colors.black38),
-            ),
-          Positioned.fromRect(
-            rect: rect,
-            child: Material(
-              color:
-                  Theme.of(ctx).colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(radius),
-              elevation: elev,
-              shadowColor: Colors.black.withValues(alpha: 0.5),
-              child: Container(
-                decoration: BoxDecoration(
-                  border: Border.all(
-                      color: Theme.of(ctx)
-                          .dividerColor
-                          .withValues(alpha: 0.5)),
-                  borderRadius: BorderRadius.circular(radius),
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: Stack(children: [
-                  // Rider fades with the collapse progress: minimizing
-                  // into a collapsed card flies the bar, not the video.
-                  Positioned.fill(
-                    child: Opacity(
-                      opacity: _previewEase.value,
-                      child: _riderFace(rider, call.title,
-                          _isWaiting(call) && rider == null),
+        return Stack(
+          key: const ValueKey('morph-surface'),
+          children: [
+            // Slight dim while ringing only; active calls never block chat.
+            // Kept under the flying surface until it mostly left.
+            if (ringing && t < 0.5)
+              const IgnorePointer(child: ModalBarrier(color: Colors.black38)),
+            Positioned.fromRect(
+              rect: rect,
+              child: Material(
+                color: Theme.of(ctx).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(radius),
+                elevation: elev,
+                shadowColor: Colors.black.withValues(alpha: 0.5),
+                child: Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: Theme.of(ctx).dividerColor.withValues(alpha: 0.5),
                     ),
+                    borderRadius: BorderRadius.circular(radius),
                   ),
-                  if (titleOut > 0)
-                    Positioned(
-                      top: 14,
-                      left: 18,
-                      right: 18,
-                      child: Opacity(
-                        opacity: titleOut,
-                        child: Text(call.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700)),
-                      ),
-                    ),
-                  if (barIn > 0)
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: Opacity(
-                        opacity: barIn,
-                        child: Container(
-                          padding: const EdgeInsets.fromLTRB(
-                              12, 16, 12, 8),
-                          decoration: const BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [
-                                Colors.transparent,
-                                Colors.black87,
-                              ],
-                            ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(
+                    children: [
+                      // Rider fades with the collapse progress: minimizing
+                      // into a collapsed card flies the bar, not the video.
+                      Positioned.fill(
+                        child: Opacity(
+                          opacity: _previewEase.value,
+                          child: _riderFace(
+                            rider,
+                            call.title,
+                            _isWaiting(call) && rider == null,
                           ),
-                          child: _pillMeta(
-                              name: rider?.nick ?? call.title,
-                              muted: rider?.muted ?? false,
-                              status: _pillStatus(call, _secs)),
                         ),
                       ),
-                    ),
-                ]),
+                      if (titleOut > 0)
+                        Positioned(
+                          top: 14,
+                          left: 18,
+                          right: 18,
+                          child: Opacity(
+                            opacity: titleOut,
+                            child: Text(
+                              call.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      if (barIn > 0)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: Opacity(
+                            opacity: barIn,
+                            child: Container(
+                              padding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
+                              decoration: const BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: [Colors.transparent, Colors.black87],
+                                ),
+                              ),
+                              child: _pillMeta(
+                                name: rider?.nick ?? call.title,
+                                muted: rider?.muted ?? false,
+                                status: _pillStatus(call, _secs),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-        ]);
+          ],
+        );
       },
     );
     // Session switch in progress (§57): veil with a spinner, no fake
     // "connected" state, media buttons untouchable until the new session
     // is live. Also serializes double-Accept: the buttons sit under this.
     if (!ref.watch(mediaCoordinatorProvider)) return body;
-    return Stack(children: [
-      body,
-      const ModalBarrier(color: Colors.black54),
-      Center(
-        child: Card(
-          child: Padding(
-            padding:
-                EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2)),
-              SizedBox(width: 12),
-              Text('Переключаем звонок…'),
-            ]),
+    return Stack(
+      children: [
+        body,
+        const ModalBarrier(color: Colors.black54),
+        Center(
+          child: Card(
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 12),
+                  Text('Переключаем звонок…'),
+                ],
+              ),
+            ),
           ),
         ),
-      ),
-    ]);
+      ],
+    );
   }
 
   /// Central area: direct keeps its hero/PiP/identity layout verbatim (§29);
@@ -723,8 +765,7 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     final st = ref.read(callStateProvider.notifier);
     final remote = st.remoteRenderer;
     final local = st.localRenderer;
-    final hasRemote =
-        (direct?.remoteVideo ?? false) && remote != null;
+    final hasRemote = (direct?.remoteVideo ?? false) && remote != null;
     // Remote video can arrive mid-call even when this side never sent
     // theirs (late peer camera): the hero view opens for that too.
     final videoNow = call.video || call.remoteVideo;
@@ -736,8 +777,13 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
 
   /// Active video: remote is the hero (§39); avatar until the track
   /// arrives (§41); local self-view is a floating draggable overlay (§40).
-  Widget _videoArea(BuildContext context, UnifiedCall call,
-      RTCVideoRenderer? remote, RTCVideoRenderer? local, bool hasRemote) {
+  Widget _videoArea(
+    BuildContext context,
+    UnifiedCall call,
+    RTCVideoRenderer? remote,
+    RTCVideoRenderer? local,
+    bool hasRemote,
+  ) {
     // Self preview lives ONLY for a real local capture (§22–§24): camera
     // off or capture-less states render NOTHING here — no black tile, no
     // placeholder, no frozen frame. Floating overlay so the remote
@@ -749,8 +795,9 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       children: [
         Container(
           decoration: BoxDecoration(
-              color: Colors.black,
-              borderRadius: BorderRadius.circular(12)),
+            color: Colors.black,
+            borderRadius: BorderRadius.circular(12),
+          ),
           clipBehavior: Clip.antiAlias,
           child: hasRemote
               // Same GlobalObjectKey as the pill/morph rider builder (§4):
@@ -758,19 +805,24 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
               // texture, so the frame never drops to black mid-flight.
               ? KeyedSubtree(
                   key: GlobalObjectKey(remote!),
-                  child: RTCVideoView(remote,
-                      objectFit: RTCVideoViewObjectFit
-                          .RTCVideoViewObjectFitContain))
+                  child: RTCVideoView(
+                    remote,
+                    objectFit:
+                        RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+                  ),
+                )
               : Center(
                   child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Avatar(call.title, radius: 30),
-                        const SizedBox(height: 8),
-                        const Text('Подключение видео…',
-                            style: TextStyle(
-                                fontSize: 12, color: Colors.grey)),
-                      ]),
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Avatar(call.title, radius: 30),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Подключение видео…',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ],
+                  ),
                 ),
         ),
         // Floating self preview (§25–§40): clipped by the window's own
@@ -806,197 +858,171 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
           duration: const Duration(milliseconds: 180),
           child: IgnorePointer(
             ignoring: !showSelf,
-            child: LayoutBuilder(builder: (ctx, cons) {
-              final mediaArea = cons.biggest;
-              // Live size clamp (§38): window resizes clamp the user
-              // width, but mid-BUILD mutation is forbidden — sync after
-              // the frame instead (§42).
-              final pendingW = selfPipWidthFor(mediaArea, _pipUserW);
-              if (pendingW != _pipUserW) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (!mounted) return;
-                  final eff = selfPipWidthFor(mediaArea, _pipUserW);
-                  if (eff != _pipUserW) {
-                    _pipUserW = eff;
-                    _pipTick.value++;
-                  }
-                });
-              }
-              final effW = selfPipWidthFor(mediaArea, _pipUserW);
-              final pipSize = Size(effW, selfPipHeightFor(effW));
-              // Video NEVER hit-tests (§3).
-              final video = Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.black54, width: 1),
-                  boxShadow: [
-                    BoxShadow(
+            child: LayoutBuilder(
+              builder: (ctx, cons) {
+                final mediaArea = cons.biggest;
+                // Live size clamp (§38): window resizes clamp the user
+                // width, but mid-BUILD mutation is forbidden — sync after
+                // the frame instead (§42).
+                final pendingW = selfPipWidthFor(mediaArea, _pipUserW);
+                if (pendingW != _pipUserW) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted) return;
+                    final eff = selfPipWidthFor(mediaArea, _pipUserW);
+                    if (eff != _pipUserW) {
+                      _pipUserW = eff;
+                      _pipTick.value++;
+                    }
+                  });
+                }
+                final effW = selfPipWidthFor(mediaArea, _pipUserW);
+                final pipSize = Size(effW, selfPipHeightFor(effW));
+                // Video NEVER hit-tests (§3).
+                final video = Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.black54, width: 1),
+                    boxShadow: [
+                      BoxShadow(
                         color: Colors.black.withValues(alpha: 0.35),
                         blurRadius: 18,
-                        offset: const Offset(0, 8)),
-                  ],
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: IgnorePointer(
-                  child: RTCVideoView(local!,
-                      mirror: true,
-                      objectFit: RTCVideoViewObjectFit
-                          .RTCVideoViewObjectFitCover),
-                ),
-              );
-              // Center move surface (§29): still a full-tile handle.
-              final drag = GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onPanStart: (d) => _onPipDragStart(d, mediaArea, pipSize),
-                onPanUpdate: (d) =>
-                    _onPipDragUpdate(d, mediaArea, pipSize),
-                onPanEnd: (_) => _onPipDragEnd(mediaArea, pipSize),
-                onPanCancel: _pipCancelDrag,
-                child: Stack(children: [
-                  Positioned.fill(child: video),
-                  Positioned.fill(
-                    child: ColoredBox(
-                        color: Colors.white.withValues(alpha: 0.001)),
-                  ),
-                ]),
-              );
-              // INVISIBLE edge/corner resize zones (§3–§5, §28): corners
-              // win over edges; no drawn handles (§1). Each zone owns
-              // its resize cursor (§6) and starts the anchored resize.
-              const corner = 18.0;
-              const edgeW = 10.0;
-              Widget zone(double zoneSize, Alignment align, SelfPipZone z) {
-                return Align(
-                  alignment: align,
-                  child: MouseRegion(
-                    cursor: switch (z) {
-                      SelfPipZone.topLeft ||
-                      SelfPipZone.bottomRight =>
-                        SystemMouseCursors.resizeUpLeftDownRight,
-                      SelfPipZone.topRight ||
-                      SelfPipZone.bottomLeft =>
-                        SystemMouseCursors.resizeUpRightDownLeft,
-                      _ => SystemMouseCursors.grab,
-                    },
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onPanStart: (d) {
-                        // Start rect = the CURRENT visual rect (§23).
-                        final cur = _pipRect(mediaArea, pipSize);
-                        _onPipResizeStart(d.globalPosition, cur, z);
-                      },
-                      onPanUpdate: (d) => _onPipResizeUpdate(
-                          d.globalPosition, mediaArea, pipSize),
-                      onPanEnd: (_) => _onPipResizeEnd(mediaArea),
-                      onPanCancel: () {
-                        // §25: cancel back to the last valid dock spot.
-                        _pipResizeZone = null;
-                        _pipResizeRect = null;
-                        _pipTick.value++;
-                      },
-                      child: SizedBox(width: zoneSize, height: zoneSize),
-                    ),
-                  ),
-                );
-              }
-
-              Widget edgeZone(SelfPipZone z) {
-                final horizontal = z == SelfPipZone.left ||
-                    z == SelfPipZone.right;
-                final cursor = horizontal
-                    ? SystemMouseCursors.resizeLeftRight
-                    : SystemMouseCursors.resizeUpDown;
-                return Align(
-                  alignment: switch (z) {
-                    SelfPipZone.left => Alignment.centerLeft,
-                    SelfPipZone.right => Alignment.centerRight,
-                    SelfPipZone.top => Alignment.topCenter,
-                    _ => Alignment.bottomCenter,
-                  },
-                  child: MouseRegion(
-                    cursor: cursor,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onPanStart: (d) {
-                        final cur = _pipRect(mediaArea, pipSize);
-                        _onPipResizeStart(d.globalPosition, cur, z);
-                      },
-                      onPanUpdate: (d) => _onPipResizeUpdate(
-                          d.globalPosition, mediaArea, pipSize),
-                      onPanEnd: (_) => _onPipResizeEnd(mediaArea),
-                      onPanCancel: () {
-                        _pipResizeZone = null;
-                        _pipResizeRect = null;
-                        _pipTick.value++;
-                      },
-                      child: SizedBox(
-                        width: horizontal ? edgeW : double.infinity,
-                        height: horizontal ? double.infinity : edgeW,
+                        offset: const Offset(0, 8),
                       ),
-                    ),
-                  ),
-                );
-              }
-
-              // Cursor affordance (§6–§7): grab inside, per-zone cursors
-              // on edges/corners, grabbing while an interaction runs.
-              MouseCursor pipCursor() {
-                if (_pipMode != _PipMode.idle) {
-                  return SystemMouseCursors.grabbing;
-                }
-                return switch (_pipHoverZone) {
-                  SelfPipZone.left ||
-                  SelfPipZone.right => SystemMouseCursors.resizeLeftRight,
-                  SelfPipZone.top ||
-                  SelfPipZone.bottom => SystemMouseCursors.resizeUpDown,
-                  SelfPipZone.topLeft ||
-                  SelfPipZone.bottomRight =>
-                    SystemMouseCursors.resizeUpLeftDownRight,
-                  SelfPipZone.topRight ||
-                  SelfPipZone.bottomLeft =>
-                    SystemMouseCursors.resizeUpRightDownLeft,
-                  _ => SystemMouseCursors.grab,
-                };
-              }
-
-              return MouseRegion(
-                cursor: pipCursor(),
-                onHover: (e) {
-                  // Hover-zone tracking for the cursor (§6–§7, §28);
-                  // rebuilds stay localized to the overlay (§26).
-                  final z = selfPipZoneFor(e.localPosition, pipSize);
-                  if (z != _pipHoverZone) {
-                    _pipHoverZone = z;
-                    _pipTick.value++;
-                  }
-                },
-                child: AnimatedBuilder(
-                  animation: Listenable.merge([_pipEase, _pipTick]),
-                  child: Stack(children: [
-                    drag,
-                    // Corners FIRST in the hit order (§4).
-                    zone(corner, Alignment.topLeft, SelfPipZone.topLeft),
-                    zone(corner, Alignment.topRight, SelfPipZone.topRight),
-                    zone(corner, Alignment.bottomLeft, SelfPipZone.bottomLeft),
-                    zone(corner, Alignment.bottomRight, SelfPipZone.bottomRight),
-                    // Edges between the corners.
-                    edgeZone(SelfPipZone.left),
-                    edgeZone(SelfPipZone.right),
-                    edgeZone(SelfPipZone.top),
-                    edgeZone(SelfPipZone.bottom),
-                  ]),
-                  builder: (b, pipView) => Stack(
-                    clipBehavior: Clip.none,
-                    fit: StackFit.expand,
-                    children: [
-                      Positioned.fromRect(
-                          rect: _pipRect(mediaArea, pipSize),
-                          child: pipView!),
                     ],
                   ),
-                ),
-              );
-            }),
+                  clipBehavior: Clip.antiAlias,
+                  child: IgnorePointer(
+                    child: RTCVideoView(
+                      local!,
+                      mirror: true,
+                      objectFit:
+                          RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                    ),
+                  ),
+                );
+                // Center move surface (§29): still a full-tile handle.
+                final drag = GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanStart: (d) => _onPipDragStart(d, mediaArea, pipSize),
+                  onPanUpdate: (d) => _onPipDragUpdate(d, mediaArea, pipSize),
+                  onPanEnd: (_) => _onPipDragEnd(mediaArea, pipSize),
+                  onPanCancel: _pipCancelDrag,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(child: video),
+                      Positioned.fill(
+                        child: ColoredBox(
+                          color: Colors.white.withValues(alpha: 0.001),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+                // INVISIBLE corner resize zones (§1–§5, §32): corners
+                // only, snug against the visible rounded corner (~12px
+                // from the outer border). No drawn handles (§6); the
+                // cursor IS the affordance (§7).
+                const corner = 12.0;
+                Widget zone(double zoneSize, Alignment align, SelfPipZone z) {
+                  return Align(
+                    alignment: align,
+                    child: MouseRegion(
+                      cursor: switch (z) {
+                        SelfPipZone.topLeft || SelfPipZone.bottomRight =>
+                          SystemMouseCursors.resizeUpLeftDownRight,
+                        SelfPipZone.topRight || SelfPipZone.bottomLeft =>
+                          SystemMouseCursors.resizeUpRightDownLeft,
+                        _ => SystemMouseCursors.grab,
+                      },
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onPanStart: (d) {
+                          // Start rect = the CURRENT visual rect (§23).
+                          final cur = _pipRect(mediaArea, pipSize);
+                          _onPipResizeStart(d.globalPosition, cur, z);
+                        },
+                        onPanUpdate: (d) => _onPipResizeUpdate(
+                          d.globalPosition,
+                          mediaArea,
+                          pipSize,
+                        ),
+                        onPanEnd: (_) => _onPipResizeEnd(mediaArea),
+                        onPanCancel: () {
+                          // §25: cancel back to the last valid dock spot.
+                          _pipResizeZone = null;
+                          _pipResizeRect = null;
+                          _pipTick.value++;
+                        },
+                        child: SizedBox(width: zoneSize, height: zoneSize),
+                      ),
+                    ),
+                  );
+                }
+
+                // Cursor affordance (§6–§7, §32): grab everywhere except
+                // the four corners, which get diagonal resize cursors. No
+                // edge cursors — straight edges are plain drag now.
+                MouseCursor pipCursor() {
+                  if (_pipMode != _PipMode.idle) {
+                    return SystemMouseCursors.grabbing;
+                  }
+                  return switch (_pipHoverZone) {
+                    SelfPipZone.topLeft || SelfPipZone.bottomRight =>
+                      SystemMouseCursors.resizeUpLeftDownRight,
+                    SelfPipZone.topRight || SelfPipZone.bottomLeft =>
+                      SystemMouseCursors.resizeUpRightDownLeft,
+                    _ => SystemMouseCursors.grab,
+                  };
+                }
+
+                return MouseRegion(
+                  cursor: pipCursor(),
+                  onHover: (e) {
+                    // Hover-zone tracking for the cursor (§6–§7, §28);
+                    // rebuilds stay localized to the overlay (§26).
+                    final z = selfPipZoneFor(e.localPosition, pipSize);
+                    if (z != _pipHoverZone) {
+                      _pipHoverZone = z;
+                      _pipTick.value++;
+                    }
+                  },
+                  child: AnimatedBuilder(
+                    animation: Listenable.merge([_pipEase, _pipTick]),
+                    child: Stack(
+                      children: [
+                        drag,
+                        // Corners FIRST in the hit order (§4).
+                        zone(corner, Alignment.topLeft, SelfPipZone.topLeft),
+                        zone(corner, Alignment.topRight, SelfPipZone.topRight),
+                        zone(
+                          corner,
+                          Alignment.bottomLeft,
+                          SelfPipZone.bottomLeft,
+                        ),
+                        zone(
+                          corner,
+                          Alignment.bottomRight,
+                          SelfPipZone.bottomRight,
+                        ),
+                        // No edge zones at all (§1–§3, §32): straight
+                        // edges are plain drag — hit falls through to
+                        // the move surface below.
+                      ],
+                    ),
+                    builder: (b, pipView) => Stack(
+                      clipBehavior: Clip.none,
+                      fit: StackFit.expand,
+                      children: [
+                        Positioned.fromRect(
+                          rect: _pipRect(mediaArea, pipSize),
+                          child: pipView!,
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -1010,24 +1036,28 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     // status text would appear twice. Direct keeps the full block since its
     // top bar is bare.
     final roomBased = call.kind != CallKind.direct;
-    return Column(mainAxisSize: MainAxisSize.min, children: [
-      Avatar(call.title, radius: 34),
-      const SizedBox(height: 10),
-      Text(call.title,
-          style: const TextStyle(
-              fontSize: 18, fontWeight: FontWeight.w700)),
-      if (!roomBased) ...[
-        const SizedBox(height: 2),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Avatar(call.title, radius: 34),
+        const SizedBox(height: 10),
         Text(
+          call.title,
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        ),
+        if (!roomBased) ...[
+          const SizedBox(height: 2),
+          Text(
             incoming
                 ? call.subtitle
                 : call.phase == CallPhase.ringing
-                    ? 'Вызов…'
-                    : 'Подключено · ${formatCallDuration(_secs)}',
-            style:
-                const TextStyle(fontSize: 13, color: Colors.grey)),
+                ? 'Вызов…'
+                : 'Подключено · ${formatCallDuration(_secs)}',
+            style: const TextStyle(fontSize: 13, color: Colors.grey),
+          ),
+        ],
       ],
-    ]);
+    );
   }
 }
 
@@ -1049,6 +1079,7 @@ String formatCallDuration(int s) {
 const double kSelfPipMinW = 180;
 const double kSelfPipHardMaxW = 420;
 const double kSelfPipDefaultW = 220;
+
 /// Height/width ratio of the preview: 16:9 per the final UX spec
 /// (§34: 180×101 min; §39: 420×236 max, defaultWidth 220).
 const double kSelfPipAspect = 9 / 16;
@@ -1070,68 +1101,47 @@ double selfPipWidthFor(Size media, double userW) =>
 double selfPipHeightFor(double w) => w * kSelfPipAspect;
 
 /// Interaction zones over the self-preview (§3–§5, §28): corners WIN over
-/// edges; the center stays the move handle (§29). Zone sizes: corners ~16px
-/// hit boxes placed flush into the rounded corners, edges ~10px strips.
-enum SelfPipZone {
-  center,
-  left,
-  right,
-  top,
-  bottom,
-  topLeft,
-  topRight,
-  bottomLeft,
-  bottomRight,
-}
+/// edges — are plain drag. The corner hit area hugs the visible rounded
+/// corner (~12px): a bit deeper inside the pointer is already a plain
+/// grab cursor (§4, §27, §32).
+enum SelfPipZone { center, topLeft, topRight, bottomLeft, bottomRight }
 
-SelfPipZone selfPipZoneFor(Offset local, Size size,
-    {double edgeW = 10, double corner = 16}) {
+SelfPipZone selfPipZoneFor(Offset local, Size size, {double corner = 12}) {
   final nearLeft = local.dx <= corner;
   final nearRight = local.dx >= size.width - corner;
   final nearTop = local.dy <= corner;
   final nearBottom = local.dy >= size.height - corner;
-  // Corners first (§4).
   if (nearLeft && nearTop) return SelfPipZone.topLeft;
   if (nearRight && nearTop) return SelfPipZone.topRight;
   if (nearLeft && nearBottom) return SelfPipZone.bottomLeft;
   if (nearRight && nearBottom) return SelfPipZone.bottomRight;
-  // Edges (strips), center falls through.
-  if (local.dx <= edgeW) return SelfPipZone.left;
-  if (local.dx >= size.width - edgeW) return SelfPipZone.right;
-  if (local.dy <= edgeW) return SelfPipZone.top;
-  if (local.dy >= size.height - edgeW) return SelfPipZone.bottom;
   return SelfPipZone.center;
 }
 
-bool _selfPipZoneTouchesLeft(SelfPipZone z) =>
-    z == SelfPipZone.left || z == SelfPipZone.topLeft || z == SelfPipZone.bottomLeft;
-bool _selfPipZoneTouchesRight(SelfPipZone z) =>
-    z == SelfPipZone.right || z == SelfPipZone.topRight || z == SelfPipZone.bottomRight;
-bool _selfPipZoneTouchesTop(SelfPipZone z) =>
-    z == SelfPipZone.top || z == SelfPipZone.topLeft || z == SelfPipZone.topRight;
-bool _selfPipZoneTouchesBottom(SelfPipZone z) =>
-    z == SelfPipZone.bottom || z == SelfPipZone.bottomLeft || z == SelfPipZone.bottomRight;
-
 /// Interaction mode of the self-preview (§22): a single enum instead of
-/// competing booleans. Derived from the active gesture + zone.
+/// competing booleans. Derived from the active gesture + zone. Corners
+/// carry resize; straight edges are plain drag (§1–§5, §32).
 enum _PipMode {
   idle,
   dragging,
-  resizingLeft,
-  resizingRight,
-  resizingTop,
-  resizingBottom,
   resizingTopLeft,
   resizingTopRight,
   resizingBottomLeft,
   resizingBottomRight,
 }
 
-/// Anchored, aspect-locked resize (§12–§14, §25): the rect is ALWAYS
-/// derived from the start rect plus the TOTAL pointer delta (no drift),
-/// with the opposite side anchored (§13–§14). A docked edge keeps its
-/// flush anchoring (§15). Limits apply LIVE (§17–§18); the result is
-/// always inside the safe area (§19).
+/// Corner-only resize math (§8–§15, §19–§22). ONE continuous scalar per
+/// gesture — no dominant-axis switching (§9); geometry stays in doubles
+/// (§11–§12); limits clamp live without moving anchors (§19–§21); the
+/// dock edge stays frozen during the gesture (§22).
+///
+/// FLUSH grabs (the grabbed corner lies ON the docked edge, §15): the
+/// dock wins — the flush corner itself stays anchored and the preview
+/// grows INWARD; the height follows the vertical pointer delta and the
+/// width re-derives from the fixed 16:9 aspect (§12).
+///
+/// FREE grabs (corners away from the dock edge): the OPPOSITE corner is
+/// fixed (§10) and the same diagonal-projection scalar drives the size.
 Rect selfPipResizedRect({
   required Rect start,
   required Offset pointerDelta,
@@ -1140,99 +1150,127 @@ Rect selfPipResizedRect({
   required Size media,
   double minW = kSelfPipMinW,
 }) {
-  // --- Anchor resolution (§13–§15): the dock edge wins; otherwise the
-  // opposite side of the grabbed edge/corner is anchored. A dock on the
-  // OPPOSITE axis keeps the unused axis anchored on its current side.
-  var anchorLeft = false, anchorRight = false;
-  switch (dock) {
-    case DockEdge.left:
-      anchorLeft = true;
-    case DockEdge.right:
-      anchorRight = true;
-    case DockEdge.top || DockEdge.bottom:
-      // x is untouched by a top/bottom-docked edge resize: keep x put.
-      anchorLeft = true;
-  }
-  var anchorTop = false, anchorBottom = false;
-  switch (dock) {
-    case DockEdge.top:
-      anchorTop = true;
-    case DockEdge.bottom:
-      anchorBottom = true;
-    case DockEdge.left || DockEdge.right:
-      if (_selfPipZoneTouchesTop(zone)) {
-        anchorBottom = true;
-      } else if (_selfPipZoneTouchesBottom(zone)) {
-        anchorTop = true;
-      } else {
-        anchorTop = true; // pure x-edge: top stays
-      }
-  }
+  final minH = minW * kSelfPipAspect;
+  final hCap = (media.height * 0.4).clamp(minH, double.infinity);
+  final wCap = math.min(kSelfPipHardMaxW, media.width * 0.35);
 
-  final dx = pointerDelta.dx;
-  final dy = pointerDelta.dy;
-  final verticalOnly =
-      zone == SelfPipZone.top || zone == SelfPipZone.bottom;
-
-  var width = start.width;
-  if (!verticalOnly) {
-    // x-driven resize: width follows the horizontal delta of the grabbed
-    // edge/corner (corner picks the dominant axis, §12). The docked side
-    // is flush and never moves: growth happens toward the free side.
-    if (anchorRight) {
-      width = (_selfPipZoneTouchesLeft(zone) || dock == DockEdge.right)
-          ? start.width - dx
-          : start.width + (dx.abs() >= dy.abs()
-              ? dx
-              : (anchorBottom ? dy : -dy) * kSelfPipAspect);
-    } else if (anchorLeft) {
-      width = _selfPipZoneTouchesRight(zone)
-          ? start.width + dx
-          : start.width + (dx.abs() >= dy.abs()
-              ? dx
-              : (anchorBottom ? -dy : dy) * kSelfPipAspect);
+  // --- FLUSH grabs: the grabbed side is docked; anchor it, grow inward.
+  final flushOnRight =
+      dock == DockEdge.right && zone == SelfPipZone.topRight ||
+      dock == DockEdge.right && zone == SelfPipZone.bottomRight;
+  final flushOnLeft =
+      dock == DockEdge.left && zone == SelfPipZone.topLeft ||
+      dock == DockEdge.left && zone == SelfPipZone.bottomLeft;
+  final flushOnTop =
+      dock == DockEdge.top && zone == SelfPipZone.topLeft ||
+      dock == DockEdge.top && zone == SelfPipZone.topRight;
+  final flushOnBottom =
+      dock == DockEdge.bottom && zone == SelfPipZone.bottomLeft ||
+      dock == DockEdge.bottom && zone == SelfPipZone.bottomRight;
+  if (flushOnRight || flushOnLeft) {
+    // Height-driven growth; the horizontal edge stays flush.
+    final growsUp = flushOnRight
+        ? zone == SelfPipZone.topRight
+        : zone == SelfPipZone.topLeft;
+    var h = (start.height + (growsUp ? -pointerDelta.dy : pointerDelta.dy))
+        .clamp(minH, math.max(minH, hCap))
+        .toDouble();
+    var w = (h / kSelfPipAspect).clamp(minW, math.max(minW, wCap)).toDouble();
+    // The width floor pushes the height back up so the 16:9 aspect stays
+    // EXACT even at the limits (§12, §20 — no silent distortion).
+    h = w * kSelfPipAspect;
+    if (flushOnRight) {
+      return Rect.fromLTWH(
+        start.right - w,
+        growsUp ? start.bottom - h : start.top,
+        w,
+        h,
+      );
     }
-  } else {
-    // y-driven resize: height follows the delta, width re-derives (§12).
-    final newH = anchorBottom ? start.height - dy : start.height + dy;
-    width = newH / kSelfPipAspect;
+    return Rect.fromLTWH(
+      start.left,
+      growsUp ? start.bottom - h : start.top,
+      w,
+      h,
+    );
+  }
+  if (flushOnTop || flushOnBottom) {
+    // The flush edge is horizontal: growth goes down/up, width may extend
+    // toward the FREE horizontal side while the edge stays.
+    final growsDown =
+        flushOnTop ||
+        (zone == SelfPipZone.bottomLeft || zone == SelfPipZone.bottomRight);
+    var h = (start.height + (growsDown ? pointerDelta.dy : -pointerDelta.dy))
+        .clamp(minH, math.max(minH, hCap))
+        .toDouble();
+    var w = (h / kSelfPipAspect).clamp(minW, math.max(minW, wCap)).toDouble();
+    h = w * kSelfPipAspect;
+    // Anchoring: keep the flush edge + the return side of the corner.
+    final left = switch (zone) {
+      SelfPipZone.topLeft ||
+      SelfPipZone.topRight => flushOnTop ? start.left : start.right - w,
+      SelfPipZone.bottomLeft ||
+      SelfPipZone.bottomRight => flushOnBottom ? start.left : start.right - w,
+      _ => start.left,
+    };
+    final top = flushOnTop ? start.top : start.bottom - h;
+    return Rect.fromLTWH(left, top, w, h);
   }
 
-  // LIVE limits (§17–§18) + fit inside the safe area along anchors.
-  var w = width.clamp(minW, selfPipMaxWidthFor(media));
-  final maxByAnchorX = anchorLeft && anchorRight
-      ? media.width - 2 * kDockMargin
-      : anchorRight
-          ? math.max(minW, start.right - kDockMargin)
-          : math.max(minW, media.width - kDockMargin - start.left);
-  w = w.clamp(
-      minW, math.min(selfPipMaxWidthFor(media), maxByAnchorX.clamp(minW, kSelfPipHardMaxW)));
+  // --- FREE grabs: opposite corner fixed (§10), one diagonal projection
+  // (§9), every budget in a single clamp (§19–§21).
+  final diag = const Offset(16, 9).distance;
+  Offset u = switch (zone) {
+    SelfPipZone.bottomRight => const Offset(16, 9) / diag,
+    SelfPipZone.topLeft => const Offset(-16, -9) / diag,
+    SelfPipZone.bottomLeft => const Offset(-16, 9) / diag,
+    SelfPipZone.topRight => const Offset(16, -9) / diag,
+    _ => const Offset(16, 9) / diag,
+  };
+  final projected = pointerDelta.dx * u.dx + pointerDelta.dy * u.dy;
+  final fixed = switch (zone) {
+    SelfPipZone.bottomRight => start.topLeft,
+    SelfPipZone.topLeft => start.bottomRight,
+    SelfPipZone.bottomLeft => start.topRight,
+    SelfPipZone.topRight => start.bottomLeft,
+    _ => start.topLeft,
+  };
+  final spanToRight = media.width - kDockMargin - fixed.dx;
+  final spanToLeft = fixed.dx - kDockMargin;
+  final spanToBottom = media.height - kDockMargin - fixed.dy;
+  final spanToTop = fixed.dy - kDockMargin;
+  final wSpan = (zone == SelfPipZone.topLeft || zone == SelfPipZone.topRight)
+      ? spanToLeft
+      : spanToRight;
+  final hSpan = (zone == SelfPipZone.topLeft || zone == SelfPipZone.topRight)
+      ? spanToTop
+      : spanToBottom;
+  final w = (start.width + projected)
+      .clamp(
+        minW,
+        math.max(
+          minW,
+          math.min(
+            kSelfPipHardMaxW,
+            math.min(
+              media.width * 0.35,
+              math.min(
+                media.height * 0.4 / kSelfPipAspect,
+                math.max(minW, math.min(wSpan, hSpan * 16 / 9)),
+              ),
+            ),
+          ),
+        ),
+      )
+      .toDouble();
   final h = selfPipHeightFor(w);
-
-  // Compose the rect honoring anchors; corners may be aspect-adjusted
-  // (§13–§15), centered grows anchored by both sides.
-  var left = start.left;
-  if (anchorRight && !anchorLeft) {
-    left = start.right - w;
-  } else if (anchorLeft && !anchorRight) {
-    left = start.left;
-  } else {
-    left = start.left + (start.width - w) / 2;
-  }
-  var top = start.top;
-  if (anchorBottom && !anchorTop) {
-    top = start.bottom - h;
-  } else if (anchorTop && !anchorBottom) {
-    top = start.top;
-  } else {
-    top = start.top + (start.height - h) / 2;
-  }
-
-  // Safe bounds (§19): never leave the media area.
-  left = left.clamp(
-      kDockMargin, (media.width - kDockMargin - w).clamp(kDockMargin, double.infinity));
-  top = top.clamp(
-      kDockMargin, (media.height - kDockMargin - h).clamp(kDockMargin, double.infinity));
+  final left =
+      (zone == SelfPipZone.bottomRight || zone == SelfPipZone.bottomLeft)
+      ? fixed.dx
+      : fixed.dx - w;
+  final top = (zone == SelfPipZone.bottomRight || zone == SelfPipZone.topRight)
+      ? fixed.dy
+      : fixed.dy - h;
   return Rect.fromLTWH(left, top, w, h);
 }
 
@@ -1250,8 +1288,7 @@ const double kCardRadius = 16;
 /// the morph start rect so the flight takes off pixel-exact. Height stays
 /// null for intrinsic (audio/identity) windows — the morph measures those
 /// from the live window at takeoff instead.
-({double width, double? height}) callWindowSize(
-    UnifiedCall call, Size screen) {
+({double width, double? height}) callWindowSize(UnifiedCall call, Size screen) {
   final wideVideo =
       (call.video || call.remoteVideo) && call.phase == CallPhase.active;
   if (wideVideo) {
@@ -1268,11 +1305,12 @@ const double kCardRadius = 16;
 
 /// Centered, elevated, visually separate from the chat (§33–§34).
 class CallWindow extends StatelessWidget {
-  const CallWindow(
-      {super.key,
-      required this.call,
-      required this.secs,
-      required this.media});
+  const CallWindow({
+    super.key,
+    required this.call,
+    required this.secs,
+    required this.media,
+  });
 
   final UnifiedCall call;
   final int secs;
@@ -1296,26 +1334,27 @@ class CallWindow extends StatelessWidget {
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           border: Border.all(
-              color:
-                  Theme.of(context).dividerColor.withValues(alpha: 0.5)),
+            color: Theme.of(context).dividerColor.withValues(alpha: 0.5),
+          ),
           borderRadius: BorderRadius.circular(18),
         ),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          _header(context),
-          const SizedBox(height: 10),
-          if (wideVideo)
-            Expanded(child: media)
-          else
-            media,
-          if (call.linkDown &&
-              call.phase == CallPhase.active) ...[
-            const SizedBox(height: 8),
-            const Text('Восстанавливаем соединение…',
-                style: TextStyle(fontSize: 12, color: Colors.orange)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _header(context),
+            const SizedBox(height: 10),
+            if (wideVideo) Expanded(child: media) else media,
+            if (call.linkDown && call.phase == CallPhase.active) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Восстанавливаем соединение…',
+                style: TextStyle(fontSize: 12, color: Colors.orange),
+              ),
+            ],
+            const SizedBox(height: 14),
+            _controls(context),
           ],
-          const SizedBox(height: 14),
-          _controls(context),
-        ]),
+        ),
       ),
     );
   }
@@ -1325,40 +1364,51 @@ class CallWindow extends StatelessWidget {
     // room-based calls (voice/group), where the peer-name identity below
     // does not exist.
     if (call.kind == CallKind.direct) {
-      return Row(children: [
-        const Expanded(child: SizedBox.shrink()),
-        IconButton(
+      return Row(
+        children: [
+          const Expanded(child: SizedBox.shrink()),
+          IconButton(
             tooltip: 'Свернуть',
             icon: const Icon(Icons.remove, size: 20),
-            onPressed: () => call.onSetMinimized(true)),
-      ]);
+            onPressed: () => call.onSetMinimized(true),
+          ),
+        ],
+      );
     }
-    return Row(children: [
-      Expanded(
-        child: Column(
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(call.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.w700)),
               Text(
-                  call.phase == CallPhase.active
-                      ? '${call.subtitle} · ${formatCallDuration(secs)}'
-                      : call.subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style:
-                      const TextStyle(fontSize: 13, color: Colors.grey)),
-            ]),
-      ),
-      IconButton(
+                call.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              Text(
+                call.phase == CallPhase.active
+                    ? '${call.subtitle} · ${formatCallDuration(secs)}'
+                    : call.subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13, color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+        IconButton(
           tooltip: 'Свернуть',
           icon: const Icon(Icons.remove, size: 20),
-          onPressed: () => call.onSetMinimized(true)),
-    ]);
+          onPressed: () => call.onSetMinimized(true),
+        ),
+      ],
+    );
   }
 
   Widget _controls(BuildContext context) {
@@ -1401,50 +1451,55 @@ class CallWindow extends StatelessWidget {
           }
         }
 
-        return Column(mainAxisSize: MainAxisSize.min, children: [
-          const Text('Вы уже участвуете в другом разговоре.',
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Вы уже участвуете в другом разговоре.',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 12, color: Colors.grey)),
-          Text(detail,
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            Text(
+              detail,
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 12, color: Colors.grey)),
-          const SizedBox(height: 10),
-          // Wrap, not Row: three actions must survive narrow windows
-          // (and the test font, which runs wider than production).
-          Wrap(
-            alignment: WrapAlignment.center,
-            spacing: 12,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              _roundBtn(
-                  Colors.red, Icons.call_end, 'Отклонить', decline),
-              if (call.onAcceptAsGroup != null)
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 10),
+            // Wrap, not Row: three actions must survive narrow windows
+            // (and the test font, which runs wider than production).
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 12,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                _roundBtn(Colors.red, Icons.call_end, 'Отклонить', decline),
+                if (call.onAcceptAsGroup != null)
+                  Tooltip(
+                    message: 'Продолжить в групповом звонке',
+                    child: FilledButton.tonalIcon(
+                      onPressed: acceptAsGroup,
+                      icon: const Icon(Icons.group_add, size: 18),
+                      label: const Text('В группу'),
+                    ),
+                  ),
                 Tooltip(
-                  message: 'Продолжить в групповом звонке',
+                  message: 'Завершить текущий и принять',
                   child: FilledButton.tonalIcon(
-                    onPressed: acceptAsGroup,
-                    icon: const Icon(Icons.group_add, size: 18),
-                    label: const Text('В группу'),
+                    onPressed: accept,
+                    icon: const Icon(Icons.call, size: 18),
+                    label: const Text('Завершить и принять'),
                   ),
                 ),
-              Tooltip(
-                message: 'Завершить текущий и принять',
-                child: FilledButton.tonalIcon(
-                  onPressed: accept,
-                  icon: const Icon(Icons.call, size: 18),
-                  label: const Text('Завершить и принять'),
-                ),
-              ),
-            ],
-          ),
-        ]);
+              ],
+            ),
+          ],
+        );
       }
       return Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          _roundBtn(
-              Colors.red, Icons.call_end, 'Отклонить', decline),
+          _roundBtn(Colors.red, Icons.call_end, 'Отклонить', decline),
           const SizedBox(width: 28),
           // Answer-with-camera intent (direct video only): toggling never
           // captures the device and never accepts the call by itself.
@@ -1453,14 +1508,11 @@ class CallWindow extends StatelessWidget {
           // still distinct from Decline (call glyph) at half the radius.
           if (call.onToggleRingCamera != null) ...[
             _roundBtn(
-                call.ringCameraOn ? null : Colors.red.shade600,
-                call.ringCameraOn
-                    ? Icons.videocam
-                    : Icons.videocam_off_outlined,
-                call.ringCameraOn
-                    ? 'Выключить камеру'
-                    : 'Включить камеру',
-                () => call.onToggleRingCamera!()),
+              call.ringCameraOn ? null : Colors.red.shade600,
+              call.ringCameraOn ? Icons.videocam : Icons.videocam_off_outlined,
+              call.ringCameraOn ? 'Выключить камеру' : 'Включить камеру',
+              () => call.onToggleRingCamera!(),
+            ),
             const SizedBox(width: 28),
           ],
           _roundBtn(Colors.green, Icons.call, 'Принять', accept),
@@ -1473,45 +1525,47 @@ class CallWindow extends StatelessWidget {
     // Watching-only (peer video live, our camera off) renders the button
     // RED videocam_off — the honest "your camera is off" affordance.
     final cameraLive = call.video && !call.cameraOff;
-    final watchingOnly =
-        (call.video || call.remoteVideo) && !cameraLive;
-    return Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-      _roundBtn(
+    final watchingOnly = (call.video || call.remoteVideo) && !cameraLive;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        _roundBtn(
           call.muted ? Colors.red : null,
           call.muted ? Icons.mic_off : Icons.mic,
           call.muted ? 'Включить микрофон' : 'Выключить микрофон',
-          () => call.onToggleMute()),
-      const SizedBox(width: 12),
-      if (call.kind == CallKind.direct || call.video) ...[
-        _roundBtn(
+          () => call.onToggleMute(),
+        ),
+        const SizedBox(width: 12),
+        if (call.kind == CallKind.direct || call.video) ...[
+          _roundBtn(
             watchingOnly ? Colors.red : null,
             watchingOnly ? Icons.videocam_off : Icons.videocam,
             cameraLive ? 'Выключить камеру' : 'Включить камеру',
-            () => call.onToggleCamera()),
-        const SizedBox(width: 12),
-      ],
-      if (call.kind == CallKind.direct &&
-          call.video &&
-          call.phase == CallPhase.active)
-        _roundBtn(
+            () => call.onToggleCamera(),
+          ),
+          const SizedBox(width: 12),
+        ],
+        if (call.kind == CallKind.direct &&
+            call.video &&
+            call.phase == CallPhase.active)
+          _roundBtn(
             call.sharingScreen ? Colors.blue : null,
-            call.sharingScreen
-                ? Icons.stop_screen_share
-                : Icons.screen_share,
+            call.sharingScreen ? Icons.stop_screen_share : Icons.screen_share,
             'Демонстрация экрана',
-            () => call.onToggleShare()),
-      if (call.kind == CallKind.direct &&
-          call.video &&
-          call.phase == CallPhase.active)
-        const SizedBox(width: 12),
-      _roundBtn(Colors.red, Icons.call_end, 'Завершить', () {
-        call.onHangup();
-      }),
-    ]);
+            () => call.onToggleShare(),
+          ),
+        if (call.kind == CallKind.direct &&
+            call.video &&
+            call.phase == CallPhase.active)
+          const SizedBox(width: 12),
+        _roundBtn(Colors.red, Icons.call_end, 'Завершить', () {
+          call.onHangup();
+        }),
+      ],
+    );
   }
 
-  Widget _roundBtn(
-      Color? bg, IconData icon, String tip, VoidCallback onTap) {
+  Widget _roundBtn(Color? bg, IconData icon, String tip, VoidCallback onTap) {
     return Tooltip(
       message: tip,
       child: InkWell(
@@ -1521,8 +1575,9 @@ class CallWindow extends StatelessWidget {
           width: 54,
           height: 54,
           decoration: BoxDecoration(
-              color: bg ?? Colors.grey.withValues(alpha: 0.25),
-              shape: BoxShape.circle),
+            color: bg ?? Colors.grey.withValues(alpha: 0.25),
+            shape: BoxShape.circle,
+          ),
           child: Icon(icon, color: Colors.white),
         ),
       ),
@@ -1543,46 +1598,50 @@ class ParticipantGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     if (participants.isEmpty) {
       return const Center(
-          child: Text('Подключение…',
-              style: TextStyle(fontSize: 12, color: Colors.grey)));
+        child: Text(
+          'Подключение…',
+          style: TextStyle(fontSize: 12, color: Colors.grey),
+        ),
+      );
     }
     if (participants.length == 1) {
       return Center(
         child: ConstrainedBox(
-          constraints:
-              const BoxConstraints(maxWidth: 420, maxHeight: 320),
+          constraints: const BoxConstraints(maxWidth: 420, maxHeight: 320),
           child: AspectRatio(
-              aspectRatio: 4 / 3,
-              child: ParticipantTile(participant: participants.first)),
+            aspectRatio: 4 / 3,
+            child: ParticipantTile(participant: participants.first),
+          ),
         ),
       );
     }
     final cols = participants.length <= 2
         ? participants.length
         : participants.length <= 4
-            ? 2
-            : 3;
-    final rows =
-        (participants.length + cols - 1) ~/ cols;
-    return LayoutBuilder(builder: (ctx, cons) {
-      var aspect = 4 / 3;
-      if (cons.maxWidth.isFinite &&
-          cons.maxHeight.isFinite &&
-          cons.maxWidth > 0 &&
-          cons.maxHeight > 0) {
-        aspect = (cons.maxWidth * rows) / (cons.maxHeight * cols);
-      }
-      return GridView.count(
-        crossAxisCount: cols,
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 8,
-        childAspectRatio: aspect,
-        physics: const NeverScrollableScrollPhysics(),
-        children: [
-          for (final p in participants) ParticipantTile(participant: p),
-        ],
-      );
-    });
+        ? 2
+        : 3;
+    final rows = (participants.length + cols - 1) ~/ cols;
+    return LayoutBuilder(
+      builder: (ctx, cons) {
+        var aspect = 4 / 3;
+        if (cons.maxWidth.isFinite &&
+            cons.maxHeight.isFinite &&
+            cons.maxWidth > 0 &&
+            cons.maxHeight > 0) {
+          aspect = (cons.maxWidth * rows) / (cons.maxHeight * cols);
+        }
+        return GridView.count(
+          crossAxisCount: cols,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+          childAspectRatio: aspect,
+          physics: const NeverScrollableScrollPhysics(),
+          children: [
+            for (final p in participants) ParticipantTile(participant: p),
+          ],
+        );
+      },
+    );
   }
 }
 
@@ -1603,59 +1662,71 @@ class ParticipantTile extends StatelessWidget {
         color: Colors.black,
         borderRadius: BorderRadius.circular(12),
         border: p.speaking
-            ? Border.all(
-                color: Theme.of(context).colorScheme.primary, width: 2)
+            ? Border.all(color: Theme.of(context).colorScheme.primary, width: 2)
             : Border.all(color: Colors.transparent, width: 2),
       ),
       clipBehavior: Clip.antiAlias,
-      child: Stack(children: [
-        if (video != null)
-          Positioned.fill(child: Builder(builder: video))
-        else
-          Center(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Avatar(p.nick, radius: 30),
-              const SizedBox(height: 8),
-              if (p.muted)
-                const Icon(Icons.mic_off,
-                    size: 14, color: Colors.grey),
-            ]),
-          ),
-        Positioned(
-          left: 8,
-          right: 8,
-          bottom: 6,
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Flexible(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.55),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(p.nick,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 11, color: Colors.white)),
+      child: Stack(
+        children: [
+          if (video != null)
+            Positioned.fill(child: Builder(builder: video))
+          else
+            Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Avatar(p.nick, radius: 30),
+                  const SizedBox(height: 8),
+                  if (p.muted)
+                    const Icon(Icons.mic_off, size: 14, color: Colors.grey),
+                ],
               ),
             ),
-            if (p.muted) ...[
-              const SizedBox(width: 4),
-              Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.55),
-                  borderRadius: BorderRadius.circular(6),
+          Positioned(
+            left: 8,
+            right: 8,
+            bottom: 6,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      p.nick,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, color: Colors.white),
+                    ),
+                  ),
                 ),
-                child: const Icon(Icons.mic_off,
-                    size: 11, color: Colors.white70),
-              ),
-            ],
-          ]),
-        ),
-      ]),
+                if (p.muted) ...[
+                  const SizedBox(width: 4),
+                  Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Icon(
+                      Icons.mic_off,
+                      size: 11,
+                      color: Colors.white70,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1667,15 +1738,16 @@ class ParticipantTile extends StatelessWidget {
 /// stabilized active remote speaker (§9). Never hangs up by itself;
 /// hangup ends the session for real.
 class MiniCallOverlay extends StatelessWidget {
-  const MiniCallOverlay(
-      {super.key,
-      required this.call,
-      required this.secs,
-      required this.preview,
-      required this.onTogglePreview,
-      required this.onDragStart,
-      required this.onDragUpdate,
-      required this.onDragEnd});
+  const MiniCallOverlay({
+    super.key,
+    required this.call,
+    required this.secs,
+    required this.preview,
+    required this.onTogglePreview,
+    required this.onDragStart,
+    required this.onDragUpdate,
+    required this.onDragEnd,
+  });
 
   final UnifiedCall call;
   final int secs;
@@ -1690,13 +1762,14 @@ class MiniCallOverlay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MiniCallCard(
-        call: call,
-        secs: secs,
-        preview: preview,
-        onTogglePreview: onTogglePreview,
-        onDragStart: onDragStart,
-        onDragUpdate: onDragUpdate,
-        onDragEnd: onDragEnd);
+      call: call,
+      secs: secs,
+      preview: preview,
+      onTogglePreview: onTogglePreview,
+      onDragStart: onDragStart,
+      onDragUpdate: onDragUpdate,
+      onDragEnd: onDragEnd,
+    );
   }
 }
 
@@ -1705,9 +1778,9 @@ const _pillSpeakGreen = Color(0xFF57F287);
 
 /// Avatar face for camera-off preview (pill, morph, audio-only, §23/§47).
 Widget _avatarFace(String nick, {double radius = 26}) => Container(
-      color: Colors.black,
-      child: Center(child: Avatar(nick, radius: radius)),
-    );
+  color: Colors.black,
+  child: Center(child: Avatar(nick, radius: radius)),
+);
 
 /// Waiting state (§26): successfully inside a Server Voice Channel (or an
 /// alone-able group LiveKit room) with zero remote peers. Exactly one
@@ -1723,12 +1796,14 @@ bool _isWaiting(UnifiedCall call) =>
 /// same keyed element as the grid and the card (§4): nothing re-binds
 /// mid-flight. The asset GIF is image-cache backed, so drag keeps it
 /// playing with no re-decode (§20–§21).
-Widget _riderFace(
-    CallParticipant? rider, String fallbackNick, bool waiting) {
+Widget _riderFace(CallParticipant? rider, String fallbackNick, bool waiting) {
   if (waiting) return _waitingFace();
   final v = rider?.video;
   if (v != null) {
-    return Container(color: Colors.black, child: Builder(builder: v));
+    return Container(
+      color: Colors.black,
+      child: Builder(builder: v),
+    );
   }
   return _avatarFace(rider?.nick ?? fallbackNick);
 }
@@ -1737,41 +1812,47 @@ Widget _riderFace(
 /// extra text on top (§8), cover-cropped without deforming (§6), clipped
 /// by whatever rounded parent hosts it (§7).
 Widget _waitingFace() => Container(
-      color: Colors.black,
-      child: Image.asset(
-        'assets/grchat_waiting_from_reference_photo.gif',
-        fit: BoxFit.cover,
-      ),
-    );
+  color: Colors.black,
+  child: Image.asset(
+    'assets/grchat_waiting_from_reference_photo.gif',
+    fit: BoxFit.cover,
+  ),
+);
 
 /// Bottom meta line shared by the morph flight and the settled pill:
 /// name, mute state, duration. Never interactive itself.
-Widget _pillMeta(
-    {required String name, required bool muted, required String status}) {
-  return Row(mainAxisSize: MainAxisSize.min, children: [
-    Flexible(
-      child: Text(name,
+Widget _pillMeta({
+  required String name,
+  required bool muted,
+  required String status,
+}) {
+  return Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Flexible(
+        child: Text(
+          name,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              color: Colors.white)),
-    ),
-    if (muted) ...[
-      const SizedBox(width: 4),
-      const Icon(Icons.mic_off, size: 11, color: Colors.white70),
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            color: Colors.white,
+          ),
+        ),
+      ),
+      if (muted) ...[
+        const SizedBox(width: 4),
+        const Icon(Icons.mic_off, size: 11, color: Colors.white70),
+      ],
+      const SizedBox(width: 6),
+      Text(status, style: const TextStyle(fontSize: 11, color: Colors.white70)),
     ],
-    const SizedBox(width: 6),
-    Text(status,
-        style: const TextStyle(fontSize: 11, color: Colors.white70)),
-  ]);
+  );
 }
 
 String _pillStatus(UnifiedCall call, int secs) =>
-    call.phase == CallPhase.active
-        ? formatCallDuration(secs)
-        : 'Вызов…';
+    call.phase == CallPhase.active ? formatCallDuration(secs) : 'Вызов…';
 
 /// Settled card content: waiting GIF when alone, otherwise the live
 /// spotlight with a short crossfade on speaker change (§9, §15). The card
@@ -1784,46 +1865,56 @@ Widget _pillPreview(UnifiedCall call) {
     duration: const Duration(milliseconds: 180),
     transitionBuilder: (child, animation) =>
         FadeTransition(opacity: animation, child: child),
-    layoutBuilder: (current, previous) => Stack(children: [
-      if (current != null) Positioned.fill(child: current),
-      for (final p in previous) Positioned.fill(child: p),
-    ]),
+    layoutBuilder: (current, previous) => Stack(
+      children: [
+        if (current != null) Positioned.fill(child: current),
+        for (final p in previous) Positioned.fill(child: p),
+      ],
+    ),
     // Identity follows content: waiting is its own state; a camera toggle
     // on the same speaker swaps avatar ↔ video without changing who.
     // The speaker name rides along as a small chip (the bar carries the
     // call identity instead).
     child: KeyedSubtree(
-      key: ValueKey(waiting
-          ? 'spot-waiting'
-          : 'spot-${sp?.id ?? 'none'}-${hasVideo ? 'v' : 'a'}'),
+      key: ValueKey(
+        waiting
+            ? 'spot-waiting'
+            : 'spot-${sp?.id ?? 'none'}-${hasVideo ? 'v' : 'a'}',
+      ),
       child: waiting
           ? _waitingFace()
-          : Stack(children: [
-              Positioned.fill(
-                child: hasVideo
-                    ? Container(
-                        color: Colors.black,
-                        child: Builder(builder: sp!.video!))
-                    : _avatarFace(sp?.nick ?? call.title),
-              ),
-              Positioned(
-                left: 8,
-                bottom: 6,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.55),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(sp?.nick ?? call.title,
+          : Stack(
+              children: [
+                Positioned.fill(
+                  child: hasVideo
+                      ? Container(
+                          color: Colors.black,
+                          child: Builder(builder: sp!.video!),
+                        )
+                      : _avatarFace(sp?.nick ?? call.title),
+                ),
+                Positioned(
+                  left: 8,
+                  bottom: 6,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      sp?.nick ?? call.title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.white)),
+                      style: const TextStyle(fontSize: 11, color: Colors.white),
+                    ),
+                  ),
                 ),
-              ),
-            ]),
+              ],
+            ),
     ),
   );
 }
@@ -1833,15 +1924,16 @@ Widget _pillPreview(UnifiedCall call) {
 /// buttons live outside it, so a tap never starts a drag (§31).
 /// Preview tap expands (§53); the tap slop tells click from drag apart.
 class MiniCallCard extends StatelessWidget {
-  const MiniCallCard(
-      {super.key,
-      required this.call,
-      required this.secs,
-      required this.preview,
-      required this.onTogglePreview,
-      required this.onDragStart,
-      required this.onDragUpdate,
-      required this.onDragEnd});
+  const MiniCallCard({
+    super.key,
+    required this.call,
+    required this.secs,
+    required this.preview,
+    required this.onTogglePreview,
+    required this.onDragStart,
+    required this.onDragUpdate,
+    required this.onDragEnd,
+  });
 
   final UnifiedCall call;
   final int secs;
@@ -1864,46 +1956,50 @@ class MiniCallCard extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(kCardRadius),
           border: Border.all(
-              color: speaking ? _pillSpeakGreen : Colors.transparent,
-              width: 1.5),
+            color: speaking ? _pillSpeakGreen : Colors.transparent,
+            width: 1.5,
+          ),
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(kCardRadius - 1.5),
           child: Material(
-            color:
-                Theme.of(context).colorScheme.surfaceContainerHighest,
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
             elevation: 8,
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              MiniCallControlBar(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                MiniCallControlBar(
                   call: call,
                   secs: secs,
                   previewVisible: preview.value > 0.5,
                   onTogglePreview: onTogglePreview,
                   onDragStart: onDragStart,
                   onDragUpdate: onDragUpdate,
-                  onDragEnd: onDragEnd),
-              // Collapsible preview (§23): height + opacity ride the same
-              // progress; the box never resizes for anything else.
-              // The element stays mounted throughout (§29): no rebind,
-              // no black flash on show.
-              SizeTransition(
-                sizeFactor: preview,
-                axis: Axis.vertical,
-                alignment: Alignment.topCenter,
-                child: FadeTransition(
-                  opacity: preview,
-                  child: SizedBox(
-                    width: kCardWidth,
-                    height: kPreviewHeight,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => call.onSetMinimized(false),
-                      child: _pillPreview(call),
+                  onDragEnd: onDragEnd,
+                ),
+                // Collapsible preview (§23): height + opacity ride the same
+                // progress; the box never resizes for anything else.
+                // The element stays mounted throughout (§29): no rebind,
+                // no black flash on show.
+                SizeTransition(
+                  sizeFactor: preview,
+                  axis: Axis.vertical,
+                  alignment: Alignment.topCenter,
+                  child: FadeTransition(
+                    opacity: preview,
+                    child: SizedBox(
+                      width: kCardWidth,
+                      height: kPreviewHeight,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => call.onSetMinimized(false),
+                        child: _pillPreview(call),
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ]),
+              ],
+            ),
           ),
         ),
       ),
@@ -1915,15 +2011,16 @@ class MiniCallCard extends StatelessWidget {
 /// name/status, then Preview → Mic → Camera → End → Full, always (§5).
 /// Layout never shifts: unavailable actions disable in place (§9, §13).
 class MiniCallControlBar extends StatelessWidget {
-  const MiniCallControlBar(
-      {super.key,
-      required this.call,
-      required this.secs,
-      required this.previewVisible,
-      required this.onTogglePreview,
-      required this.onDragStart,
-      required this.onDragUpdate,
-      required this.onDragEnd});
+  const MiniCallControlBar({
+    super.key,
+    required this.call,
+    required this.secs,
+    required this.previewVisible,
+    required this.onTogglePreview,
+    required this.onDragStart,
+    required this.onDragUpdate,
+    required this.onDragEnd,
+  });
 
   final UnifiedCall call;
   final int secs;
@@ -1943,16 +2040,17 @@ class MiniCallControlBar extends StatelessWidget {
       (call.kind == CallKind.group && call.video);
 
   String get _endTooltip => switch (call.kind) {
-        CallKind.direct => 'Завершить звонок',
-        CallKind.group => 'Покинуть звонок',
-        CallKind.serverVoice => 'Выйти из голосового канала',
-      };
+    CallKind.direct => 'Завершить звонок',
+    CallKind.group => 'Покинуть звонок',
+    CallKind.serverVoice => 'Выйти из голосового канала',
+  };
 
-  Widget _btn(
-      {required String tooltip,
-      required IconData icon,
-      required VoidCallback? onPressed,
-      Color? color}) {
+  Widget _btn({
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback? onPressed,
+    Color? color,
+  }) {
     return Tooltip(
       message: tooltip,
       child: InkWell(
@@ -1962,8 +2060,7 @@ class MiniCallControlBar extends StatelessWidget {
           width: 36,
           height: 36,
           alignment: Alignment.center,
-          child: Icon(icon,
-              size: 20, color: color ?? Colors.white),
+          child: Icon(icon, size: 20, color: color ?? Colors.white),
         ),
       ),
     );
@@ -1973,92 +2070,92 @@ class MiniCallControlBar extends StatelessWidget {
   Widget build(BuildContext context) {
     // Watching-only (peer video live, our camera off) — red videocam_off.
     final cameraLive = call.video && !call.cameraOff;
-    final watchingOnly =
-        (call.video || call.remoteVideo) && !cameraLive;
+    final watchingOnly = (call.video || call.remoteVideo) && !cameraLive;
     return SizedBox(
       height: kBarHeight,
-      child: Row(children: [
-        if (call.kind == CallKind.direct)
-          Padding(
-            padding: const EdgeInsets.only(left: 10),
-            child: Avatar(call.title, radius: 12),
-          )
-        else
-          const Padding(
-            padding: EdgeInsets.only(left: 12),
-            child: Icon(Icons.volume_up, size: 20),
-          ),
-        Expanded(
-          child: GestureDetector(
-            key: const ValueKey('mini-drag-handle'),
-            behavior: HitTestBehavior.opaque,
-            onPanStart: onDragStart,
-            onPanUpdate: onDragUpdate,
-            onPanEnd: onDragEnd,
-            child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 8),
-              child: Column(
+      child: Row(
+        children: [
+          if (call.kind == CallKind.direct)
+            Padding(
+              padding: const EdgeInsets.only(left: 10),
+              child: Avatar(call.title, radius: 12),
+            )
+          else
+            const Padding(
+              padding: EdgeInsets.only(left: 12),
+              child: Icon(Icons.volume_up, size: 20),
+            ),
+          Expanded(
+            child: GestureDetector(
+              key: const ValueKey('mini-drag-handle'),
+              behavior: HitTestBehavior.opaque,
+              onPanStart: onDragStart,
+              onPanUpdate: onDragUpdate,
+              onPanEnd: onDragEnd,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text(call.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w700)),
-                    Text(_pillStatus(call, secs),
-                        style: const TextStyle(
-                            fontSize: 11, color: Colors.grey)),
-                  ]),
+                    Text(
+                      call.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    Text(
+                      _pillStatus(call, secs),
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
-        // 1. Preview show/hide: presentation only, never media (§6).
-        _btn(
+          // 1. Preview show/hide: presentation only, never media (§6).
+          _btn(
             tooltip: previewVisible
                 ? 'Скрыть предпросмотр'
                 : 'Показать предпросмотр',
-            icon: previewVisible
-                ? Icons.unfold_less
-                : Icons.unfold_more,
-            onPressed: onTogglePreview),
-        // 2. Local microphone only (§7).
-        _btn(
-            tooltip: call.muted
-                ? 'Включить микрофон'
-                : 'Выключить микрофон',
+            icon: previewVisible ? Icons.unfold_less : Icons.unfold_more,
+            onPressed: onTogglePreview,
+          ),
+          // 2. Local microphone only (§7).
+          _btn(
+            tooltip: call.muted ? 'Включить микрофон' : 'Выключить микрофон',
             icon: call.muted ? Icons.mic_off : Icons.mic,
-            onPressed: () => call.onToggleMute()),
-        // 3. Local camera only (§8); hide-preview and camera-off are
-        // different actions and stay different buttons. Watching-only
-        // (peer video live, ours off) — red videocam_off.
-        _btn(
+            onPressed: () => call.onToggleMute(),
+          ),
+          // 3. Local camera only (§8); hide-preview and camera-off are
+          // different actions and stay different buttons. Watching-only
+          // (peer video live, ours off) — red videocam_off.
+          _btn(
             tooltip: !_cameraAvailable
                 ? 'Камера недоступна'
-                : (cameraLive
-                    ? 'Выключить камеру'
-                    : 'Включить камеру'),
+                : (cameraLive ? 'Выключить камеру' : 'Включить камеру'),
             icon: watchingOnly
                 ? Icons.videocam_off
                 : (call.cameraOff ? Icons.videocam_off : Icons.videocam),
             color: watchingOnly ? Colors.red : null,
-            onPressed: _cameraAvailable
-                ? () => call.onToggleCamera()
-                : null),
-        // 4. Destructive leave, always the same slot (§10, §44).
-        _btn(
+            onPressed: _cameraAvailable ? () => call.onToggleCamera() : null,
+          ),
+          // 4. Destructive leave, always the same slot (§10, §44).
+          _btn(
             tooltip: _endTooltip,
             icon: Icons.call_end,
             color: Colors.red,
-            onPressed: () => call.onHangup()),
-        // 5. Full expand, always last (§11).
-        _btn(
+            onPressed: () => call.onHangup(),
+          ),
+          // 5. Full expand, always last (§11).
+          _btn(
             tooltip: 'Развернуть звонок',
             icon: Icons.open_in_full,
-            onPressed: () => call.onSetMinimized(false)),
-        const SizedBox(width: 4),
-      ]),
+            onPressed: () => call.onSetMinimized(false),
+          ),
+          const SizedBox(width: 4),
+        ],
+      ),
     );
   }
 }
