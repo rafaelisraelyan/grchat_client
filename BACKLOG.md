@@ -23,25 +23,21 @@
 
 ## Открыто
 
-- **Форк libwebrtc с MF — ВЕРДИКТ УСТАНОВЛЕН: оправдан (2026-10-13)**
-  - Chrome/контроль (единственный прогон 00:36, ночной свет): OBS Virtual
-    Camera честно 1080p@60 measured, NVIDIA Broadcast 1080p@30, физическая
-    камера 720p@30 номинально / реально ~10 fps (автоэкспозиция).
-  - Живой тест освещения (01:05–01:06): физическая камера 15 → 10 → 15,
-    FpsCapLearn отслеживает по одному переходу без дребезга; по этой фиче
-    правок больше не нужно.
-  - Проба mandatory-min (01:23–01:26, звонок на OBS Virtual Camera):
-    `camera delivers 1280x720@60` — DS-стек открыл capability на 60 fps
-    под mandatory min (гипотеза B снята: констрейнт-слой min передаёт), но
-    эффективно fps остался 10–15 при `limit=none` и свободном канале
-    (гипотеза A подтверждена: DS-путь libwebrtc m150 не отдаёт реальный
-    fps, который тот же фильтр даёт через MF в Chrome).
-  - Итоговая пара: Chrome/MF 60 fps measured против нашего 10–15 на том
-    же фильтре. Цели форка: 1080p30 (Broadcast), 1080p60 (OBS VC).
-  - Физическая камера — НЕ цель форка (её потолок драйвер/свет).
-    Лестница зондов остаётся ideal по умолчанию; mandatory-min держим
-    за dart-define.
-  - Полный отчёт: `%TEMP%\opencode\fpsprobe\MF_FORK_REPORT.md` (раздел 7).
+- **Форк libwebrtc с MF — ЗАКРЫТО: не оправдан (2026-10-13)**
+  - Итог-цепь: (1) device-selection bug — плагин читает видео источник
+    только из legacy `optional: [{sourceId}]`; наш `deviceId` молча
+    игнорился → все прошлые «OBS VC» пробы grchat открывали HD Webcam
+    (device 0); (2) в вечернем свете HD Webcam даёт честные 10–15 fps
+    (автоэкспозиция) — световой тест 15→10→15 это показал.
+  - После sourceId-фикса OBS Virtual Camera отдала через НАШ СТЕК
+    стабильные 1080p@59–60 (02:13–02:15, `camera delivers 1920x1080@60`,
+    тир fhd, limit=none).
+  - Вердикт: DS-путь libwebrtc m150 — не потолок. Прошлая пара «Chrome 60
+    / grchat 15» была по сути Chrome*OBS VC* против grchat*HD Webcam*.
+  - Остаток: контрольный звонок без GRCHAT_VIDEOMINFPS (ideal-форма) —
+    вшивать ли mandatory.minFrameRate как дефолт первого кандидата;
+    NVIDIA Broadcast перемерить с sourceId (ожидание 1080p30).
+  - Отчёт: `%TEMP%\opencode\fpsprobe\MF_FORK_REPORT.md`.
 
 - **Self-preview corner-resize — «не до конца устраивает результат» (2026-10-12)**
   - Контекст: в `lib/src/call/call_surface.dart` сделаны (1) исправная таблица якорей
