@@ -580,6 +580,13 @@ class CallState extends Notifier<ActiveCall?> {
   /// The user-picked (or OBS-preferred) microphone. A stale pick (e.g.
   /// NVIDIA Broadcast was closed) falls back to the platform default
   /// silently: an exact-miss must not take the whole call down.
+  ///
+  /// Plugin grammar (§discoveries 2026-10-13): the AUDIO input device is
+  /// matched by the legacy optional/[{sourceId}] values of
+  /// SanitizeDeviceIdFromAudioBuffers; `deviceId` (plain-string) only
+  /// selects the PLAYBACK (speaker) output, and a `{'exact': N}` map is
+  /// ignored everywhere - before this fix the pick was cosmetic and the
+  /// capture always opened RecordingDevice(0).
   Future<Map<String, dynamic>> _micConstraints() async {
     final audio = <String, dynamic>{
       'echoCancellation': true,
@@ -589,7 +596,9 @@ class CallState extends Notifier<ActiveCall?> {
     };
     final micId = await MediaPrefs.preferredMicId();
     if (micId != null && micId.isNotEmpty) {
-      audio['deviceId'] = {'exact': micId};
+      audio['optional'] = [
+        {'sourceId': micId},
+      ];
     }
     return audio;
   }
@@ -678,13 +687,21 @@ class CallState extends Notifier<ActiveCall?> {
       final probe = await _firstFrameProbe(s);
       if (probe.frameArrived && probe.height >= c.$2 * 0.8) {
         realH = probe.height;
-        final usedId = await MediaPrefs.preferredCameraId();
-        final pickDesc = (usedId == null || usedId.isEmpty)
+        // HONEST device log (§lessons 2026-10-13): 'pick=' used to print
+        // the USER'S REQUEST while the plugin silently opened device 0 -
+        // that misread cost us a week of chasing the wrong cause. The
+        // getSettings().deviceId on this plugin is NOT an echo: it is the
+        // ACTUALLY opened device (the matched sourceId, or the device-0
+        // fallback re-assigned inside the plugin before being echoed).
+        final st = s.getVideoTracks().first.getSettings();
+        final opened = (st['deviceId'] ?? '').toString();
+        final requestedPick = (await MediaPrefs.preferredCameraId());
+        final pickDesc = (requestedPick == null || requestedPick.isEmpty)
             ? 'auto'
-            : 'explicit ${usedId.substring(0, usedId.length < 8 ? usedId.length : 8)}…';
+            : 'explicit ${requestedPick.substring(0, requestedPick.length < 8 ? requestedPick.length : 8)}…';
         dlog('camera delivers ${c.$1}x${c.$2}@${c.$3} '
             '(frames verified, real ${probe.width}x${probe.height}, '
-            'pick=$pickDesc)');
+            'requested=$pickDesc, opened=$opened)');
         chosen = s;
         break;
       }
