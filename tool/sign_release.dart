@@ -10,6 +10,10 @@
 //       Writes grchat_client-windows.zip.sig (128 hex chars). Upload the
 //       .sig next to the zip in the GitHub release.
 //
+//   dart run tool/sign_release.dart verify <file> <64-hex-public-key> [<file>.sig]
+//       Verifies a detached signature (defaults to <file>.sig) against the
+//       given public key. Same algorithm UpdateCenter uses to gate installs.
+//
 // Pure Dart, no Flutter imports: runs with plain `dart run`.
 import 'dart:io';
 
@@ -26,7 +30,7 @@ List<int> _unhex(String s) => [
 Future<void> main(List<String> args) async {
   final algo = Ed25519();
   if (args.isEmpty) {
-    stderr.writeln('usage: keygen | sign <file>');
+    stderr.writeln('usage: keygen | sign <file> | verify <file> <pub> [sig]');
     exit(64);
   }
   switch (args[0]) {
@@ -36,6 +40,31 @@ Future<void> main(List<String> args) async {
       final pub = (await kp.extractPublicKey()).bytes;
       stdout.writeln('PUBLIC  (put in app): ${_hex(pub)}');
       stdout.writeln('PRIVATE (keep secret): ${_hex(seed)}');
+    case 'verify':
+      if (args.length < 3) {
+        stderr.writeln('usage: verify <file> <64-hex-public-key> [<file>.sig]');
+        exit(64);
+      }
+      final dataPath = args[1];
+      final pubHex = args[2];
+      final sigPath = args.length > 3 ? args[3] : '$dataPath.sig';
+      if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(pubHex)) {
+        stderr.writeln('public key must be 64 hex chars');
+        exit(64);
+      }
+      final sigRaw =
+          (await File(sigPath).readAsString()).trim().replaceAll('\n', '');
+      if (!RegExp(r'^[0-9a-fA-F]{128}$').hasMatch(sigRaw)) {
+        stderr.writeln('signature must be 128 hex chars');
+        exit(64);
+      }
+      final pub = SimplePublicKey(_unhex(pubHex), type: KeyPairType.ed25519);
+      final ok = await algo.verify(
+        await File(dataPath).readAsBytes(),
+        signature: Signature(_unhex(sigRaw), publicKey: pub),
+      );
+      stdout.writeln(ok ? 'SIGNATURE OK' : 'SIGNATURE MISMATCH');
+      exit(ok ? 0 : 65);
     case 'sign':
       if (args.length < 2) {
         stderr.writeln('usage: sign <file>');

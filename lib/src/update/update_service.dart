@@ -63,7 +63,8 @@ class UpdateCenter extends Notifier<UpdateUiState> {
   /// with. Generate the pair with `dart run tool/sign_release.dart keygen`,
   /// paste the PUBLIC half here, keep the private half off GitHub.
   /// Empty = signing not configured yet: installs are refused (fail closed).
-  static const updatePublicKeyHex = '';
+  static const updatePublicKeyHex =
+      '73579ee6e06d793b066f6efed6ec87d15481b8d419dc0184a15b7b4ee4b1ad0c';
 
   /// In-place install only exists on Windows (PowerShell + Expand-Archive).
   /// Other platforms see the version notice and fetch the dmg by hand.
