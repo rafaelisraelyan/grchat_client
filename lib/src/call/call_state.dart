@@ -12,6 +12,7 @@ import 'call_tones.dart';
 import 'sdp_tuning.dart';
 import 'group_call.dart' show groupCallProvider;
 import 'media_session.dart';
+import 'quality_tier.dart';
 import 'sfu_marker.dart';
 enum CallPhase { ringing, active }
 
@@ -231,6 +232,7 @@ class CallState extends Notifier<ActiveCall?> {
       dlog('pc connection=$s');
       if (s == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
         state = state?.copyWith(linkDown: false);
+        _startQuality();
         _logStatsSnapshot('connected');
       } else if (s ==
               RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
@@ -295,32 +297,204 @@ class CallState extends Notifier<ActiveCall?> {
     }
   }
 
-  Future<void> _addLocal(RTCPeerConnection pc, bool video) async {
-    // Strict first: AEC/NS/AGC for voice, 720p cap for video (1080p+
-    // melts laptop CPUs for talking heads). Legacy bool fallback keeps
-    // odd devices calling instead of failing with a constraint error.
+  // --- Adaptive send quality (P2P) ------------------------------------------
+  // The camera is captured once at the best mode it offers (1080p/60 asked
+  // for). What is SENT is steered by a tier ladder (eco 540p30 ... max
+  // 1080p60): a call starts at 720p30, climbs while the link AND the CPU
+  // keep up, and steps back down when they do not. See quality_tier.dart.
+
+  /// How often the link is sampled.
+  static const _qualityPeriod = Duration(seconds: 3);
+
+  QualityController? _quality;
+  Timer? _qualityTimer;
+  bool _qualityBusy = false;
+  RTCRtpSender? _audioSender;
+
+  /// Logged "no outgoing video" state (once per stall episode).
+  bool _qualityStallLogged = false;
+
+  /// Real capture height, learned from the sent frames (see _qualityTick).
+  /// 0 = not known yet: no downscale is applied until it is.
+  int _captureHeight = 0;
+
+  /// No learning before this moment (stats may lag a source switch).
+  DateTime _learnHoldUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _holdLearning() =>
+      _learnHoldUntil = DateTime.now().add(_qualityPeriod * 2);
+
+  /// Start (or re-apply) quality control once the connection is up. Idempotent:
+  /// "connected" can fire again after an ICE restart.
+  void _startQuality() {
+    _applyAudio();
+    if (_videoSender == null) return; // audio-only call
+    final now = DateTime.now();
+    _quality = _quality ?? QualityController(startedAt: now);
+    // Re-arm the warmup clock on a fresh connected (e.g. after ICE restart:
+    // the bandwidth estimate starts over at its dummy value).
+    _quality!.markConnected(now);
+    _applyTier();
+    _qualityTimer ??= Timer.periodic(_qualityPeriod, (_) => _qualityTick());
+  }
+
+  void _stopQuality() {
+    _qualityTimer?.cancel();
+    _qualityTimer = null;
+    _quality = null;
+    _qualityBusy = false;
+    _qualityStallLogged = false;
+    _audioSender = null;
+    _captureHeight = 0;
+    _learnHoldUntil = DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
+  Future<void> _qualityTick() async {
+    final pc = _pc;
+    final q = _quality;
+    if (_qualityBusy || pc == null || q == null) return;
+    if (state?.phase != CallPhase.active) return;
+    _qualityBusy = true;
     try {
-      _local = await navigator.mediaDevices.getUserMedia({
-        'audio': {
-          'echoCancellation': true,
-          'noiseSuppression': true,
-          'autoGainControl': true,
-        },
-        'video': video
-            ? {
-                'facingMode': 'user',
-                'width': {'ideal': 1280},
-                'height': {'ideal': 720},
-                'frameRate': {'ideal': 30},
-              }
-            : false,
-      });
-      dlog('getUserMedia strict constraints');
+      final m = LinkMetrics.fromReports(await pc.getStats());
+      // Learn the camera's real height. getSettings() on desktop only echoes
+      // the REQUESTED mode, but a SENT frame is never taller than the
+      // captured one, so the largest height seen can only under-estimate
+      // (harmless: it converges upward as the encoder ramps up), never
+      // over-estimate. Screen frames are excluded, and just after a share
+      // toggle the stats may still describe the other source.
+      final fh = m.frameHeight;
+      if (fh != null &&
+          _screen == null &&
+          !DateTime.now().isBefore(_learnHoldUntil) &&
+          fh.round() > _captureHeight) {
+        _captureHeight = fh.round();
+        dlog('capture height learned: ${_captureHeight}p');
+        await _applyTier();
+      }
+      final changed = q.update(m, DateTime.now());
+      if (changed != null) {
+        dlog('video tier -> $changed '
+            '(avail=${m.availableOutKbps?.round()}kbps '
+            'rtt=${m.rttMs?.round()}ms loss=${m.lossPct?.toStringAsFixed(1)}% '
+            'limit=${m.limitation})');
+        await _applyTier();
+      }
+      // One diagnostics line per tick (the numbers round to integers; a
+      // missing value prints as '-').
+      String n(Object? v) =>
+          v is double ? v.round().toString() : (v?.toString() ?? '-');
+      final frameW = m.frameWidth?.round(),
+          frameH = m.frameHeight?.round();
+      dlog('quality: tier=${q.tier.name} '
+          'avail=${n(m.availableOutKbps)} sent=${n(q.sentKbps)} '
+          'fps=${n(m.framesPerSecond)} '
+          'frame=${(frameW != null && frameH != null && frameW > 0 && frameH > 0) ? '${frameW}x$frameH' : '-'} '
+          'rtt=${n(m.rttMs)} '
+          'loss=${m.lossPct?.toStringAsFixed(1) ?? '-'}% '
+          'limit=${m.limitation ?? '-'}');
+      if (q.videoStalled && !_qualityStallLogged) {
+        _qualityStallLogged = true;
+        dlog('quality: no outgoing video (bytes frozen) — tier control paused');
+      } else if (!q.videoStalled) {
+        _qualityStallLogged = false;
+      }
+      final lowFps = q.consumeLowFpsWarning();
+      if (lowFps != null) dlog(lowFps);
     } catch (e) {
-      dlog('getUserMedia strict failed, legacy fallback: $e');
-      _local = await navigator.mediaDevices
-          .getUserMedia({'audio': true, 'video': video});
+      dlog('quality tick failed: $e');
+    } finally {
+      _qualityBusy = false;
     }
+  }
+
+  /// Push the current tier into the video sender. Best effort: a platform
+  /// that rejects setParameters keeps WebRTC's own adaptation, the call
+  /// itself is never affected.
+  Future<void> _applyTier() async {
+    final sender = _videoSender;
+    final q = _quality;
+    if (sender == null || q == null) return;
+    try {
+      final p = sender.parameters;
+      final enc = p.encodings;
+      if (enc == null || enc.isEmpty) {
+        dlog('tier apply skipped: no encodings');
+        return;
+      }
+      // A shared screen is not camera-sized: never downscale it by a
+      // camera-derived factor, and keep text sharp over smooth motion.
+      final sharing = _screen != null;
+      final tp = tierParams(q.tier,
+          captureHeight: sharing ? 0 : _captureHeight, captureFps: 0);
+      for (final e in enc) {
+        e.maxBitrate = tp.maxBitrate;
+        e.maxFramerate = tp.maxFramerate;
+        e.scaleResolutionDownBy = tp.scaleDownBy;
+      }
+      p.degradationPreference = sharing
+          ? RTCDegradationPreference.MAINTAIN_RESOLUTION
+          : RTCDegradationPreference.BALANCED;
+      final ok = await sender.setParameters(p);
+      dlog('video tier ${q.tier} scale=${tp.scaleDownBy.toStringAsFixed(2)} '
+          'fps<=${tp.maxFramerate} applied=$ok');
+    } catch (e) {
+      dlog('video tier apply failed: $e');
+    }
+  }
+
+  /// Audio send ceiling matching the Opus fmtp we negotiate (sdp_tuning).
+  Future<void> _applyAudio() async {
+    final sender = _audioSender;
+    if (sender == null) return;
+    try {
+      final p = sender.parameters;
+      final enc = p.encodings;
+      if (enc == null || enc.isEmpty) return;
+      for (final e in enc) {
+        e.maxBitrate = opusSenderMaxBitrate;
+      }
+      final ok = await sender.setParameters(p);
+      dlog('audio cap ${opusSenderMaxBitrate ~/ 1000}kbps applied=$ok');
+    } catch (e) {
+      dlog('audio cap failed: $e');
+    }
+  }
+
+  /// Camera/mic capture. The camera is asked for 1080p/60 first. Desktop
+  /// opens the device with exactly the requested mode and has no
+  /// negotiation, so if that mode is refused outright we retry with the
+  /// old 720p/30 instead of failing the call.
+  Future<MediaStream> _openLocalMedia(bool video) async {
+    // Echo cancellation, noise suppression and auto gain stay on; the
+    // high-pass filter removes desk/fan rumble that costs bits and clarity.
+    final audio = {
+      'echoCancellation': true,
+      'noiseSuppression': true,
+      'autoGainControl': true,
+      'highpassFilter': true,
+    };
+    Map<String, dynamic> cam(int w, int h, int fps) => {
+          'width': {'ideal': w},
+          'height': {'ideal': h},
+          'frameRate': {'ideal': fps},
+        };
+    if (!video) {
+      return navigator.mediaDevices
+          .getUserMedia({'audio': audio, 'video': false});
+    }
+    try {
+      return await navigator.mediaDevices
+          .getUserMedia({'audio': audio, 'video': cam(1920, 1080, 60)});
+    } catch (e) {
+      dlog('camera 1080p60 refused ($e), falling back to 720p30');
+      return navigator.mediaDevices
+          .getUserMedia({'audio': audio, 'video': cam(1280, 720, 30)});
+    }
+  }
+
+  Future<void> _addLocal(RTCPeerConnection pc, bool video) async {
+    _local = await _openLocalMedia(video);
     final tracks = _local!.getTracks();
     dlog('getUserMedia audio=${_local!.getAudioTracks().length} '
         'video=${_local!.getVideoTracks().length}');
@@ -328,6 +502,7 @@ class CallState extends Notifier<ActiveCall?> {
       dlog('local track kind=${t.kind} id=${t.id} enabled=${t.enabled}');
       final sender = await pc.addTrack(t, _local!);
       if (t.kind == 'video') _videoSender = sender;
+      if (t.kind == 'audio') _audioSender = sender;
     }
     dlog('senders=${(await pc.getSenders()).length}');
     if (video) {
@@ -353,11 +528,10 @@ class CallState extends Notifier<ActiveCall?> {
     try {
       _pc = await _newPc('');
       await _addLocal(_pc!, video);
-      final offer = await _pc!.createOffer({});
-      // Pin Opus/FEC + video cap before the description goes live.
-      final tunedOffer = tuneLocalSdp(offer.sdp ?? '');
-      await _pc!.setLocalDescription(
-          RTCSessionDescription(tunedOffer, 'offer'));
+      final rawOffer = await _pc!.createOffer({});
+      final offer = RTCSessionDescription(
+          tuneOpusSdp(rawOffer.sdp ?? ''), rawOffer.type);
+      await _pc!.setLocalDescription(offer);
       final sdp = (await _pc!.getLocalDescription())?.sdp ?? '';
       dlog('offer ${SdpSummary.parse(sdp)}');
       final callId =
@@ -459,10 +633,10 @@ class CallState extends Notifier<ActiveCall?> {
           state = state?.copyWith(remoteVideo: true);
         }
       }
-      final answer = await _pc!.createAnswer({});
-      final tunedAnswer = tuneLocalSdp(answer.sdp ?? '');
-      await _pc!.setLocalDescription(
-          RTCSessionDescription(tunedAnswer, 'answer'));
+      final rawAnswer = await _pc!.createAnswer({});
+      final answer = RTCSessionDescription(
+          tuneOpusSdp(rawAnswer.sdp ?? ''), rawAnswer.type);
+      await _pc!.setLocalDescription(answer);
       final sdp = (await _pc!.getLocalDescription())?.sdp ?? '';
       dlog('answer ${SdpSummary.parse(sdp)}');
       await api.answer(callId: cur.callId, accept: true, sdp: sdp);
@@ -616,6 +790,8 @@ class CallState extends Notifier<ActiveCall?> {
         _localR?.srcObject = stream;
         dlog('screenshare sharing');
         state = state?.copyWith(sharingScreen: true);
+        _holdLearning();
+        _applyTier();
       } else {
         final cam = _local?.getVideoTracks();
         final sender = _videoSender;
@@ -633,6 +809,8 @@ class CallState extends Notifier<ActiveCall?> {
         _screen = null;
         if (_localR != null) _localR!.srcObject = _local;
         state = state?.copyWith(sharingScreen: false);
+        _holdLearning();
+        _applyTier();
       }
     } catch (e) {
       // User closed the picker or capture failed: stay on camera, but say so.
@@ -974,6 +1152,7 @@ class CallState extends Notifier<ActiveCall?> {
   Future<void> _closeTransport() async {
     _remoteDescSet = false;
     _remoteVideoArrived = false;
+    _stopQuality();
     _videoSender = null;
     if (_screen != null) {
       for (final t in _screen!.getTracks()) {
