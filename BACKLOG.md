@@ -23,6 +23,19 @@
 
 ## Открыто
 
+- **Форк libwebrtc с MF (30 fps) — решение по контрольному тесту (2026-10-13)**
+  - Контрольный тест Chrome/MF на той же машине показал: OBS Virtual Camera
+    честно 1080p@60, NVIDIA Broadcast честно 1080p@30, физическая камера
+    04f2:b78a — 720p@30 номинально, **реально ~10 fps** (автоэкспозиция/свет).
+  - Вывод: потолок для виртуальных камер в НАШЕМ стеке (выбор
+    DS-capability в libwebrtc) → форк с MF оправдан: 1080p30 (Broadcast)
+    и 1080p60 (OBS VC). Для физической камеры форк НЕ даст улучшения —
+    её потолок в драйвере и свете.
+  - Перед форком: 10-минутный эксперимент — frameRate как mandatory
+    min/max в нашем getUserMedia (Chrome показал, что mandatory min
+    меняет выбор capability).
+  - Полный отчёт: `%TEMP%\opencode\fpsprobe\MF_FORK_REPORT.md`.
+
 - **Self-preview corner-resize — «не до конца устраивает результат» (2026-10-12)**
   - Контекст: в `lib/src/call/call_surface.dart` сделаны (1) исправная таблица якорей
     `topRight/bottomLeft` (фикс вылета за viewport + регресс-тесты), (2) скаляр resize'а
