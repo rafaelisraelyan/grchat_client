@@ -4,6 +4,9 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../call/call_diagnostics.dart';
+import 'server_sign.dart';
+
 /// Transport state for the UI banner.
 enum ConnStatus { connected, connecting, offline }
 
@@ -21,8 +24,10 @@ bool shouldTrustDevCa({required bool isDebug, required String caPath}) =>
 
 /// Trust context with the dev CA added on top of the system roots, or null
 /// when the dev CA must not be trusted (release, or no path given).
-SecurityContext? devTrustContext(
-    {required bool isDebug, required String caPath}) {
+SecurityContext? devTrustContext({
+  required bool isDebug,
+  required String caPath,
+}) {
   if (!shouldTrustDevCa(isDebug: isDebug, caPath: caPath)) return null;
   final ctx = SecurityContext(withTrustedRoots: true);
   ctx.setTrustedCertificatesBytes(File(caPath).readAsBytesSync());
@@ -42,16 +47,22 @@ class GrchatConnection {
     Connector? connector,
     String devCaPath = _devCaFromDefine,
     bool isDebug = kDebugMode,
-  }) : _connector = connector ??
-            _secureConnector(devCaPath: devCaPath, isDebug: isDebug);
+  }) : _connector =
+           connector ??
+           _secureConnector(devCaPath: devCaPath, isDebug: isDebug);
 
   final Connector _connector;
 
-  static Connector _secureConnector(
-          {required String devCaPath, required bool isDebug}) =>
-      (host, port) => SecureSocket.connect(host, port,
-          context: devTrustContext(isDebug: isDebug, caPath: devCaPath),
-          onBadCertificate: (_) => false);
+  static Connector _secureConnector({
+    required String devCaPath,
+    required bool isDebug,
+  }) =>
+      (host, port) => SecureSocket.connect(
+        host,
+        port,
+        context: devTrustContext(isDebug: isDebug, caPath: devCaPath),
+        onBadCertificate: (_) => false,
+      );
 
   Socket? _socket;
   StreamSubscription<String>? _sub;
@@ -126,10 +137,13 @@ class GrchatConnection {
   void _loop(int gen) async {
     var attempt = 0;
     while (!_manualClose && !isOpen && gen == _gen) {
-      await Future.delayed(Duration(
+      await Future.delayed(
+        Duration(
           seconds: attempt < _backoff.length
               ? _backoff[attempt]
-              : _backoff.last));
+              : _backoff.last,
+        ),
+      );
       if (_manualClose || isOpen || gen != _gen) return;
       attempt++;
       await _open();
@@ -139,18 +153,24 @@ class GrchatConnection {
     }
   }
 
-  Future<Map<String, dynamic>> request(String type,
-      {String? reqId, Map<String, dynamic> fields = const {}}) {
+  Future<Map<String, dynamic>> request(
+    String type, {
+    String? reqId,
+    Map<String, dynamic> fields = const {},
+  }) {
     final id = reqId ?? 'r${_seq++}';
     final msg = <String, dynamic>{'v': 1, 'type': type, 'req_id': id}
       ..addAll(fields);
     final c = Completer<Map<String, dynamic>>();
     _pending[id] = c;
     _send(msg);
-    return c.future.timeout(const Duration(seconds: 15), onTimeout: () {
-      _pending.remove(id);
-      throw TimeoutException('no response for $id');
-    });
+    return c.future.timeout(
+      const Duration(seconds: 15),
+      onTimeout: () {
+        _pending.remove(id);
+        throw TimeoutException('no response for $id');
+      },
+    );
   }
 
   void _send(Map<String, dynamic> msg) {
@@ -159,6 +179,28 @@ class GrchatConnection {
 
   void _onLine(String line) {
     if (line.trim().isEmpty) return;
+    _dispatch(line);
+  }
+
+  bool _sigAbsentLogged = false;
+
+  /// Signature gate sits before ANY dispatch (§server_sign): a line that
+  /// carries a signature but fails verification is dropped whole - it must
+  /// never reach a response matcher or the push stream.
+  Future<void> _dispatch(String line) async {
+    final check = await checkServerEnvelopeSig(line);
+    switch (check) {
+      case ServerSigCheck.bad:
+        dlog('server envelope signature check failed - line dropped');
+        return;
+      case ServerSigCheck.absent:
+        if (!_sigAbsentLogged && kDebugMode) {
+          _sigAbsentLogged = true;
+          dlog('server envelope unsigned (GRCHAT_SIGN_SEED off?)');
+        }
+      case ServerSigCheck.ok:
+        break;
+    }
     Map<String, dynamic> msg;
     try {
       msg = jsonDecode(line) as Map<String, dynamic>;
