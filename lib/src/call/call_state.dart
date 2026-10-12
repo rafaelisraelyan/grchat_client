@@ -12,6 +12,7 @@ import 'call_tones.dart';
 import 'sdp_tuning.dart';
 import 'group_call.dart' show groupCallProvider;
 import 'media_session.dart';
+import 'camera_lock.dart';
 import 'quality_tier.dart';
 import 'sfu_marker.dart';
 enum CallPhase { ringing, active }
@@ -482,6 +483,14 @@ class CallState extends Notifier<ActiveCall?> {
           'frameRate': {'ideal': fps},
         };
     if (!video) {
+      return navigator.mediaDevices
+          .getUserMedia({'audio': audio, 'video': false});
+    }
+    // Cross-process arbitration: another grchat instance may already own
+    // the camera. Rather than both sides "opening" the device and getting
+    // zero frames, this instance goes audio-only and stays a receiver.
+    if (!CameraLock.acquire()) {
+      dlog('camera busy (another grchat instance owns it), joining audio-only');
       return navigator.mediaDevices
           .getUserMedia({'audio': audio, 'video': false});
     }
@@ -1224,6 +1233,9 @@ class CallState extends Notifier<ActiveCall?> {
       await _local?.dispose();
     } catch (_) {}
     _local = null;
+    // Video cameras serve one grabber on Windows; free our claim so the
+    // next call (here or in another instance) can take the device.
+    CameraLock.release();
     try {
       await _remoteStream?.dispose();
     } catch (_) {}
