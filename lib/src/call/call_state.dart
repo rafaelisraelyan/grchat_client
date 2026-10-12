@@ -604,24 +604,29 @@ class CallState extends Notifier<ActiveCall?> {
     // The user-picked (or OBS-preferred) camera; empty id = the platform
     // default, every probe candidate then carries it.
     final camId = await MediaPrefs.preferredCameraId();
-    // 10-minute fork-decision probe (§mandatory-min): with
-    // GRCHAT_VIDEOMINFPS=1 every candidate asks frameRate as a mandatory
-    // min instead of an ideal. Two outcomes decide the libwebrtc fork:
-    // the plugin honours it -> fps lands 30/60, the DS chooser was the
-    // whole budget and constraints suffice; it ignores it (or the DS
-    // capability list has no >=min mode) -> flat 15 persists with an
-    // expressed min and the fork is the only road.
+    // STEP 0 of the fork-decision probe (§plugin-parse): the desktop plugin
+    // (flutter_media_stream.cc) reads ONLY a scalar or {'ideal': N}; the
+    // {'min': N} shape is silently DROPPED (fps falls back to
+    // DEFAULT_FPS=30). The syntax this plugin honours is the legacy
+    // video: {mandatory: {minFrameRate: N}} block, which collapses to the
+    // single int handed to the native Create(...). GRCHAT_VIDEOMINFPS=1
+    // therefore probes with THAT syntax: if the native Create(fps=60)
+    // picks a 60 fps DirectShow capability, constraints suffice and the
+    // fork is off the table; if InputFramesPerSecond stays 10-16 the
+    // prebuilt DS capture ignores the rate no matter the spelling.
     final mandatoryMin =
         (int.tryParse(const String.fromEnvironment('GRCHAT_VIDEOMINFPS')) ??
                 0) >
             0;
-    if (mandatoryMin) dlog('video mandatory-min probe active');
+    if (mandatoryMin) dlog('video mandatory-min probe active (minFrameRate)');
     Map<String, dynamic> cam(int w, int h, int fps, {bool mandatory = false}) {
       final c = <String, dynamic>{
         'width': {'ideal': w},
         'height': {'ideal': h},
-        'frameRate': frameRateConstraint(fps,
-            mandatory: mandatory && mandatoryMin),
+        if (mandatory && mandatoryMin)
+          'mandatory': {'minFrameRate': fps}
+        else
+          'frameRate': {'ideal': fps},
       };
       if (camId != null && camId.isNotEmpty) {
         c['deviceId'] = {'ideal': camId};
@@ -637,6 +642,7 @@ class CallState extends Notifier<ActiveCall?> {
       return null;
     }
     const candidates = [
+      (1920, 1080, 60),
       (1920, 1080, 30),
       (1280, 720, 60),
       (1280, 720, 30),
