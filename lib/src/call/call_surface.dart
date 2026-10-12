@@ -59,6 +59,54 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// navigation; a new session starts top-right again.
   DockSpot _dock = DockSpot.initial;
 
+  /// Self-preview drag (§30–§31): live top-left inside the video area.
+  void _onPipDragStart(DragStartDetails _) {
+    _pipSnap.stop();
+    _pipSnapFrom = null;
+    _pipSnapTo = null;
+    setState(() {});
+  }
+
+  void _onPipDragUpdate(
+      DragUpdateDetails d, Size mediaArea, Size pipSize) {
+    if (_pipDragPos == null) return;
+    setState(() {
+      _pipDragPos = clampCardPos(_pipDragPos! + d.delta, mediaArea, pipSize);
+    });
+  }
+
+  void _onPipDragEnd(Size mediaArea, Size pipSize) {
+    if (_pipDragPos == null) return;
+    final rect = Rect.fromLTWH(
+        _pipDragPos!.dx, _pipDragPos!.dy, pipSize.width, pipSize.height);
+    // Magnetic snap (§35–§37): nearest edge wins; the offset along it is
+    // preserved (right-middle stays right-middle, §60).
+    _pipDock = snapDock(rect, mediaArea, pipSize);
+    _pipSnapFrom = rect;
+    _pipSnapTo = dockRect(_pipDock, mediaArea, pipSize);
+    _pipDragPos = null;
+    if (mounted) setState(() {});
+    _pipSnap.forward(from: 0);
+  }
+
+  /// Geometry of the self-preview inside the video area: drag position
+  /// while dragging, snap interpolation during the flight, otherwise the
+  /// docked spot. Constraints are applied on read, so a small window
+  /// can never strand the preview offscreen (§62).
+  Rect _pipRect(Size mediaArea, Size pipSize) {
+    if (_pipDragPos != null) {
+      final safe = clampCardPos(_pipDragPos!, mediaArea, pipSize);
+      return Rect.fromLTWH(
+          safe.dx, safe.dy, pipSize.width, pipSize.height);
+    }
+    if (_pipSnapFrom != null &&
+        _pipSnapTo != null &&
+        !_pipSnap.isCompleted) {
+      return Rect.lerp(_pipSnapFrom!, _pipSnapTo!, _pipEase.value)!;
+    }
+    return dockRect(_pipDock, mediaArea, pipSize);
+  }
+
   /// Live drag position (card top-left), null when docked (§29–§32).
   Offset? _dragPos;
 
@@ -67,6 +115,20 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   Rect? _snapTo;
   late final AnimationController _snap = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 220));
+
+  /// Self-preview dock INSIDE the expanded video area. Same model as the
+  /// mini card (edge + normalized offset, never bare x/y) but a separate
+  /// entity — self never shares state with the mini remote preview (§21).
+  /// Defaults to RIGHT (§25), survives camera off/on within the session
+  /// (§40), resets when a new session starts (§41).
+  DockSpot _pipDock = const DockSpot(DockEdge.right, 0.4);
+  Offset? _pipDragPos;
+  Rect? _pipSnapFrom;
+  Rect? _pipSnapTo;
+  late final AnimationController _pipSnap = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 220));
+  late final Animation<double> _pipEase = CurvedAnimation(
+      parent: _pipSnap, curve: Curves.easeOutCubic);
 
   /// Preview collapse clock (§23–§24, 220ms). The curved view drives the
   /// card height, the SizeTransition and the fade together.
@@ -83,6 +145,7 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     _ticker?.cancel();
     _morph.dispose();
     _snap.dispose();
+    _pipSnap.dispose();
     _previewT.dispose();
     super.dispose();
   }
@@ -250,6 +313,12 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       _dragPos = null;
       _snapFrom = null;
       _snapTo = null;
+      // Self-preview resets with the session: right side, middle-ish (§41).
+      _pipDock = const DockSpot(DockEdge.right, 0.4);
+      _pipDragPos = null;
+      _pipSnapFrom = null;
+      _pipSnapTo = null;
+      _pipSnap.reset();
       if (first) {
         // No listeners yet: snap synchronously.
         _morph.value = target;
@@ -524,64 +593,112 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   }
 
   /// Active video: remote is the hero (§39); avatar until the track
-  /// arrives (§41); local self-view is a small floating overlay (§40).
+  /// arrives (§41); local self-view is a floating draggable overlay (§40).
   Widget _videoArea(BuildContext context, UnifiedCall call,
       RTCVideoRenderer? remote, RTCVideoRenderer? local, bool hasRemote) {
-    // Self preview lives ONLY for a real local capture (§8–§10): camera
+    // Self preview lives ONLY for a real local capture (§22–§24): camera
     // off or capture-less states render NOTHING here — no black tile, no
-    // placeholder. Bottom-left (§12), floating overlay so the remote
-    // surface never reflows (§16); 180ms fade/scale (§15).
-    final showSelf = call.video && !call.cameraOff && local != null;
-    return Stack(children: [
-      Container(
-        decoration: BoxDecoration(
-            color: Colors.black,
-            borderRadius: BorderRadius.circular(12)),
-        clipBehavior: Clip.antiAlias,
-        child: hasRemote
-            // Same GlobalObjectKey as the pill/morph rider builder (§4):
-            // minimizing re-homes this element instead of rebinding the
-            // texture, so the frame never drops to black mid-flight.
-            ? KeyedSubtree(
-                key: GlobalObjectKey(remote!),
-                child: RTCVideoView(remote,
-                    objectFit: RTCVideoViewObjectFit
-                        .RTCVideoViewObjectFitContain))
-            : Center(
-                child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Avatar(call.title, radius: 30),
-                      const SizedBox(height: 8),
-                      const Text('Подключение видео…',
-                          style: TextStyle(
-                              fontSize: 12, color: Colors.grey)),
-                    ]),
-              ),
+    // placeholder, no frozen frame. Floating overlay so the remote
+    // surface never reflows (§29); 180ms fade/scale on state changes.
+    final hasTracker = local != null;
+    final showSelf = call.video && !call.cameraOff && hasTracker;
+    return Stack(
+      key: const ValueKey('self-video-area-stack'),
+      children: [
+        Container(
+          decoration: BoxDecoration(
+              color: Colors.black,
+              borderRadius: BorderRadius.circular(12)),
+          clipBehavior: Clip.antiAlias,
+          child: hasRemote
+              // Same GlobalObjectKey as the pill/morph rider builder (§4):
+              // minimizing re-homes this element instead of rebinding the
+              // texture, so the frame never drops to black mid-flight.
+              ? KeyedSubtree(
+                  key: GlobalObjectKey(remote!),
+                  child: RTCVideoView(remote,
+                      objectFit: RTCVideoViewObjectFit
+                          .RTCVideoViewObjectFitContain))
+              : Center(
+                  child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Avatar(call.title, radius: 30),
+                        const SizedBox(height: 8),
+                        const Text('Подключение видео…',
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey)),
+                      ]),
+                ),
+        ),
+        // Floating self preview (§25–§40): clipped by the window's own
+        // rounded rect; drag anywhere; snap to the nearest edge with
+        // offset preserved (§35–§37); position lives ON THE HOST so
+        // camera OFF→ON keeps the last spot (§40). Render NOTHING when
+        // the camera is off — the slot itself disappears with a fade (§43).
+        if (hasTracker) _pipOverlay(showSelf, local),
+      ],
+    );
+  }
+
+  /// Rounded, draggable, edge-snapping self preview inside the video
+  /// area. Invisible (and gesture-less) when the camera is off; the
+  /// RenderObject tree keeps the video texture alive meanwhile (§32).
+  Widget _pipOverlay(bool showSelf, RTCVideoRenderer? local) {
+    const pipSize = Size(180, 240);
+    final video = Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.black54, width: 1),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 18,
+              offset: const Offset(0, 8)),
+        ],
       ),
-      Positioned(
-        key: const ValueKey('self-pip'),
-        left: 10,
-        bottom: 10,
-        width: 160,
-        height: 213,
-        child: AnimatedScale(
-          scale: showSelf ? 1.0 : 0.6,
+      clipBehavior: Clip.antiAlias,
+      child: RTCVideoView(local!,
+          mirror: true,
+          objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover),
+    );
+    return Positioned.fill(
+      child: AnimatedScale(
+        scale: showSelf ? 1.0 : 0.94,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        child: AnimatedOpacity(
+          opacity: showSelf ? 1.0 : 0.0,
           duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-          child: AnimatedOpacity(
-            opacity: showSelf ? 1.0 : 0.0,
-            duration: const Duration(milliseconds: 180),
-            child: showSelf
-                ? RTCVideoView(local,
-                    mirror: true,
-                    objectFit: RTCVideoViewObjectFit
-                        .RTCVideoViewObjectFitCover)
-                : const SizedBox.shrink(),
+          child: IgnorePointer(
+            ignoring: !showSelf,
+            child: LayoutBuilder(builder: (ctx, cons) {
+              final mediaArea = cons.biggest;
+              // Drag 1:1 while held; the snap flight is driven by the
+              // controller re-running through [_pipRect] (§38, 220ms).
+              final child = GestureDetector(
+                onPanStart: _onPipDragStart,
+                onPanUpdate: (d) => _onPipDragUpdate(d, mediaArea, pipSize),
+                onPanEnd: (_) => _onPipDragEnd(mediaArea, pipSize),
+                child: video,
+              );
+              return AnimatedBuilder(
+                animation: _pipEase,
+                child: child,
+                builder: (b, pip) => Stack(
+                  clipBehavior: Clip.none,
+                  fit: StackFit.expand,
+                  children: [
+                    Positioned.fromRect(rect: _pipRect(mediaArea, pipSize),
+                        child: pip!),
+                  ],
+                ),
+              );
+            }),
           ),
         ),
       ),
-    ]);
+    );
   }
 
   Widget _identity(UnifiedCall call) {
@@ -834,10 +951,15 @@ class CallWindow extends StatelessWidget {
           const SizedBox(width: 28),
           // Answer-with-camera intent (direct video only): toggling never
           // captures the device and never accepts the call by itself.
+          // ON = neutral graphite with a normal camera glyph; OFF = filled
+          // red with a crossed camera — obvious at a glance (§7–§8), but
+          // still distinct from Decline (call glyph) at half the radius.
           if (call.onToggleRingCamera != null) ...[
             _roundBtn(
-                null,
-                call.ringCameraOn ? Icons.videocam : Icons.videocam_off,
+                call.ringCameraOn ? null : Colors.red.shade600,
+                call.ringCameraOn
+                    ? Icons.videocam
+                    : Icons.videocam_off_outlined,
                 call.ringCameraOn
                     ? 'Выключить камеру'
                     : 'Включить камеру',

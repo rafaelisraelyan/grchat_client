@@ -836,7 +836,12 @@ class CallState extends Notifier<ActiveCall?> {
       _ringTimer?.cancel();
       // Patch the live state instead of writing back the pre-await snapshot:
       // onTrack may have delivered a remote video track meanwhile.
-      state = state?.copyWith(phase: CallPhase.active);
+      // §14/§16: an accepted-with-camera-OFF VIDEO call shows its active
+      // camera control OFF from the first frame — no flash grey→red. The
+      // m=video m-line stays negotiated (§17): enabling later reuses it.
+      state = state?.copyWith(
+          phase: CallPhase.active,
+          cameraOff: cur.video && !cur.ringCameraOn);
       _armStatsTick();
     } catch (e) {
       await decline();

@@ -124,11 +124,12 @@ void main() {
           _call(
               outgoing: true, video: true, phase: CallPhase.active));
       // Video-active without a local capture renders no self-view at
-      // all: no RTCVideoView anywhere (hero is the avatar), and the
-      // animation slot holds an empty, invisible child — no black box,
-      // no camera-off placeholder.
+      // all: no RTCVideoView anywhere (hero is the avatar) — no black
+      // box, no camera-off placeholder. The overlay host itself mounts
+      // only when a local renderer exists.
       expect(find.byType(RTCVideoView), findsNothing);
-      expect(find.byKey(const ValueKey('self-pip')), findsOneWidget);
+      expect(find.byKey(const ValueKey('self-video-area-stack')),
+          findsOneWidget);
     });
 
     testWidgets('video without remote track shows avatar',
