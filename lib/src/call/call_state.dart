@@ -425,10 +425,15 @@ class CallState extends Notifier<ActiveCall?> {
       // truth about a hardware/driver ceiling - the encoder OUTPUT fps can
       // dip under bandwidth adaptation (limitation != none), the capture
       // number cannot. Two stable ticks before a commit: a startup
-      // transient never floors the tier.
+      // transient never floors the tier. NOTE: qualityLimitationReason is
+      // the STRING 'none' when free - 2026-10-13 00:51 live call proved the
+      // null-only check silently disabled the whole learning.
+      final noLimit = m.limitation == null ||
+          m.limitation!.isEmpty ||
+          m.limitation == 'none';
       final observedFps = m.inputFps > 0
           ? m.inputFps
-          : (m.limitation == null ? (m.framesPerSecond ?? 0) : -1.0);
+          : (noLimit ? (m.framesPerSecond ?? 0) : -1.0);
       final capBefore = _fpsCap.cap;
       if (observedFps >= 0) {
         _fpsCap.update(observedFps, tierFps: q.tier.fps);

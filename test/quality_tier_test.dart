@@ -8,7 +8,11 @@ import 'package:grchat_client/src/call/quality_tier.dart';
 void main() {
   final t0 = DateTime(2026, 10, 10, 12);
   const great = LinkMetrics(
-      availableOutKbps: 20000, rttMs: 20, lossPct: 0, limitation: 'none');
+    availableOutKbps: 20000,
+    rttMs: 20,
+    lossPct: 0,
+    limitation: 'none',
+  );
 
   group('tierParams', () {
     test('1080p camera: 720p tier downscales by 1.5, 1080p tier does not', () {
@@ -16,8 +20,11 @@ void main() {
       expect(hd.scaleDownBy, closeTo(1.5, 1e-9));
       expect(hd.maxFramerate, 30);
       expect(hd.maxBitrate, 2500000);
-      final max =
-          tierParams(videoTiers[3], captureHeight: 1080, captureFps: 60);
+      final max = tierParams(
+        videoTiers[3],
+        captureHeight: 1080,
+        captureFps: 60,
+      );
       expect(max.scaleDownBy, 1.0);
       expect(max.maxFramerate, 60);
       expect(max.maxBitrate, 8000000);
@@ -40,22 +47,28 @@ void main() {
 
   group('QualityController', () {
     const badAvail = LinkMetrics(
-        availableOutKbps: 200, rttMs: 30, lossPct: 0, limitation: 'none');
+      availableOutKbps: 200,
+      rttMs: 30,
+      lossPct: 0,
+      limitation: 'none',
+    );
 
-    LinkMetrics mV(double? bytes,
-            {double? avail,
-            double rtt = 20,
-            double loss = 0,
-            String limit = 'none',
-            double fps = 30}) =>
-        LinkMetrics(
-            availableOutKbps: avail,
-            rttMs: rtt,
-            lossPct: loss,
-            limitation: limit,
-            videoBytesSent: bytes,
-            framesPerSecond: bytes != null ? fps : null,
-            videoOut: bytes != null);
+    LinkMetrics mV(
+      double? bytes, {
+      double? avail,
+      double rtt = 20,
+      double loss = 0,
+      String limit = 'none',
+      double fps = 30,
+    }) => LinkMetrics(
+      availableOutKbps: avail,
+      rttMs: rtt,
+      lossPct: loss,
+      limitation: limit,
+      videoBytesSent: bytes,
+      framesPerSecond: bytes != null ? fps : null,
+      videoOut: bytes != null,
+    );
 
     test('starts at 720p30', () {
       final c = QualityController();
@@ -67,9 +80,11 @@ void main() {
       final c = QualityController(startedAt: t0);
       for (var i = 0; i < 6; i++) {
         // t0+3 .. t0+18 s: all inside the 20 s warmup window.
-        expect(c.update(badAvail, t0.add(Duration(seconds: 3 + 3 * i))),
-            isNull,
-            reason: 'no starvation verdict before t0+20s');
+        expect(
+          c.update(badAvail, t0.add(Duration(seconds: 3 + 3 * i))),
+          isNull,
+          reason: 'no starvation verdict before t0+20s',
+        );
         expect(c.tier.name, 'hd');
       }
     });
@@ -91,7 +106,11 @@ void main() {
       // 60% of the 2500 kbps hd ceiling: not a starvation signal anymore.
       final c = QualityController(startedAt: t0);
       const mild = LinkMetrics(
-          availableOutKbps: 1500, rttMs: 30, lossPct: 0, limitation: 'none');
+        availableOutKbps: 1500,
+        rttMs: 30,
+        lossPct: 0,
+        limitation: 'none',
+      );
       // Skip the warmup ticks, then 10 more in the steady state.
       for (var i = 0; i < 17; i++) {
         expect(c.update(mild, t0.add(Duration(seconds: 21 + 3 * i))), isNull);
@@ -136,8 +155,11 @@ void main() {
       var now = t0;
       var bytes = 1000000.0;
       for (var i = 0; i < 10; i++) {
-        expect(c.update(mV(bytes, loss: 2), now), isNull,
-            reason: 'loss >= 1.5% must block the upgrade');
+        expect(
+          c.update(mV(bytes, loss: 2), now),
+          isNull,
+          reason: 'loss >= 1.5% must block the upgrade',
+        );
         bytes += deltaBytes;
         now = now.add(const Duration(seconds: 3));
       }
@@ -149,8 +171,11 @@ void main() {
       const frozen = 500000.0;
       var now = t0;
       for (var i = 0; i < 6; i++) {
-        expect(c.update(mV(frozen, avail: 20000), now), isNull,
-            reason: 'bytes do not grow - no tier decisions');
+        expect(
+          c.update(mV(frozen, avail: 20000), now),
+          isNull,
+          reason: 'bytes do not grow - no tier decisions',
+        );
         now = now.add(const Duration(seconds: 3));
       }
       expect(c.tier.name, 'hd');
@@ -160,8 +185,11 @@ void main() {
       var bytes = frozen + deltaBytes;
       now = now.add(const Duration(seconds: 3));
       var changed = c.update(mV(bytes, avail: 20000), now);
-      expect(changed?.name, 'fhd',
-          reason: 'the pre-stall good samples are kept, resume completes it');
+      expect(
+        changed?.name,
+        'fhd',
+        reason: 'the pre-stall good samples are kept, resume completes it',
+      );
       expect(c.videoStalled, isFalse);
     });
 
@@ -170,15 +198,19 @@ void main() {
       // What live stats show for a call whose encoder produces nothing:
       // the outbound video report exists, but bytesSent does not.
       const noFrames = LinkMetrics(
-          availableOutKbps: 20000,
-          rttMs: 20,
-          lossPct: 0,
-          limitation: 'none',
-          videoOut: true);
+        availableOutKbps: 20000,
+        rttMs: 20,
+        lossPct: 0,
+        limitation: 'none',
+        videoOut: true,
+      );
       var now = t0;
       for (var i = 0; i < 5; i++) {
-        expect(c.update(noFrames, now), isNull,
-            reason: 'video present, bytes absent = no frames = no decisions');
+        expect(
+          c.update(noFrames, now),
+          isNull,
+          reason: 'video present, bytes absent = no frames = no decisions',
+        );
         now = now.add(const Duration(seconds: 3));
       }
       expect(c.tier.name, 'hd');
@@ -187,7 +219,11 @@ void main() {
 
     test('(f) cooldown grows 15/30/60 across consecutive downgrades', () {
       final starve = LinkMetrics(
-          availableOutKbps: 1000, rttMs: 30, lossPct: 0, limitation: 'none');
+        availableOutKbps: 1000,
+        rttMs: 30,
+        lossPct: 0,
+        limitation: 'none',
+      );
 
       // 15 s after the first downgrade.
       final c1 = QualityController(start: 2);
@@ -209,8 +245,11 @@ void main() {
       var d2 = c2.update(starve, t0.add(const Duration(seconds: 6)));
       d2 = c2.update(starve, t0.add(const Duration(seconds: 9)));
       expect(d2?.name, 'eco');
-      expect(c2.update(great, t0.add(const Duration(seconds: 36))), isNull,
-          reason: 'second cooldown (30 s from t0+9) still holds at t0+36');
+      expect(
+        c2.update(great, t0.add(const Duration(seconds: 36))),
+        isNull,
+        reason: 'second cooldown (30 s from t0+9) still holds at t0+36',
+      );
       VideoTier? up2;
       for (var i = 0; i < 3; i++) {
         up2 = c2.update(great, t0.add(Duration(seconds: 39 + 3 * i)));
@@ -223,8 +262,11 @@ void main() {
         c3.update(starve, t0.add(Duration(seconds: at)));
       }
       expect(c3.tier.name, 'eco');
-      expect(c3.update(great, t0.add(const Duration(seconds: 72))), isNull,
-          reason: 'third cooldown (60 s from t0+15) still holds at t0+72');
+      expect(
+        c3.update(great, t0.add(const Duration(seconds: 72))),
+        isNull,
+        reason: 'third cooldown (60 s from t0+15) still holds at t0+72',
+      );
       VideoTier? up3;
       for (var i = 0; i < 3; i++) {
         up3 = c3.update(great, t0.add(Duration(seconds: 75 + 3 * i)));
@@ -257,7 +299,11 @@ void main() {
       final c = QualityController();
       // Next tier needs 5000 * 1.25 = 6250 kbps.
       const tight = LinkMetrics(
-          availableOutKbps: 5500, rttMs: 20, lossPct: 0, limitation: 'none');
+        availableOutKbps: 5500,
+        rttMs: 20,
+        lossPct: 0,
+        limitation: 'none',
+      );
       for (var i = 0; i < 20; i++) {
         expect(c.update(tight, t0.add(Duration(seconds: 3 * i))), isNull);
       }
@@ -280,7 +326,11 @@ void main() {
     test('CPU limitation steps down and blocks climbing for a minute', () {
       final c = QualityController(start: 3);
       const cpu = LinkMetrics(
-          availableOutKbps: 20000, rttMs: 20, lossPct: 0, limitation: 'cpu');
+        availableOutKbps: 20000,
+        rttMs: 20,
+        lossPct: 0,
+        limitation: 'cpu',
+      );
       var now = t0;
       VideoTier? changed;
       for (var i = 0; i < QualityController.downNeeded; i++) {
@@ -290,8 +340,11 @@ void main() {
       expect(changed?.name, 'fhd');
       // Link looks great again, but the cooldown holds (~60 s).
       for (var i = 0; i < 10; i++) {
-        expect(c.update(great, now), isNull,
-            reason: 'cooldown at +${now.difference(t0).inSeconds}s');
+        expect(
+          c.update(great, now),
+          isNull,
+          reason: 'cooldown at +${now.difference(t0).inSeconds}s',
+        );
         now = now.add(const Duration(seconds: 3));
       }
       expect(c.tier.name, 'fhd');
@@ -308,7 +361,11 @@ void main() {
     test('heavy loss steps down, never below eco', () {
       final c = QualityController();
       const lossy = LinkMetrics(
-          availableOutKbps: 20000, rttMs: 30, lossPct: 12, limitation: 'none');
+        availableOutKbps: 20000,
+        rttMs: 30,
+        lossPct: 12,
+        limitation: 'none',
+      );
       var now = t0;
       for (var i = 0; i < 30; i++) {
         c.update(lossy, now);
@@ -320,7 +377,11 @@ void main() {
     test('a starved estimate (below 50% of the tier) steps down', () {
       final c = QualityController(start: 2);
       const starved = LinkMetrics(
-          availableOutKbps: 2000, rttMs: 30, lossPct: 0, limitation: 'none');
+        availableOutKbps: 2000,
+        rttMs: 30,
+        lossPct: 0,
+        limitation: 'none',
+      );
       VideoTier? changed;
       for (var i = 0; i < QualityController.downNeeded; i++) {
         changed = c.update(starved, t0.add(Duration(seconds: 3 * i)));
@@ -331,7 +392,11 @@ void main() {
     test('one bad sample alone does not flip the tier', () {
       final c = QualityController(start: 2);
       const spike = LinkMetrics(
-          availableOutKbps: 20000, rttMs: 500, lossPct: 0, limitation: 'none');
+        availableOutKbps: 20000,
+        rttMs: 500,
+        lossPct: 0,
+        limitation: 'none',
+      );
       expect(c.update(spike, t0), isNull);
       expect(c.update(great, t0.add(const Duration(seconds: 3))), isNull);
       expect(c.tier.name, 'fhd');
@@ -344,17 +409,14 @@ void main() {
 
     test('reads InputFramesPerSecond as the capture fps floor', () {
       final m = LinkMetrics.fromReports([
-        r('src', 'ssrc', {
-          'kind': 'video',
-          'InputFramesPerSecond': 15.0,
-        }),
-        r('out', 'outbound-rtp', {
-          'kind': 'video',
-          'framesPerSecond': 29.7,
-        }),
+        r('src', 'ssrc', {'kind': 'video', 'InputFramesPerSecond': 15.0}),
+        r('out', 'outbound-rtp', {'kind': 'video', 'framesPerSecond': 29.7}),
       ]);
-      expect(m.inputFps, 15.0,
-          reason: 'capture fps beats the encoder-adapted output number');
+      expect(
+        m.inputFps,
+        15.0,
+        reason: 'capture fps beats the encoder-adapted output number',
+      );
       expect(m.framesPerSecond, closeTo(29.7, 1e-6));
     });
 
@@ -375,8 +437,7 @@ void main() {
           'availableOutgoingBitrate': 6000000,
           'currentRoundTripTime': 0.042,
         }),
-        r('rin', 'remote-inbound-rtp',
-            {'kind': 'video', 'fractionLost': 0.02}),
+        r('rin', 'remote-inbound-rtp', {'kind': 'video', 'fractionLost': 0.02}),
         r('out', 'outbound-rtp', {
           'kind': 'video',
           'qualityLimitationReason': 'bandwidth',
@@ -386,8 +447,7 @@ void main() {
           'framesPerSecond': 29.7,
         }),
         // Audio reports must not leak into the video numbers.
-        r('ain', 'remote-inbound-rtp',
-            {'kind': 'audio', 'fractionLost': 0.9}),
+        r('ain', 'remote-inbound-rtp', {'kind': 'audio', 'fractionLost': 0.9}),
       ]);
       expect(m.availableOutKbps, closeTo(6000, 1e-6));
       expect(m.rttMs, closeTo(42, 1e-6));
@@ -420,6 +480,22 @@ void main() {
       expect(l.cap, 0, reason: 'first sighting is not a commitment');
       l.update(15, tierFps: 30);
       expect(l.cap, 15);
+    });
+
+    test('live call 00:51: flicker 9<->10 counts as one stable state', () {
+      // The real call alternated 9 and 10 fps every 3s tick - exact-match
+      // stability would never commit. The band ceiling (10) floors.
+      final l = FpsCapLearn();
+      l.update(9, tierFps: 30);
+      l.update(10, tierFps: 30);
+      expect(l.cap, 10);
+      // Applied right after (tier hd/fhd): fps ceiling floored at 10.
+    });
+    test('29 of 30 is tier rate within noise - no floor', () {
+      final l = FpsCapLearn();
+      l.update(29, tierFps: 30);
+      l.update(29, tierFps: 30);
+      expect(l.cap, 0);
     });
 
     test('one transient never floors a healthy camera', () {

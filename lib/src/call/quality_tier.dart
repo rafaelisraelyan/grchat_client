@@ -63,10 +63,13 @@ TierParams tierParams(VideoTier t,
 
 /// Learns the camera's real fps ceiling (§capture-fps) with a two-tick
 /// stability window: commit a floor LOWER than the current tier fps, and
-/// release it only after the same-sized dip disappears. A 15 fps camera
-/// keeps every tier's resolution ladder but floors the frame-rate ceiling:
-/// fhd 1080p15 stays fhd - the motion simply does not improve, which is
-/// visible in the logs and the media-area chip, never hidden.
+/// release it only after the same-sized dip disappears. Values that flicker
+/// within ±1 fps (a real 00:51 call alternated 9↔10 every tick) count as
+/// one stable state; the committed floor is the ceiling of that band. A
+/// 15 fps camera keeps every tier's resolution ladder but floors the
+/// frame-rate ceiling: fhd becomes 1080p15 - the motion simply does not
+/// improve, which is visible in the logs and the media-area chip, never
+/// hidden.
 class FpsCapLearn {
   int cap = 0;
   int _value = 0;
@@ -74,18 +77,23 @@ class FpsCapLearn {
 
   void update(double inputFps, {required int tierFps}) {
     final observed = inputFps.floor();
-    final candidate = observed > 0 && observed < tierFps ? observed : 0;
+    // A capture at tierFps-1 (29/30) is the tier rate within measurement
+    // noise: flooring there would buy nothing and could flap.
+    final candidate =
+        observed > 0 && observed < tierFps - 1 ? observed : 0;
     if (candidate == 0 && cap == 0) {
       reset();
       return;
     }
-    if (candidate == _value) {
+    if (candidate == _value || (candidate - _value).abs() <= 1) {
       _ticks++;
-      if (_ticks >= 2) cap = candidate;
+      // The band's ceiling: never floor below what the camera proved.
+      if (_ticks >= 2) cap = candidate > _value ? candidate : _value;
     } else {
       _value = candidate;
       _ticks = 1;
     }
+    _value = candidate;
   }
 
   void reset() {
