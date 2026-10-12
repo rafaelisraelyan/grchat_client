@@ -65,23 +65,51 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// navigation; a new session starts top-right again.
   DockSpot _dock = DockSpot.initial;
 
-  /// Self-preview drag (§30–§31). START captures the CURRENT preview
-  /// position as the drag origin — the pointer never re-anchors it (§9);
-  /// updates apply cursor deltas. Rebuilds are LOCALIZED: the position
-  /// notifier rebuilds only the overlay subtree, not the whole call
-  /// window (§23–§24).
-  void _onPipDragStart(DragStartDetails d, Size mediaArea, Size pipSize) {
+  /// Self-preview drag (§30–§31, §6–§7): START captures the CURRENT
+  /// preview rect AND the pointer in the STABLE media coordinate space;
+  /// every update derives the new rect from startRect + TOTAL delta —
+  /// never accumulated deltas against a moving child (§7 feedback-loop
+  /// fix). Rebuilds stay LOCALIZED (§23–§24).
+  void _onPipDragStart(
+    Offset Function(Offset) toMedia,
+    Offset globalPos,
+    Size mediaArea,
+    Size pipSize,
+  ) {
     _pipSnap.stop();
     _pipSnapFrom = null;
     _pipSnapTo = null;
-    _pipDragPos = _pipRect(mediaArea, pipSize).topLeft;
-    dlog('SELF_PREVIEW_DRAG_START origin=$_pipDragPos');
+    _pipDragFrom = _pipRect(mediaArea, pipSize);
+    _pipDragPointer0 = toMedia(globalPos);
+    _pipDragPos = _pipDragFrom.topLeft;
+    dlog('SELF_PREVIEW_DRAG_START origin=$_pipDragPos start=${_pipDragFrom.topLeft} pointer0=$_pipDragPointer0');
     _pipTick.value++;
   }
 
-  void _onPipDragUpdate(DragUpdateDetails d, Size mediaArea, Size pipSize) {
-    if (_pipDragPos == null) return;
-    _pipDragPos = clampCardPos(_pipDragPos! + d.delta, mediaArea, pipSize);
+  void _onPipDragUpdate(
+    Offset Function(Offset) toMedia,
+    Offset globalPos,
+    Size mediaArea,
+    Size pipSize,
+  ) {
+    if (_pipDragFrom == Rect.zero) return;
+    // §6–§10: pointer converted into the same stable parent space; total
+    // delta against the START pointer; candidate = startRect.shift(delta);
+    // then ONE clamp into the safe video rect — the preview physically
+    // cannot leave the black viewport.
+    final now = toMedia(globalPos);
+    final delta = now - _pipDragPointer0;
+    final candidate = _pipDragFrom.shift(delta);
+    final safe = selfPipSafeRect(mediaArea);
+    final left = candidate.left.clamp(
+      safe.left,
+      math.max(safe.left, safe.right - pipSize.width),
+    ).toDouble();
+    final top = candidate.top.clamp(
+      safe.top,
+      math.max(safe.top, safe.bottom - pipSize.height),
+    ).toDouble();
+    _pipDragPos = Offset(left, top);
     _pipTick.value++;
   }
 
@@ -103,17 +131,27 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       'offset=${_pipDock.offset.toStringAsFixed(2)}',
     );
     _pipDragPos = null;
+    _pipDragFrom = Rect.zero;
     _pipTick.value++;
     _pipSnap.forward(from: 0);
   }
 
   /// Resize interaction state (§22): mode enum derives from the zone;
   /// the resize rect is derived from START rect + TOTAL pointer delta —
-  /// never an accumulated drift (§25).
+  /// never an accumulated drift (§25). Pointers live in the STABLE media
+  /// coordinate space (§6).
   SelfPipZone? _pipResizeZone;
   Rect _pipResizeStart = Rect.zero;
   Rect? _pipResizeRect;
   Offset _pipResizePointer = Offset.zero;
+
+  /// Drag state (start rect + start pointer in media space, §7).
+  ///
+  /// Note: [_pipDragPos] keeps its role as the live TOP-LEFT of the drag
+  /// rect — but it is derived from startRect + TOTAL delta, never from
+  /// accumulated per-frame deltas.
+  Rect _pipDragFrom = Rect.zero;
+  Offset _pipDragPointer0 = Offset.zero;
 
   /// Hover zone for the cursor feedback (§6, §28).
   SelfPipZone _pipHoverZone = SelfPipZone.center;
@@ -134,9 +172,11 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     return _pipDragPos != null ? _PipMode.dragging : _PipMode.idle;
   }
 
-  /// Resize START (§23): zone, start rect, start pointer; the running
-  /// snap animation is stopped immediately (§16).
+  /// Resize START (§23): zone, start rect, start pointer in the STABLE
+  /// media space (§6); the running snap animation is stopped immediately
+  /// (§16).
   void _onPipResizeStart(
+    Offset Function(Offset) toMedia,
     Offset globalPointer,
     Rect startRect,
     SelfPipZone zone,
@@ -147,18 +187,23 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     _pipResizeZone = zone;
     _pipResizeStart = startRect;
     _pipResizeRect = startRect;
-    _pipResizePointer = globalPointer;
+    _pipResizePointer = toMedia(globalPointer);
     dlog(
       'SELF_PREVIEW_RESIZE_START zone=$zone rect=${startRect.width.toStringAsFixed(0)}x${startRect.height.toStringAsFixed(0)}',
     );
     _pipTick.value++;
   }
 
-  /// Resize UPDATE (§24–§25): rect derived from startRect + TOTAL delta
-  /// every frame — no accumulated drift, no implicit tween lag (§8–§9).
-  void _onPipResizeUpdate(Offset globalPos, Size mediaArea, Size pipSizeStart) {
+  /// Resize UPDATE (§8, §24–§25): pointer converted into the same stable
+  /// media space; rect derived from startRect + TOTAL delta every frame —
+  /// no accumulated drift, no implicit tween lag (§8–§9).
+  void _onPipResizeUpdate(
+    Offset Function(Offset) toMedia,
+    Offset globalPos,
+    Size mediaArea,
+  ) {
     if (_pipResizeZone == null) return;
-    final delta = globalPos - _pipResizePointer;
+    final delta = toMedia(globalPos) - _pipResizePointer;
     _pipResizeRect = selfPipResizedRect(
       start: _pipResizeStart,
       pointerDelta: delta,
@@ -282,7 +327,8 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
 
   late final AnimationController _pipSnap = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 220),
+    // §27: snap after release feels like part of the release itself.
+    duration: const Duration(milliseconds: 160),
   );
   late final Animation<double> _pipEase = CurvedAnimation(
     parent: _pipSnap,
@@ -790,8 +836,12 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     // surface never reflows (§29); 180ms fade/scale on state changes.
     final hasTracker = local != null;
     final showSelf = call.video && !call.cameraOff && hasTracker;
+    // §13 visual safety net: the whole layer stack clips to itself — even
+    // a geometry regression can't draw the preview over the controls region
+    // or the window edges (clip ≠ clamp, but both are in place now).
     return Stack(
       key: const ValueKey('self-video-area-stack'),
+      clipBehavior: Clip.hardEdge,
       children: [
         Container(
           decoration: BoxDecoration(
@@ -861,6 +911,17 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
             child: LayoutBuilder(
               builder: (ctx, cons) {
                 final mediaArea = cons.biggest;
+                // §6: ONE stable media coordinate space. Global pointer
+                // events convert through the media box each event; the
+                // box is fresh from the current layout pass (§14–§15).
+                final mediaBox =
+                    ctx.findRenderObject() as RenderBox?;
+                Offset toMedia(Offset global) {
+                  final box = mediaBox;
+                  if (box == null || !box.attached) return global;
+                  return box.globalToLocal(global);
+                }
+
                 // Live size clamp (§38): window resizes clamp the user
                 // width, but mid-BUILD mutation is forbidden — sync after
                 // the frame instead (§42).
@@ -877,34 +938,41 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                 }
                 final effW = selfPipWidthFor(mediaArea, _pipUserW);
                 final pipSize = Size(effW, selfPipHeightFor(effW));
-                // Video NEVER hit-tests (§3).
-                final video = Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: Colors.black54, width: 1),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.35),
-                        blurRadius: 18,
-                        offset: const Offset(0, 8),
+                // Video NEVER hit-tests (§3); RepaintBoundary isolates the
+                // texture so drag/resize geometry never repaints the whole
+                // scene (§16, §24).
+                final video = RepaintBoundary(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.black54, width: 1),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.35),
+                          blurRadius: 18,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: IgnorePointer(
+                      child: RTCVideoView(
+                        local!,
+                        mirror: true,
+                        objectFit:
+                            RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                       ),
-                    ],
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: IgnorePointer(
-                    child: RTCVideoView(
-                      local!,
-                      mirror: true,
-                      objectFit:
-                          RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                     ),
                   ),
                 );
-                // Center move surface (§29): still a full-tile handle.
+                // Center move surface (§29, §7): start rect + TOTAL delta
+                // in the stable media space; no accumulated drift.
                 final drag = GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onPanStart: (d) => _onPipDragStart(d, mediaArea, pipSize),
-                  onPanUpdate: (d) => _onPipDragUpdate(d, mediaArea, pipSize),
+                  onPanStart: (d) =>
+                      _onPipDragStart(toMedia, d.globalPosition, mediaArea, pipSize),
+                  onPanUpdate: (d) =>
+                      _onPipDragUpdate(toMedia, d.globalPosition, mediaArea, pipSize),
                   onPanEnd: (_) => _onPipDragEnd(mediaArea, pipSize),
                   onPanCancel: _pipCancelDrag,
                   child: Stack(
@@ -937,14 +1005,16 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onPanStart: (d) {
-                          // Start rect = the CURRENT visual rect (§23).
+                          // Start rect = the CURRENT visual rect (§23) in
+                          // media space; the pointer too (§6).
                           final cur = _pipRect(mediaArea, pipSize);
-                          _onPipResizeStart(d.globalPosition, cur, z);
+                          _onPipResizeStart(
+                              toMedia, d.globalPosition, cur, z);
                         },
                         onPanUpdate: (d) => _onPipResizeUpdate(
+                          toMedia,
                           d.globalPosition,
                           mediaArea,
-                          pipSize,
                         ),
                         onPanEnd: (_) => _onPipResizeEnd(mediaArea),
                         onPanCancel: () {
@@ -1100,6 +1170,21 @@ double selfPipWidthFor(Size media, double userW) =>
 
 double selfPipHeightFor(double w) => w * kSelfPipAspect;
 
+/// Safe inset between the self-preview and the video viewport bounds
+/// (§2/§3 of the bounds spec): ~12px on every side.
+const double kSelfPipInset = 12;
+
+/// The safe rect inside the media viewport: preview geometry must always
+/// stay within this rect (§2–§3, §9). One coordinate space, computed from
+/// the fresh layout constraints — never stale window values (§14–§15).
+Rect selfPipSafeRect(Size media) {
+  final minX = kSelfPipInset;
+  final minY = kSelfPipInset;
+  final maxX = math.max(minX, media.width - kSelfPipInset);
+  final maxY = math.max(minY, media.height - kSelfPipInset);
+  return Rect.fromLTRB(minX, minY, maxX, maxY);
+}
+
 /// Interaction zones over the self-preview (§3–§5, §28): corners WIN over
 /// edges — are plain drag. The corner hit area hugs the visible rounded
 /// corner (~12px): a bit deeper inside the pointer is already a plain
@@ -1150,11 +1235,11 @@ Rect selfPipResizedRect({
   required Size media,
   double minW = kSelfPipMinW,
 }) {
-  final minH = minW * kSelfPipAspect;
-  final hCap = (media.height * 0.4).clamp(minH, double.infinity);
-  final wCap = math.min(kSelfPipHardMaxW, media.width * 0.35);
-
   // --- FLUSH grabs: the grabbed side is docked; anchor it, grow inward.
+  // Safe bounds first (§9/§12): the height cap is the span from the flush
+  // side of the START rect to the safe edge — never a bulk 40% guess that
+  // can shoot the rect past the top/bottom viewport lines.
+  final safe = selfPipSafeRect(media);
   final flushOnRight =
       dock == DockEdge.right && zone == SelfPipZone.topRight ||
       dock == DockEdge.right && zone == SelfPipZone.bottomRight;
@@ -1167,18 +1252,23 @@ Rect selfPipResizedRect({
   final flushOnBottom =
       dock == DockEdge.bottom && zone == SelfPipZone.bottomLeft ||
       dock == DockEdge.bottom && zone == SelfPipZone.bottomRight;
+  final minH = minW * kSelfPipAspect;
+  final wCap = math.min(kSelfPipHardMaxW, media.width * 0.35);
   if (flushOnRight || flushOnLeft) {
     // Height-driven growth; the horizontal edge stays flush.
     final growsUp = flushOnRight
         ? zone == SelfPipZone.topRight
         : zone == SelfPipZone.topLeft;
+    // Pulling UP (growsUp) extends the TOP edge: cap = start.bottom−safe.top.
+    // Pulling DOWN extends the BOTTOM edge: cap = safe.bottom−start.top.
+    final hCapSafe = growsUp
+        ? math.max(minH, start.bottom - safe.top)
+        : math.max(minH, safe.bottom - start.top);
     var h = (start.height + (growsUp ? -pointerDelta.dy : pointerDelta.dy))
-        .clamp(minH, math.max(minH, hCap))
+        .clamp(minH, hCapSafe)
         .toDouble();
     var w = (h / kSelfPipAspect).clamp(minW, math.max(minW, wCap)).toDouble();
-    // The width floor pushes the height back up so the 16:9 aspect stays
-    // EXACT even at the limits (§12, §20 — no silent distortion).
-    h = w * kSelfPipAspect;
+    h = w * kSelfPipAspect; // aspect stays EXACT at the floor (§12)
     if (flushOnRight) {
       return Rect.fromLTWH(
         start.right - w,
@@ -1195,24 +1285,25 @@ Rect selfPipResizedRect({
     );
   }
   if (flushOnTop || flushOnBottom) {
-    // The flush edge is horizontal: growth goes down/up, width may extend
-    // toward the FREE horizontal side while the edge stays.
-    final growsDown =
-        flushOnTop ||
-        (zone == SelfPipZone.bottomLeft || zone == SelfPipZone.bottomRight);
+    // The flush edge is horizontal: vertical anchor fixed, horizontal may
+    // extend toward the free side ( budgets from the SAFE edges — §9).
+    final growsDown = flushOnTop;
+    final hCapSafe = growsDown
+        ? math.max(minH, safe.bottom - start.top)
+        : math.max(minH, start.bottom - safe.top);
     var h = (start.height + (growsDown ? pointerDelta.dy : -pointerDelta.dy))
-        .clamp(minH, math.max(minH, hCap))
+        .clamp(minH, hCapSafe)
         .toDouble();
-    var w = (h / kSelfPipAspect).clamp(minW, math.max(minW, wCap)).toDouble();
+    // Horizontal span toward the free side (zone-relative).
+    final wSpanSafe = (zone == SelfPipZone.topLeft ||
+            zone == SelfPipZone.bottomLeft)
+        ? math.max(minW, start.right - safe.left)
+        : math.max(minW, safe.right - start.left);
+    var w = (h / kSelfPipAspect).clamp(minW, math.max(minW, math.min(wCap, wSpanSafe))).toDouble();
     h = w * kSelfPipAspect;
-    // Anchoring: keep the flush edge + the return side of the corner.
-    final left = switch (zone) {
-      SelfPipZone.topLeft ||
-      SelfPipZone.topRight => flushOnTop ? start.left : start.right - w,
-      SelfPipZone.bottomLeft ||
-      SelfPipZone.bottomRight => flushOnBottom ? start.left : start.right - w,
-      _ => start.left,
-    };
+    final left = (zone == SelfPipZone.topLeft || zone == SelfPipZone.bottomLeft)
+        ? start.right - w
+        : start.left;
     final top = flushOnTop ? start.top : start.bottom - h;
     return Rect.fromLTWH(left, top, w, h);
   }
@@ -1271,11 +1362,14 @@ Rect selfPipResizedRect({
   final top = (zone == SelfPipZone.bottomRight || zone == SelfPipZone.topRight)
       ? fixed.dy
       : fixed.dy - h;
+  // Safe bounds in the SAME media space (§9/§11): the spans above already
+  // carry the safe margins; the anchored corner never moves (§20).
   return Rect.fromLTWH(left, top, w, h);
 }
 
 /// Compact card geometry (§4, §42): fixed 300px width in both mini
-/// modes (no horizontal jump, §14), bar 52, preview 172 when shown./// Outer heights include the 1.5px speaking ring on both sides.
+/// modes (no horizontal jump, §14), bar 52, preview 172 when shown.
+/// Outer heights include the 1.5px speaking ring on both sides.
 const double kCardWidth = 300;
 const double kBarHeight = 52;
 const double kPreviewHeight = 172;
