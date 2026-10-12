@@ -620,6 +620,11 @@ class CallState extends Notifier<ActiveCall?> {
             0;
     if (mandatoryMin) dlog('video mandatory-min probe active (minFrameRate)');
     Map<String, dynamic> cam(int w, int h, int fps, {bool mandatory = false}) {
+      // The ONLY video-device grammar in this plugin (flutter_media_stream
+      // :143-158): legacy optional/[{sourceId}] - a top-level deviceId
+      // ({ideal}/{exact}/plain) is NOT read for VIDEO and silently falls
+      // back to device index 0. Before 2026-10-13 every 'explicit pick'
+      // was cosmetic: the capture opened whatever sat at index 0.
       final c = <String, dynamic>{
         'width': {'ideal': w},
         'height': {'ideal': h},
@@ -627,10 +632,11 @@ class CallState extends Notifier<ActiveCall?> {
           'mandatory': {'minFrameRate': fps}
         else
           'frameRate': {'ideal': fps},
+        if (camId != null && camId.isNotEmpty)
+          'optional': [
+            {'sourceId': camId},
+          ],
       };
-      if (camId != null && camId.isNotEmpty) {
-        c['deviceId'] = {'ideal': camId};
-      }
       return c;
     }
 
