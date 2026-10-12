@@ -1180,9 +1180,9 @@ Rect selfPipResizedRect({
   final spanToLeft = fixed.dx - kDockMargin;
   final spanToBottom = media.height - kDockMargin - fixed.dy;
   final spanToTop = fixed.dy - kDockMargin;
-  final wSpan = (zone == SelfPipZone.topLeft || zone == SelfPipZone.topRight)
-      ? spanToLeft
-      : spanToRight;
+  final wSpan = (zone == SelfPipZone.bottomRight || zone == SelfPipZone.topRight)
+      ? spanToRight
+      : spanToLeft;
   final hSpan = (zone == SelfPipZone.topLeft || zone == SelfPipZone.topRight)
       ? spanToTop
       : spanToBottom;
@@ -1205,13 +1205,18 @@ Rect selfPipResizedRect({
       )
       .toDouble();
   final h = selfPipHeightFor(w);
+  // Anchor table (§10/§13): the FIXED corner is the OPPOSITE of the grab.
+  // grab bottomRight → fixed topLeft     → left=fixed.dx,   top=fixed.dy
+  // grab topRight    → fixed bottomLeft  → left=fixed.dx,   top=fixed.dy-h
+  // grab topLeft     → fixed bottomRight → left=fixed.dx-w, top=fixed.dy-h
+  // grab bottomLeft  → fixed topRight    → left=fixed.dx-w, top=fixed.dy
   final left =
-      (zone == SelfPipZone.bottomRight || zone == SelfPipZone.bottomLeft)
+      (zone == SelfPipZone.bottomRight || zone == SelfPipZone.topRight)
       ? fixed.dx
       : fixed.dx - w;
-  final top = (zone == SelfPipZone.bottomRight || zone == SelfPipZone.topRight)
-      ? fixed.dy
-      : fixed.dy - h;
+  final top = (zone == SelfPipZone.topLeft || zone == SelfPipZone.topRight)
+      ? fixed.dy - h
+      : fixed.dy;
   // Safe bounds in the SAME media space (§9/§11): the spans above already
   // carry the safe margins; the anchored corner never moves (§20).
   return Rect.fromLTWH(left, top, w, h);

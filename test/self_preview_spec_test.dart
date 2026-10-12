@@ -120,6 +120,65 @@ void main() {
     expect(w, greaterThanOrEqualTo(kSelfPipMinW));
   });
 
+  test('resize anchors the OPPOSITE corner precisely (§10/§13): '
+      'bottomLeft grab on right-dock grows LEFT ONLY', () {
+    // THE regression test for the right-escape: docked RIGHT, grab the
+    // bottom-left (FREE) corner — the fixed corner is the top-right
+    // (flush edge corner) and the rect grows toward the pointer's side,
+    // NEVER rightward past the viewport.
+    final start = dockRect(
+        const DockSpot(DockEdge.right, 0.4), area, pip);
+    final r = selfPipResizedRect(
+        start: start,
+        pointerDelta: const Offset(-60, 60),
+        zone: SelfPipZone.bottomLeft,
+        dock: DockEdge.right,
+        media: area);
+    expect(r.right, closeTo(start.right, 0.01),
+        reason: 'flush side stays flush: rect never extends rightward');
+    expect(r.top, closeTo(start.top, 0.01),
+        reason: 'fixed corner (top-right) vertical stays');
+    expect(r.width, greaterThan(start.width));
+    expect(r.height, greaterThan(start.height));
+    expect(r.left, greaterThanOrEqualTo(kDockMargin - 0.5),
+        reason: 'inside the safe margin');
+    expect(r.bottom, lessThanOrEqualTo(area.height - kDockMargin + 0.01));
+  });
+
+  test('resize anchors the OPPOSITE corner precisely (§10/§13): '
+      'topRight grab on left-dock grows RIGHT ONLY', () {
+    final start = dockRect(
+        const DockSpot(DockEdge.left, 0.4), area, pip);
+    final r = selfPipResizedRect(
+        start: start,
+        pointerDelta: const Offset(40, -40),
+        zone: SelfPipZone.topRight,
+        dock: DockEdge.left,
+        media: area);
+    expect(r.left, closeTo(start.left, 0.01),
+        reason: 'flush left stays flush');
+    expect(r.bottom, closeTo(start.bottom, 0.01),
+        reason: 'fixed bottom-left corner vertical stays');
+    expect(r.width, greaterThan(start.width));
+    expect(r.height, greaterThan(start.height));
+  });
+
+  test('resize anchors the OPPOSITE corner precisely (§10/§13): '
+      'bottomRight grab on left-dock keeps topLeft fixed', () {
+    final start = dockRect(
+        const DockSpot(DockEdge.left, 0.4), area, pip);
+    final r = selfPipResizedRect(
+        start: start,
+        pointerDelta: const Offset(60, 60),
+        zone: SelfPipZone.bottomRight,
+        dock: DockEdge.left,
+        media: area);
+    expect(r.topLeft, start.topLeft,
+        reason: 'fixed opposite corner pixel-exact');
+    expect(r.width, greaterThan(start.width));
+    expect(r.height, greaterThan(start.height));
+  });
+
   test('size policy: default sits strictly between min and typical max', () {
     expect(kSelfPipMinW, lessThan(kSelfPipDefaultW));
     expect(
