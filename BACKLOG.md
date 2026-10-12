@@ -34,9 +34,13 @@
     тир fhd, limit=none).
   - Вердикт: DS-путь libwebrtc m150 — не потолок. Прошлая пара «Chrome 60
     / grchat 15» была по сути Chrome*OBS VC* против grchat*HD Webcam*.
-  - Остаток: контрольный звонок без GRCHAT_VIDEOMINFPS (ideal-форма) —
-    вшивать ли mandatory.minFrameRate как дефолт первого кандидата;
-    NVIDIA Broadcast перемерить с sourceId (ожидание 1080p30).
+  - Контроль 02:19 (сборка yz БЕЗ GRCHAT_VIDEOMINFPS, ideal-форма):
+    `camera delivers 1920x1080@60 … real 1920x1080` + минута fps=60 в тире
+    fhd — обе формы constraint эквивалентны; define НЕ НУЖЕН, дефолтная
+    лестница (1920,1080,60) рабочая.
+  - Остальное по-дружески: NVIDIA Broadcast перемерить с sourceId
+    (ожидание 1080p30); физическая камера днём (можно 30) — приятные
+    проверки, решение по форку не меняют.
   - Отчёт: `%TEMP%\opencode\fpsprobe\MF_FORK_REPORT.md`.
 
 - **Self-preview corner-resize — «не до конца устраивает результат» (2026-10-12)**
