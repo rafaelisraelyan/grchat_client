@@ -20,6 +20,7 @@ import 'package:grchat_client/src/chat/home_screen.dart';
 import 'package:grchat_client/src/chat/widgets/members_panel.dart';
 import 'package:grchat_client/src/chat/home_state.dart';
 import 'package:grchat_client/src/chat/models.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:grchat_client/src/settings/settings_screen.dart';
 
@@ -584,6 +585,24 @@ class _FakeHomeDmProfile extends HomeState {
 }
 
 void main() {
+  // Platform-channel mocks: settings golden renders rows that read
+  // shared_preferences and PackageInfo; without the mocks the plugin
+  // channels are missing in the test environment.
+  setUpAll(() {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    SharedPreferences.setMockInitialValues({});
+    const pkg = MethodChannel('dev.fluttercommunity.plus/package_info');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pkg, (m) async => <String, dynamic>{
+              'appName': 'GRChat',
+              'packageName': 'grchat_client',
+              'version': '1.5.6',
+              'buildNumber': '1',
+              'buildSignature': '',
+              'installerStore': null,
+            });
+  });
+
   testWidgets('auth screen', (t) async {
     t.view.physicalSize = const Size(1280, 720);
     t.view.devicePixelRatio = 1.0;

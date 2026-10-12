@@ -14,6 +14,7 @@ import 'group_call.dart' show groupCallProvider;
 import 'media_session.dart';
 import 'camera_lock.dart';
 import 'quality_tier.dart';
+import '../media/media_prefs.dart';
 import 'sfu_marker.dart';
 enum CallPhase { ringing, active }
 
@@ -471,17 +472,32 @@ class CallState extends Notifier<ActiveCall?> {
   Future<MediaStream> _openLocalMedia(bool video) async {
     // Echo cancellation, noise suppression and auto gain stay on; the
     // high-pass filter removes desk/fan rumble that costs bits and clarity.
-    final audio = {
+    final audio = <String, dynamic>{
       'echoCancellation': true,
       'noiseSuppression': true,
       'autoGainControl': true,
       'highpassFilter': true,
     };
-    Map<String, dynamic> cam(int w, int h, int fps) => {
-          'width': {'ideal': w},
-          'height': {'ideal': h},
-          'frameRate': {'ideal': fps},
-        };
+    // The user-picked (or OBS-preferred) microphone.
+    final micId = await MediaPrefs.preferredMicId();
+    if (micId != null && micId.isNotEmpty) {
+      audio['deviceId'] = {'exact': micId};
+    }
+    // The user-picked (or OBS-preferred) camera; empty id = the platform
+    // default, every probe candidate then carries it.
+    final camId = video ? await MediaPrefs.preferredCameraId() : null;
+    Map<String, dynamic> cam(int w, int h, int fps) {
+      final c = <String, dynamic>{
+        'width': {'ideal': w},
+        'height': {'ideal': h},
+        'frameRate': {'ideal': fps},
+      };
+      if (camId != null && camId.isNotEmpty) {
+        c['deviceId'] = {'ideal': camId};
+      }
+      return c;
+    }
+
     if (!video) {
       return navigator.mediaDevices
           .getUserMedia({'audio': audio, 'video': false});
