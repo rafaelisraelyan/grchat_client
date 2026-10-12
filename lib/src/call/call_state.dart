@@ -536,9 +536,12 @@ class CallState extends Notifier<ActiveCall?> {
       if (probe.frameArrived && probe.height >= c.$2 * 0.8) {
         realH = probe.height;
         final usedId = await MediaPrefs.preferredCameraId();
+        final pickDesc = (usedId == null || usedId.isEmpty)
+            ? 'auto'
+            : 'explicit ${usedId.substring(0, usedId.length < 8 ? usedId.length : 8)}…';
         dlog('camera delivers ${c.$1}x${c.$2}@${c.$3} '
             '(frames verified, real ${probe.width}x${probe.height}, '
-            'pick=${usedId == null || usedId.isEmpty ? 'auto' : 'explicit ' + usedId.substring(0, usedId.length < 8 ? usedId.length : 8)}…'})');
+            'pick=$pickDesc)');
         chosen = s;
         break;
       }
