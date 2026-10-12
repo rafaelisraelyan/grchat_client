@@ -441,13 +441,22 @@ class CallState extends Notifier<ActiveCall?> {
         _fpsCap.reset();
       }
       if (_fpsCap.cap != capBefore) {
-        _cameraFpsCap = _fpsCap.cap;
-        ref.read(cameraFpsCapProvider.notifier).state = _cameraFpsCap;
-        dlog(_cameraFpsCap > 0
-            ? 'camera fps cap: $_cameraFpsCap - tier fps ceiling floored at '
-                'the capture rate, resolution ladder still applies'
-            : 'camera fps cap released (${q.tier.name} fps restored)');
-        await _applyTier();
+        // Sticky floor: flicker within ±1 fps of the committed value (the
+        // 00:59 live call alternated 10<->11 every few ticks) does not
+        // churn the tier apply or flap the UI chip - only a real move
+        // (>1 fps) rewrites the floor.
+        final raw = _fpsCap.cap;
+        if ((raw - _cameraFpsCap).abs() <= 1) {
+          _fpsCap.cap = _cameraFpsCap; // keep the learner on the sticky value
+        } else {
+          _cameraFpsCap = raw;
+          ref.read(cameraFpsCapProvider.notifier).state = _cameraFpsCap;
+          dlog(_cameraFpsCap > 0
+              ? 'camera fps cap: $_cameraFpsCap - tier fps ceiling floored at '
+                  'the capture rate, resolution ladder still applies'
+              : 'camera fps cap released (${q.tier.name} fps restored)');
+          await _applyTier();
+        }
       }
       final changed = q.update(m, DateTime.now());
       if (changed != null) {
