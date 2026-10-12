@@ -548,11 +548,19 @@ class CallState extends Notifier<ActiveCall?> {
     }
     final stream = chosen;
     if (stream == null) {
-      // Every candidate "opened" but delivered nothing (driver wedged or
-      // a foreign holder). Last resort keeps the call connectable.
-      dlog('camera: no profile delivered frames, falling back to 720p30');
-      return navigator.mediaDevices
-          .getUserMedia({'audio': audio, 'video': cam(1280, 720, 30)});
+      // Every candidate "opened" but delivered nothing (driver wedged, a
+      // foreign holder, or the persisted device is gone). Last resort
+      // keeps the call connectable — and drops the persisted deviceId:
+      // a dead pick must not poison the fallback either.
+      dlog('camera: no profile delivered frames, falling back');
+      final profile = cam(1280, 720, 30);
+      final Map<String, dynamic> video;
+      if (profile['deviceId'] != null) {
+        profile.remove('deviceId');
+        dlog('camera fallback: persisted deviceId dropped');
+      }
+      video = profile;
+      return navigator.mediaDevices.getUserMedia({'audio': audio, 'video': video});
     }
     // TRUE capture height for the tier scale: verified by actual frames.
     if (realH > _captureHeight) {
