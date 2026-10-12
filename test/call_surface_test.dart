@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:grchat_client/src/call/call_state.dart';
 import 'package:grchat_client/src/call/call_surface.dart';
 
@@ -98,6 +99,36 @@ void main() {
       // audio-only call, pressing it renegotiates the device in.
       expect(find.byIcon(Icons.videocam), findsOneWidget);
       expect(find.byTooltip('Включить камеру'), findsOneWidget);
+    });
+
+    testWidgets('incoming video card offers answer-with-camera toggle',
+        (t) async {
+      await _pumpHost(t, _call(video: true));
+      // Three controls: decline, camera intent toggle, accept.
+      expect(find.byTooltip('Отклонить'), findsOneWidget);
+      expect(find.byTooltip('Выключить камеру'), findsOneWidget);
+      expect(find.byTooltip('Принять'), findsOneWidget);
+      // Toggling is an intent, not an accept: the card stays put.
+      await t.tap(find.byTooltip('Выключить камеру'));
+      await t.pump();
+      expect(find.text('Входящий видеозвонок'), findsOneWidget);
+      // Off intent now flips the affordance.
+      expect(find.byTooltip('Включить камеру'), findsOneWidget);
+      expect(find.byTooltip('Принять'), findsOneWidget);
+    });
+
+    testWidgets('self preview renders only for a real local camera',
+        (t) async {
+      await _pumpHost(
+          t,
+          _call(
+              outgoing: true, video: true, phase: CallPhase.active));
+      // Video-active without a local capture renders no self-view at
+      // all: no RTCVideoView anywhere (hero is the avatar), and the
+      // animation slot holds an empty, invisible child — no black box,
+      // no camera-off placeholder.
+      expect(find.byType(RTCVideoView), findsNothing);
+      expect(find.byKey(const ValueKey('self-pip')), findsOneWidget);
     });
 
     testWidgets('video without remote track shows avatar',

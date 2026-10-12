@@ -49,4 +49,23 @@ void main() {
     expect(st.video, isFalse);
     expect(st.cameraOff, isFalse);
   });
+
+  test('ring camera intent: default on, toggle flips only the intent',
+      () {
+    final st = ActiveCall(
+        callId: 'c3',
+        peerNick: 'Masha',
+        video: true,
+        outgoing: false,
+        phase: CallPhase.ringing);
+    expect(st.video, isTrue);
+    expect(st.ringCameraOn, isTrue);
+    final off = st.copyWith(ringCameraOn: false);
+    expect(off.ringCameraOn, isFalse);
+    // The call stays video-capable; only the answer intent changed.
+    expect(off.video, isTrue);
+    expect(off.phase, CallPhase.ringing);
+    // An upper copyWith without the intent must not resurrect it.
+    expect(off.copyWith(muted: true).ringCameraOn, isFalse);
+  });
 }

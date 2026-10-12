@@ -524,9 +524,14 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   }
 
   /// Active video: remote is the hero (§39); avatar until the track
-  /// arrives (§41); local self-view is a small corner PiP (§40).
+  /// arrives (§41); local self-view is a small floating overlay (§40).
   Widget _videoArea(BuildContext context, UnifiedCall call,
       RTCVideoRenderer? remote, RTCVideoRenderer? local, bool hasRemote) {
+    // Self preview lives ONLY for a real local capture (§8–§10): camera
+    // off or capture-less states render NOTHING here — no black tile, no
+    // placeholder. Bottom-left (§12), floating overlay so the remote
+    // surface never reflows (§16); 180ms fade/scale (§15).
+    final showSelf = call.video && !call.cameraOff && local != null;
     return Stack(children: [
       Container(
         decoration: BoxDecoration(
@@ -554,34 +559,28 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                     ]),
               ),
       ),
-      // PiP slot lives whenever our video flag is on: a failed/busy late
-      // camera still keeps its place (grey icon) so the geometry of the
-      // window is stable.
-      if (call.video)
-        Positioned(
-          right: 10,
-          bottom: 10,
-          width: 144,
-          height: 192,
-          child: Container(
-            decoration: BoxDecoration(
-                color: Colors.black,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.grey.shade700)),
-            clipBehavior: Clip.antiAlias,
-            child: (local == null)
-                ? const Center(
-                    child: Icon(Icons.videocam_off, color: Colors.grey))
-                : call.cameraOff
-                    ? const Center(
-                        child: Icon(Icons.videocam_off,
-                            color: Colors.grey))
-                    : RTCVideoView(local,
-                        mirror: true,
-                        objectFit: RTCVideoViewObjectFit
-                            .RTCVideoViewObjectFitCover),
+      Positioned(
+        key: const ValueKey('self-pip'),
+        left: 10,
+        bottom: 10,
+        width: 160,
+        height: 213,
+        child: AnimatedScale(
+          scale: showSelf ? 1.0 : 0.6,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          child: AnimatedOpacity(
+            opacity: showSelf ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 180),
+            child: showSelf
+                ? RTCVideoView(local,
+                    mirror: true,
+                    objectFit: RTCVideoViewObjectFit
+                        .RTCVideoViewObjectFitCover)
+                : const SizedBox.shrink(),
           ),
         ),
+      ),
     ]);
   }
 
@@ -833,6 +832,18 @@ class CallWindow extends StatelessWidget {
           _roundBtn(
               Colors.red, Icons.call_end, 'Отклонить', decline),
           const SizedBox(width: 28),
+          // Answer-with-camera intent (direct video only): toggling never
+          // captures the device and never accepts the call by itself.
+          if (call.onToggleRingCamera != null) ...[
+            _roundBtn(
+                null,
+                call.ringCameraOn ? Icons.videocam : Icons.videocam_off,
+                call.ringCameraOn
+                    ? 'Выключить камеру'
+                    : 'Включить камеру',
+                () => call.onToggleRingCamera!()),
+            const SizedBox(width: 28),
+          ],
           _roundBtn(Colors.green, Icons.call, 'Принять', accept),
         ],
       );

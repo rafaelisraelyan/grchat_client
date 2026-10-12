@@ -32,6 +32,7 @@ class ActiveCall {
     this.remoteVideo = false,
     this.linkDown = false,
     this.minimized = false,
+    this.ringCameraOn = true,
     this.dmId,
   });
 
@@ -53,6 +54,12 @@ class ActiveCall {
   /// Presentation only: mini overlay vs centered window (§46–§48).
   final bool minimized;
 
+  /// Incoming-video camera INTENT at accept time (ringing only): what the
+  /// user chose on the incoming card. Default follows the dial; the toggle
+  /// never captures the device — the accept gate does. After accept the
+  /// intent loses meaning ([video] + real tracks take over).
+  final bool ringCameraOn;
+
   /// DM this call belongs to, if dialed by dm (group redial needs it:
   /// group calls have no peer nick).
   final String? dmId;
@@ -66,6 +73,7 @@ class ActiveCall {
     bool? linkDown,
     bool? minimized,
     bool? video,
+    bool? ringCameraOn,
   }) =>
       ActiveCall(
         callId: callId,
@@ -81,6 +89,7 @@ class ActiveCall {
         remoteVideo: remoteVideo ?? this.remoteVideo,
         linkDown: linkDown ?? this.linkDown,
         minimized: minimized ?? this.minimized,
+        ringCameraOn: ringCameraOn ?? this.ringCameraOn,
         dmId: dmId,
       );
 }
@@ -803,8 +812,11 @@ class CallState extends Notifier<ActiveCall?> {
         // Dry ring: the microphone/camera start only now, at accept time.
         // The old session (if any) was already ended by the coordinator,
         // so these fields are free — never two live transports (§1).
+        // The ring card camera toggle decides whether OUR camera joins:
+        // off = answer a video-capable session without local capture
+        // (m=video stays negotiated, the later enable reuses it).
         _pc = await _newPc(cur.callId);
-        await _addLocal(_pc!, cur.video);
+        await _addLocal(_pc!, cur.video && cur.ringCameraOn);
         dlog('offer ${SdpSummary.parse(_pendingOfferSdp ?? '')}');
         await _pc!.setRemoteDescription(RTCSessionDescription(
             _pendingOfferSdp ?? '', 'offer'));
@@ -930,6 +942,17 @@ class CallState extends Notifier<ActiveCall?> {
     return byId.values.toList();
   }
 
+  /// Incoming ring card: flip the answer-with-camera intent. Never
+  /// touches hardware (no capture before accept — privacy/indicator)
+  /// and never accepts the call by itself.
+  void toggleRingCamera() {
+    final cur = state;
+    if (cur == null || cur.outgoing || cur.phase != CallPhase.ringing) {
+      return;
+    }
+    state = cur.copyWith(ringCameraOn: !cur.ringCameraOn);
+  }
+
   /// Voice-channel behavior: turn the camera ON in an ongoing call. OFF is
   /// always cheap (track.enabled, no renegotiation); ON needs a real one —
   /// a fresh offer rides `call_renegotiate` over the same ICE transport,
@@ -973,10 +996,13 @@ class CallState extends Notifier<ActiveCall?> {
       final sender = await pc.addTrack(track, cam);
       _videoSender = sender;
       dlog('late camera enabled: track=${track.id}');
-      state = state?.copyWith(video: true, cameraOff: false);
+      // Bind the self-view FIRST: the `video: true` flip below rebuilds
+      // the UI, and self-preview must exist only for a REAL capture
+      // (never a placeholder box).
       _localR = RTCVideoRenderer();
       await _localR!.initialize();
       _localR!.srcObject = cam;
+      state = state?.copyWith(video: true, cameraOff: false);
       // One offer/answer round on top of the live transport. The peer's
       // answer arrives as a push and completes the completer.
       final wait = Completer<bool>();

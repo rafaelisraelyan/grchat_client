@@ -98,8 +98,9 @@ class UnifiedCall {
       required this.onHangup,
       required this.onToggleMute,
       required this.onToggleCamera,
-      required this.onToggleShare,
-      required this.onSetMinimized,
+      this.ringCameraOn = false,
+      this.onToggleRingCamera,
+      required this.onToggleShare,      required this.onSetMinimized,
       required this.friendlyError,
       this.switchDetail,
       this.spotlight,
@@ -128,6 +129,11 @@ class UnifiedCall {
   final Future<void> Function() onHangup;
   final void Function() onToggleMute;
   final void Function() onToggleCamera;
+
+  /// Incoming ring card camera INTENT (what the accept will do) — shown
+  /// only on direct video incomings; null callback = no camera control.
+  final bool ringCameraOn;
+  final VoidCallback? onToggleRingCamera;
   final Future<void> Function() onToggleShare;
   final void Function(bool) onSetMinimized;
 
@@ -271,6 +277,10 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
     },
     onToggleMute: () => st.toggleMute(),
     onToggleCamera: () => st.toggleCamera(),
+    ringCameraOn: call.video && call.ringCameraOn,
+    // Camera control only on incoming VIDEO cards; audio rings get none.
+    onToggleRingCamera:
+        call.video ? st.toggleRingCamera : null,
     onToggleShare: () => st.toggleScreenShare(),
     onSetMinimized: (m) => st.setMinimized(m),
     friendlyError: friendlyCallError,
