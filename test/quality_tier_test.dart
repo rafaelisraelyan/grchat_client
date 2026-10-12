@@ -342,6 +342,31 @@ void main() {
     StatsReport r(String id, String type, Map<String, dynamic> v) =>
         StatsReport(id, type, 0, v);
 
+    test('reads InputFramesPerSecond as the capture fps floor', () {
+      final m = LinkMetrics.fromReports([
+        r('src', 'ssrc', {
+          'kind': 'video',
+          'InputFramesPerSecond': 15.0,
+        }),
+        r('out', 'outbound-rtp', {
+          'kind': 'video',
+          'framesPerSecond': 29.7,
+        }),
+      ]);
+      expect(m.inputFps, 15.0,
+          reason: 'capture fps beats the encoder-adapted output number');
+      expect(m.framesPerSecond, closeTo(29.7, 1e-6));
+    });
+
+    test('tolerates absent InputFramesPerSecond', () {
+      final m = LinkMetrics.fromReports([
+        r('out', 'outbound-rtp', {'kind': 'video', 'framesPerSecond': 30}),
+      ]);
+      expect(m.inputFps, 0);
+      final empty = LinkMetrics.fromReports([]);
+      expect(empty.inputFps, 0);
+    });
+
     test('reads bandwidth, rtt, loss and limitation', () {
       final m = LinkMetrics.fromReports([
         r('p1', 'candidate-pair', {
@@ -385,6 +410,42 @@ void main() {
       expect(m.rttMs, isNull);
       expect(m.lossPct, isNull);
       expect(LinkMetrics.fromReports([]).isEmpty, isTrue);
+    });
+  });
+
+  group('FpsCapLearn (capture fps floor)', () {
+    test('commits only after two stable below-tier ticks', () {
+      final l = FpsCapLearn();
+      l.update(15, tierFps: 30);
+      expect(l.cap, 0, reason: 'first sighting is not a commitment');
+      l.update(15, tierFps: 30);
+      expect(l.cap, 15);
+    });
+
+    test('one transient never floors a healthy camera', () {
+      final l = FpsCapLearn();
+      l.update(15, tierFps: 30);
+      l.update(30, tierFps: 30);
+      expect(l.cap, 0, reason: 'the candidate reset - no floor');
+    });
+
+    test('release needs the same stability as commitment', () {
+      final l = FpsCapLearn();
+      l.update(15, tierFps: 30);
+      l.update(15, tierFps: 30);
+      expect(l.cap, 15);
+      l.update(30, tierFps: 30);
+      expect(l.cap, 15, reason: 'one tick proves nothing');
+      l.update(30, tierFps: 30);
+      expect(l.cap, 0);
+    });
+
+    test('floor stays coherent when the tier fps is already low', () {
+      // A floor only makes sense BELOW the tier fps: the tier itself is
+      // already a lower ceiling and the capture number cannot raise it.
+      final l = FpsCapLearn();
+      l.update(15, tierFps: 15);
+      expect(l.cap, 0, reason: 'capture == tier fps: no floor to learn');
     });
   });
 }

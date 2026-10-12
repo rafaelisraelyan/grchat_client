@@ -810,6 +810,37 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                   ),
                 ),
         ),
+        // Camera fps floor (§capture-fps): when the capture delivers fewer
+        // fps than the tier asks, say it out loud - higher tiers only
+        // enlarge the picture, they cannot smooth the motion. Rendered
+        // BELOW the pip layer, so a parked preview simply covers it.
+        if (call.video && call.phase == CallPhase.active)
+          Positioned(
+            left: 0,
+            right: 0,
+            top: 10,
+            child: Center(
+              child: Consumer(
+                builder: (context, ref, _) {
+                  final cap = ref.watch(cameraFpsCapProvider);
+                  if (cap <= 0) return const SizedBox.shrink();
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      'Камера: $cap fps',
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.white70),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
         // Floating self preview (§25–§40): clipped by the window's own
         // rounded rect; drag anywhere; snap to the nearest edge with
         // offset preserved (§35–§37); position lives ON THE HOST so

@@ -355,9 +355,15 @@ class CallState extends Notifier<ActiveCall?> {
   /// Real capture height, learned from the sent frames (see _qualityTick).
   /// 0 = not known yet: no downscale is applied until it is.
   int _captureHeight = 0;
+  int _cameraFpsCap = 0;
 
   /// No learning before this moment (stats may lag a source switch).
   DateTime _learnHoldUntil = DateTime.fromMillisecondsSinceEpoch(0);
+  /// Camera fps ceiling (§capture-fps): learned from InputFramesPerSecond;
+  /// 0 = the tier fps stands. Floors every tier's maxFramerate and surfaces
+  /// in the media-area chip: a 15 fps camera keeps the resolution ladder
+  /// but nothing can make motion smoother - visible, not implied.
+  final FpsCapLearn _fpsCap = FpsCapLearn();
 
   void _holdLearning() =>
       _learnHoldUntil = DateTime.now().add(_qualityPeriod * 2);
@@ -384,6 +390,11 @@ class CallState extends Notifier<ActiveCall?> {
     _qualityStallLogged = false;
     _audioSender = null;
     _captureHeight = 0;
+    _fpsCap.reset();
+    if (_cameraFpsCap != 0) {
+      _cameraFpsCap = 0;
+      ref.read(cameraFpsCapProvider.notifier).state = 0;
+    }
     _learnHoldUntil = DateTime.fromMillisecondsSinceEpoch(0);
   }
 
@@ -408,6 +419,29 @@ class CallState extends Notifier<ActiveCall?> {
           fh.round() > _captureHeight) {
         _captureHeight = fh.round();
         dlog('capture height learned: ${_captureHeight}p');
+        await _applyTier();
+      }
+      // Camera fps ceiling (§capture-fps): the capture-side fps is the one
+      // truth about a hardware/driver ceiling - the encoder OUTPUT fps can
+      // dip under bandwidth adaptation (limitation != none), the capture
+      // number cannot. Two stable ticks before a commit: a startup
+      // transient never floors the tier.
+      final observedFps = m.inputFps > 0
+          ? m.inputFps
+          : (m.limitation == null ? (m.framesPerSecond ?? 0) : -1.0);
+      final capBefore = _fpsCap.cap;
+      if (observedFps >= 0) {
+        _fpsCap.update(observedFps, tierFps: q.tier.fps);
+      } else {
+        _fpsCap.reset();
+      }
+      if (_fpsCap.cap != capBefore) {
+        _cameraFpsCap = _fpsCap.cap;
+        ref.read(cameraFpsCapProvider.notifier).state = _cameraFpsCap;
+        dlog(_cameraFpsCap > 0
+            ? 'camera fps cap: $_cameraFpsCap - tier fps ceiling floored at '
+                'the capture rate, resolution ladder still applies'
+            : 'camera fps cap released (${q.tier.name} fps restored)');
         await _applyTier();
       }
       final changed = q.update(m, DateTime.now());
@@ -464,7 +498,8 @@ class CallState extends Notifier<ActiveCall?> {
       // camera-derived factor, and keep text sharp over smooth motion.
       final sharing = _screen != null;
       final tp = tierParams(q.tier,
-          captureHeight: sharing ? 0 : _captureHeight, captureFps: 0);
+          captureHeight: sharing ? 0 : _captureHeight,
+          captureFps: sharing ? 0 : _cameraFpsCap.toDouble());
       for (final e in enc) {
         e.maxBitrate = tp.maxBitrate;
         e.maxFramerate = tp.maxFramerate;
@@ -475,7 +510,8 @@ class CallState extends Notifier<ActiveCall?> {
           : RTCDegradationPreference.BALANCED;
       final ok = await sender.setParameters(p);
       dlog('video tier ${q.tier} scale=${tp.scaleDownBy.toStringAsFixed(2)} '
-          'fps<=${tp.maxFramerate} applied=$ok');
+          'fps<=${tp.maxFramerate} camfps=${_cameraFpsCap > 0 ? _cameraFpsCap : '-'} '
+          'applied=$ok');
     } catch (e) {
       dlog('video tier apply failed: $e');
     }
@@ -1585,6 +1621,17 @@ class CallState extends Notifier<ActiveCall?> {
 
 final callStateProvider =
     NotifierProvider<CallState, ActiveCall?>(CallState.new);
+
+/// Camera fps ceiling (§capture-fps) for the media-area chip. 0 = no floor
+/// learned; >0 = the capture delivers at most this many fps, so higher
+/// tiers only enlarge the picture, never smooth the motion. Written only
+/// by the quality tick (CallState); read by the call surface.
+class CameraFpsCap extends Notifier<int> {
+  @override
+  int build() => 0;
+}
+
+final cameraFpsCapProvider = NotifierProvider<CameraFpsCap, int>(CameraFpsCap.new);
 
 /// Raw server codes must never reach the UI.
 String friendlyCallError(Object e) {

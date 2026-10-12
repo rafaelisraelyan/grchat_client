@@ -61,6 +61,40 @@ TierParams tierParams(VideoTier t,
       scaleDownBy: scale, maxFramerate: fps, maxBitrate: t.kbps * 1000);
 }
 
+/// Learns the camera's real fps ceiling (§capture-fps) with a two-tick
+/// stability window: commit a floor LOWER than the current tier fps, and
+/// release it only after the same-sized dip disappears. A 15 fps camera
+/// keeps every tier's resolution ladder but floors the frame-rate ceiling:
+/// fhd 1080p15 stays fhd - the motion simply does not improve, which is
+/// visible in the logs and the media-area chip, never hidden.
+class FpsCapLearn {
+  int cap = 0;
+  int _value = 0;
+  int _ticks = 0;
+
+  void update(double inputFps, {required int tierFps}) {
+    final observed = inputFps.floor();
+    final candidate = observed > 0 && observed < tierFps ? observed : 0;
+    if (candidate == 0 && cap == 0) {
+      reset();
+      return;
+    }
+    if (candidate == _value) {
+      _ticks++;
+      if (_ticks >= 2) cap = candidate;
+    } else {
+      _value = candidate;
+      _ticks = 1;
+    }
+  }
+
+  void reset() {
+    cap = 0;
+    _ticks = 0;
+    _value = 0;
+  }
+}
+
 /// One sample of the outgoing path. Null = the platform did not report it;
 /// an unknown value never triggers an upgrade.
 class LinkMetrics {
@@ -73,6 +107,7 @@ class LinkMetrics {
       this.frameWidth,
       this.videoBytesSent,
       this.framesPerSecond,
+      this.inputFps = 0,
       this.videoOut = false});
 
   /// Height of the video frames actually being SENT right now (outbound-rtp
@@ -96,6 +131,13 @@ class LinkMetrics {
 
   /// Frames per second actually sent (outbound-rtp framesPerSecond).
   final double? framesPerSecond;
+
+  /// Capture-side fps floor (libwebrtc InputFramesPerSecond): what the
+  /// camera itself delivers BEFORE the encoder adapts to the link. 0 when
+  /// the platform does not report it. Under bandwidth adaptation the
+  /// encoder output fps ([framesPerSecond]) may fall below this - the
+  /// capture number is the one that proves a hardware/driver ceiling.
+  final double inputFps;
 
   /// Sender-side bandwidth estimate (candidate-pair availableOutgoingBitrate).
   final double? availableOutKbps;
@@ -128,6 +170,7 @@ class LinkMetrics {
     double? frameWidth;
     double? videoBytesSent;
     double? framesPerSecond;
+    double captureFps = 0;
     var videoOut = false;
 
     // Selected pair: nominated+succeeded, else any succeeded.
@@ -173,6 +216,10 @@ class LinkMetrics {
         if (b != null && b > 0) videoBytesSent = b;
         final f = _d(r.values['framesPerSecond']);
         if (f != null && f > 0) framesPerSecond = f;
+      } else if (r.values['InputFramesPerSecond'] != null) {
+        // Send source stats: capture-side fps BEFORE the encoder adapts.
+        final f = _d(r.values['InputFramesPerSecond']);
+        if (f != null && f > captureFps) captureFps = f;
       }
     }
     return LinkMetrics(
@@ -184,6 +231,7 @@ class LinkMetrics {
         frameWidth: frameWidth,
         videoBytesSent: videoBytesSent,
         framesPerSecond: framesPerSecond,
+        inputFps: captureFps,
         videoOut: videoOut);
   }
 }
