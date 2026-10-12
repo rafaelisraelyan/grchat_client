@@ -509,18 +509,25 @@ class CallState extends Notifier<ActiveCall?> {
         continue;
       }
       // getSettings() on desktop echoes the REQUESTED constraints, not the
-      // real device mode, and a driver may "open" a mode it cannot
-      // actually deliver. Accept a candidate only when frames really
-      // reach a renderer.
+      // real device mode, and drivers sometimes open a mode they cannot
+      // deliver (e.g. ask 1080p30, receive 720p). Accept a candidate only
+      // when frames really reach a renderer AND the frame height is close
+      // to the ask; a half-delivered mode is skipped so the ladder can try
+      // the rest (640p60/30 etc).
       final probe = await _firstFrameProbe(s);
-      if (probe.frameArrived) {
+      if (probe.frameArrived && probe.height >= c.$2 * 0.8) {
         realH = probe.height;
         dlog('camera delivers ${c.$1}x${c.$2}@${c.$3} '
-            '(frames verified, ${realH}p)');
+            '(frames verified, real ${probe.width}x${probe.height})');
         chosen = s;
         break;
       }
-      dlog('camera probe ${c.$1}x${c.$2}@${c.$3}: open ok, no frames');
+      if (probe.frameArrived) {
+        dlog('camera probe ${c.$1}x${c.$2}@${c.$3}: frames are '
+            '${probe.width}x${probe.height}, below the ask — skipping');
+      } else {
+        dlog('camera probe ${c.$1}x${c.$2}@${c.$3}: open ok, no frames');
+      }
       await s.dispose();
     }
     final stream = chosen;
@@ -541,7 +548,7 @@ class CallState extends Notifier<ActiveCall?> {
 
   /// Attaches a temporary renderer and waits for the first frame: the only
   /// trustworthy proof that the camera actually delivers this profile.
-  Future<({bool frameArrived, int height})> _firstFrameProbe(
+  Future<({bool frameArrived, int width, int height})> _firstFrameProbe(
       MediaStream stream) async {
     final gotOne = Completer<int>();
     RTCVideoRenderer? r;
@@ -557,19 +564,19 @@ class CallState extends Notifier<ActiveCall?> {
       });
       final v = await gotOne.future;
       timer.cancel();
-      // Height isn't always reported with the very first frame; give the
-      // simulator a short window to notify the frame geometry.
       var h = 0;
+      var w = 0;
       if (v == 1) {
         for (var i = 0; i < 25 && h == 0; i++) {
           await Future.delayed(const Duration(milliseconds: 40));
+          w = r.videoWidth;
           h = r.videoHeight;
         }
       }
-      return (frameArrived: v == 1, height: h);
+      return (frameArrived: v == 1, width: w, height: h);
     } catch (e) {
       dlog('camera frame probe failed: $e');
-      return (frameArrived: false, height: 0);
+      return (frameArrived: false, width: 0, height: 0);
     } finally {
       try {
         await r?.dispose();
