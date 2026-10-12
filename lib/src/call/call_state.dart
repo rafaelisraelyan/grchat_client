@@ -302,6 +302,14 @@ class CallState extends Notifier<ActiveCall?> {
       _remoteR?.srcObject ??= remote;
       if (track.kind == 'video') {
         _remoteVideoArrived = true;
+        // The renderer was bound while the stream was still audio-only;
+        // its native sink never saw the late-added video track (reneg-
+        // negotiated late camera). Force a re-bind: without it the engine
+        // decodes frames while the texture stays black.
+        try {
+          _remoteR?.srcObject = remote;
+        } catch (_) {}
+        dlog('remote video rebind (late track ${track.id})');
         state = state?.copyWith(remoteVideo: true);
       } else {
         state = state?.copyWith();
