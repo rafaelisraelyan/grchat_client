@@ -4,6 +4,8 @@ import 'dart:ui' show lerpDouble;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'call_diagnostics.dart' show dlog;
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../widgets/avatar.dart';
@@ -59,33 +61,40 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// navigation; a new session starts top-right again.
   DockSpot _dock = DockSpot.initial;
 
-  /// Self-preview drag (§30–§31): live top-left inside the video area.
-  void _onPipDragStart(DragStartDetails _) {
+  /// Self-preview drag (§30–§31). START captures the CURRENT preview
+  /// position as the drag origin — the pointer never re-anchors it (§9);
+  /// updates apply cursor deltas. Rebuilds are LOCALIZED: the position
+  /// notifier rebuilds only the overlay subtree, not the whole call
+  /// window (§23–§24).
+  void _onPipDragStart(DragStartDetails d, Size mediaArea, Size pipSize) {
     _pipSnap.stop();
     _pipSnapFrom = null;
     _pipSnapTo = null;
-    setState(() {});
+    _pipDragPos = _pipRect(mediaArea, pipSize).topLeft;
+    dlog('SELF_PREVIEW_DRAG_START origin=$_pipDragPos');
+    _pipTick.value++;
   }
 
   void _onPipDragUpdate(
       DragUpdateDetails d, Size mediaArea, Size pipSize) {
     if (_pipDragPos == null) return;
-    setState(() {
-      _pipDragPos = clampCardPos(_pipDragPos! + d.delta, mediaArea, pipSize);
-    });
+    _pipDragPos = clampCardPos(_pipDragPos! + d.delta, mediaArea, pipSize);
+    _pipTick.value++;
   }
 
   void _onPipDragEnd(Size mediaArea, Size pipSize) {
     if (_pipDragPos == null) return;
     final rect = Rect.fromLTWH(
         _pipDragPos!.dx, _pipDragPos!.dy, pipSize.width, pipSize.height);
-    // Magnetic snap (§35–§37): nearest edge wins; the offset along it is
-    // preserved (right-middle stays right-middle, §60).
+    // Magnetic snap AFTER release only (§13–§15): nearest edge wins, the
+    // offset along it is preserved (§60); no snap during the drag (§11).
     _pipDock = snapDock(rect, mediaArea, pipSize);
     _pipSnapFrom = rect;
     _pipSnapTo = dockRect(_pipDock, mediaArea, pipSize);
+    dlog('SELF_PREVIEW_DRAG_END edge=${_pipDock.edge} '
+        'offset=${_pipDock.offset.toStringAsFixed(2)}');
     _pipDragPos = null;
-    if (mounted) setState(() {});
+    _pipTick.value++;
     _pipSnap.forward(from: 0);
   }
 
@@ -125,6 +134,19 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   Offset? _pipDragPos;
   Rect? _pipSnapFrom;
   Rect? _pipSnapTo;
+
+  /// Localized rebuild clock for the overlay subtree: drag updates bump
+  /// this instead of [setState], so a 60Hz mouse move never rebuilds the
+  /// whole call window (§23–§24). The manager rebuilds the frame driven
+  /// by [TickerProviderStateMixin].
+  final ValueNotifier<int> _pipTick = ValueNotifier(0);
+
+  /// Clear drag state when the session ends (§25): no stale drag origin.
+  void _pipCancelDrag() {
+    _pipDragPos = null;
+    _pipTick.value++;
+  }
+
   late final AnimationController _pipSnap = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 220));
   late final Animation<double> _pipEase = CurvedAnimation(
@@ -146,6 +168,7 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     _morph.dispose();
     _snap.dispose();
     _pipSnap.dispose();
+    _pipTick.dispose();
     _previewT.dispose();
     super.dispose();
   }
@@ -319,6 +342,7 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       _pipSnapFrom = null;
       _pipSnapTo = null;
       _pipSnap.reset();
+      _pipTick.value++;
       if (first) {
         // No listeners yet: snap synchronously.
         _morph.value = target;
@@ -644,24 +668,14 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// Rounded, draggable, edge-snapping self preview inside the video
   /// area. Invisible (and gesture-less) when the camera is off; the
   /// RenderObject tree keeps the video texture alive meanwhile (§32).
+  ///
+  /// INTERACTION LAYER (§2–§8): the video renderer never participates in
+  /// hit testing (IgnorePointer) — the translucent drag surface sits ON
+  /// TOP of the whole tile, so every pixel of the preview is a handle.
+  /// Cursor: grab on hover, grabbing mid-drag. Pan events fire for the
+  /// primary pointer only; secondary buttons stay idle (§8).
   Widget _pipOverlay(bool showSelf, RTCVideoRenderer? local) {
     const pipSize = Size(180, 240);
-    final video = Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.black54, width: 1),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withValues(alpha: 0.35),
-              blurRadius: 18,
-              offset: const Offset(0, 8)),
-        ],
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: RTCVideoView(local!,
-          mirror: true,
-          objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover),
-    );
     return Positioned.fill(
       child: AnimatedScale(
         scale: showSelf ? 1.0 : 0.94,
@@ -674,24 +688,60 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
             ignoring: !showSelf,
             child: LayoutBuilder(builder: (ctx, cons) {
               final mediaArea = cons.biggest;
-              // Drag 1:1 while held; the snap flight is driven by the
-              // controller re-running through [_pipRect] (§38, 220ms).
-              final child = GestureDetector(
-                onPanStart: _onPipDragStart,
-                onPanUpdate: (d) => _onPipDragUpdate(d, mediaArea, pipSize),
-                onPanEnd: (_) => _onPipDragEnd(mediaArea, pipSize),
-                child: video,
-              );
-              return AnimatedBuilder(
-                animation: _pipEase,
-                child: child,
-                builder: (b, pip) => Stack(
-                  clipBehavior: Clip.none,
-                  fit: StackFit.expand,
-                  children: [
-                    Positioned.fromRect(rect: _pipRect(mediaArea, pipSize),
-                        child: pip!),
+              // Video NEVER hit-tests (§3): the gesture layer above the
+              // renderer owns ALL pointer traffic. The near-invisible
+              // surface guarantees opaque hit-testing across the whole
+              // tile (§6), not just the frame.
+              final video = Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.black54, width: 1),
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.35),
+                        blurRadius: 18,
+                        offset: const Offset(0, 8)),
                   ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: IgnorePointer(
+                  child: RTCVideoView(local!,
+                      mirror: true,
+                      objectFit: RTCVideoViewObjectFit
+                          .RTCVideoViewObjectFitCover),
+                ),
+              );
+              final drag = GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanStart: (d) => _onPipDragStart(d, mediaArea, pipSize),
+                onPanUpdate: (d) =>
+                    _onPipDragUpdate(d, mediaArea, pipSize),
+                onPanEnd: (_) => _onPipDragEnd(mediaArea, pipSize),
+                onPanCancel: _pipCancelDrag,
+                child: Stack(children: [
+                  Positioned.fill(child: video),
+                  Positioned.fill(
+                    child: ColoredBox(
+                        color: Colors.white.withValues(alpha: 0.001)),
+                  ),
+                ]),
+              );
+              // Cursor affordance (§7): grab on hover, grabbing mid-drag.
+              return MouseRegion(
+                cursor: _pipDragPos != null
+                    ? SystemMouseCursors.grabbing
+                    : SystemMouseCursors.grab,
+                child: AnimatedBuilder(
+                  animation: Listenable.merge([_pipEase, _pipTick]),
+                  child: drag,
+                  builder: (b, pip) => Stack(
+                    clipBehavior: Clip.none,
+                    fit: StackFit.expand,
+                    children: [
+                      Positioned.fromRect(
+                          rect: _pipRect(mediaArea, pipSize), child: pip!),
+                    ],
+                  ),
                 ),
               );
             }),
