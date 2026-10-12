@@ -557,10 +557,14 @@ class CallState extends Notifier<ActiveCall?> {
       });
       final v = await gotOne.future;
       timer.cancel();
+      // Height isn't always reported with the very first frame; give the
+      // simulator a short window to notify the frame geometry.
       var h = 0;
       if (v == 1) {
-        // The renderer reports the frame geometry it actually received.
-        h = r.videoHeight;
+        for (var i = 0; i < 25 && h == 0; i++) {
+          await Future.delayed(const Duration(milliseconds: 40));
+          h = r.videoHeight;
+        }
       }
       return (frameArrived: v == 1, height: h);
     } catch (e) {
