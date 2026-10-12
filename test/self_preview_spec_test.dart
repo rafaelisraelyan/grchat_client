@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:grchat_client/src/call/call_surface.dart';
 import 'package:grchat_client/src/call/dock_state.dart';
 
 /// Self-preview geometry spec (final UX ТЗ §25–§43, §55–§62). The preview
@@ -63,5 +64,56 @@ void main() {
         lessThanOrEqualTo(small.width - kDockMargin + 0.5));
     expect(clamped.dy + pip.height,
         lessThanOrEqualTo(small.height - kDockMargin + 0.5));
+  });
+
+  test('size policy: min is floored at 180 even in a tiny area (§34)',
+      () {
+    expect(selfPipWidthFor(const Size(200, 160), 80), kSelfPipMinW);
+    expect(selfPipWidthFor(const Size(200, 160), 999), kSelfPipMinW);
+  });
+
+  test('size policy: hard cap 420 for a roomy area (§35)', () {
+    final w = selfPipWidthFor(const Size(1200, 700), 999);
+    expect(w, kSelfPipHardMaxW);
+    expect(selfPipHeightFor(w), closeTo(w * 9 / 16, 0.01));
+  });
+
+  test('size policy: responsive max shrinks with the window (§36, §39)',
+      () {
+    // Spec §39 example: an 800×500 area caps at ~280 px, not 420.
+    final w = selfPipWidthFor(const Size(800, 500), 999);
+    expect(w, closeTo(800 * 0.35, 0.01));
+    expect(selfPipHeightFor(w), lessThanOrEqualTo(500 * 0.4 + 0.01));
+    // Smaller window → smaller max (§36).
+    expect(w, lessThan(selfPipWidthFor(const Size(1200, 700), 999)));
+  });
+
+  test('size policy: user width survives, bad values clamp (§40–§42)',
+      () {
+    expect(selfPipWidthFor(const Size(1200, 700), 220), 220);
+    expect(selfPipWidthFor(const Size(1200, 700), 160), 180,
+        reason: 'user width below min floors to min');
+    expect(selfPipWidthFor(const Size(1200, 700), 999), 420);
+  });
+
+  test('size policy: height never exceeds 40% of the area (§37)', () {
+    final media = const Size(2400, 400); // width budget huge, height low
+    final w = selfPipWidthFor(media, 999);
+    final h = selfPipHeightFor(w);
+    expect(h, lessThanOrEqualTo(media.height * 0.4 + 0.01));
+    expect(w, greaterThanOrEqualTo(kSelfPipMinW));
+  });
+
+  test('size policy: default sits strictly between min and typical max',
+      () {
+    expect(kSelfPipMinW, lessThan(kSelfPipDefaultW));
+    expect(kSelfPipDefaultW,
+        lessThan(selfPipMaxWidthFor(const Size(1200, 700))));
+  });
+
+  test('size policy: matching spec §39 example 800×500 (§36, §39)', () {
+    expect(selfPipWidthFor(const Size(800, 500), 999), 280.0);
+    expect(selfPipHeightFor(selfPipWidthFor(const Size(800, 500), 999)),
+        closeTo(280 * 9 / 16, 0.01));
   });
 }

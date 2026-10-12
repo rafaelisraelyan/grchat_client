@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/material.dart';
@@ -98,6 +99,34 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     _pipSnap.forward(from: 0);
   }
 
+  /// SIZE grip (§33–§42): live width clamp against the RESPONSIVE max
+  /// during the whole drag — never a jump after release (§40). Right edge
+  /// anchors as before (§41): the dock rect recomputes from the same
+  /// edge+offset, so growing only pushes... no, it stays anchored.
+  void _onPipResizeStart(DragStartDetails _, double startW) {
+    _pipSnap.stop();
+    _pipSnapFrom = null;
+    _pipSnapTo = null;
+    _pipResizing = true;
+    dlog('SELF_PREVIEW_RESIZE_START w=$startW');
+    _pipTick.value++;
+  }
+
+  void _onPipResizeUpdate(DragUpdateDetails d, double startW, Size media) {
+    if (!_pipResizing) return;
+    _pipUserW = selfPipWidthFor(media, startW + d.delta.dx);
+    dlog('SELF_PREVIEW_RESIZE_UPDATE w=$_pipUserW');
+    _pipTick.value++;
+  }
+
+  void _onPipResizeEnd(Size media) {
+    if (!_pipResizing) return;
+    _pipResizing = false;
+    _pipUserW = selfPipWidthFor(media, _pipUserW);
+    dlog('SELF_PREVIEW_RESIZE_END w=${_pipUserW.toStringAsFixed(0)}');
+    _pipTick.value++;
+  }
+
   /// Geometry of the self-preview inside the video area: drag position
   /// while dragging, snap interpolation during the flight, otherwise the
   /// docked spot. Constraints are applied on read, so a small window
@@ -134,6 +163,15 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   Offset? _pipDragPos;
   Rect? _pipSnapFrom;
   Rect? _pipSnapTo;
+
+  /// User-chosen self-preview WIDTH (§33–§43): height follows the fixed
+  /// 3:4 aspect. Survives drags, camera off/on and window resizes for the
+  /// whole session (§40–§42); resets with a new session (§43).
+  double _pipUserW = kSelfPipDefaultW;
+
+  /// Whether a size-grip drag is currently running (§47); during it the
+  /// clamp runs LIVE (§38) and dock anchoring follows after each update.
+  bool _pipResizing = false;
 
   /// Localized rebuild clock for the overlay subtree: drag updates bump
   /// this instead of [setState], so a 60Hz mouse move never rebuilds the
@@ -336,8 +374,11 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       _dragPos = null;
       _snapFrom = null;
       _snapTo = null;
-      // Self-preview resets with the session: right side, middle-ish (§41).
+      // Self-preview resets with the session: right side, middle-ish (§41),
+      // default width (§43).
       _pipDock = const DockSpot(DockEdge.right, 0.4);
+      _pipUserW = kSelfPipDefaultW;
+      _pipResizing = false;
       _pipDragPos = null;
       _pipSnapFrom = null;
       _pipSnapTo = null;
@@ -668,6 +709,8 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// Rounded, draggable, edge-snapping self preview inside the video
   /// area. Invisible (and gesture-less) when the camera is off; the
   /// RenderObject tree keeps the video texture alive meanwhile (§32).
+  /// Sized by the user within MIN/responsive-MAX (§33–§43); a corner
+  /// grip resizes live with aspect-locked height.
   ///
   /// INTERACTION LAYER (§2–§8): the video renderer never participates in
   /// hit testing (IgnorePointer) — the translucent drag surface sits ON
@@ -675,7 +718,6 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// Cursor: grab on hover, grabbing mid-drag. Pan events fire for the
   /// primary pointer only; secondary buttons stay idle (§8).
   Widget _pipOverlay(bool showSelf, RTCVideoRenderer? local) {
-    const pipSize = Size(180, 240);
     return Positioned.fill(
       child: AnimatedScale(
         scale: showSelf ? 1.0 : 0.94,
@@ -688,6 +730,23 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
             ignoring: !showSelf,
             child: LayoutBuilder(builder: (ctx, cons) {
               final mediaArea = cons.biggest;
+              // Live size clamp (§38): window resizes clamp the user
+              // width, but mid-BUILD mutation is forbidden — sync after
+              // the frame instead (§42).
+              final pendingW = selfPipWidthFor(mediaArea, _pipUserW);
+              if (pendingW != _pipUserW) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  final eff = selfPipWidthFor(mediaArea, _pipUserW);
+                  if (eff != _pipUserW) {
+                    _pipUserW = eff;
+                    _pipTick.value++;
+                  }
+                });
+              }
+              final effW = selfPipWidthFor(mediaArea, _pipUserW);
+              final pipSize =
+                  Size(effW, selfPipHeightFor(effW));
               // Video NEVER hit-tests (§3): the gesture layer above the
               // renderer owns ALL pointer traffic. The near-invisible
               // surface guarantees opaque hit-testing across the whole
@@ -724,11 +783,37 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                     child: ColoredBox(
                         color: Colors.white.withValues(alpha: 0.001)),
                   ),
+                  // Size grip (§33–§42): bottom-right corner, resize only
+                  // on the primary pointer, aspect-locked height, LIVE
+                  // min/max clamping.
+                  Positioned(
+                    right: 2,
+                    bottom: 2,
+                    width: 26,
+                    height: 26,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.resizeDownRight,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onPanStart: (d) =>
+                            _onPipResizeStart(d, effW),
+                        onPanUpdate: (d) =>
+                            _onPipResizeUpdate(d, effW, mediaArea),
+                        onPanEnd: (_) => _onPipResizeEnd(mediaArea),
+                        onPanCancel: () {
+                          _pipResizing = false;
+                          _pipTick.value++;
+                        },
+                        child: Icon(Icons.zoom_out_map,
+                            size: 16, color: Colors.white70),
+                      ),
+                    ),
+                  ),
                 ]),
               );
               // Cursor affordance (§7): grab on hover, grabbing mid-drag.
               return MouseRegion(
-                cursor: _pipDragPos != null
+                cursor: _pipDragPos != null || _pipResizing
                     ? SystemMouseCursors.grabbing
                     : SystemMouseCursors.grab,
                 child: AnimatedBuilder(
@@ -787,6 +872,35 @@ String formatCallDuration(int s) {
   final ss = sec.toString().padLeft(2, '0');
   return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
 }
+
+/// Self-preview SIZE policy (§33–§43). The stored user width lives in
+/// [kSelfPipMinW, hard cap]; the EFFECTIVE max is responsive: 35% of the
+/// usable video-area width AND 40% of its height (through the fixed 3:4
+/// aspect), never above the hard cap — computed live during resize and
+/// window resizes (§36–§38). Reveals of video use the same aspect, so
+/// nothing is distorted (§10).
+const double kSelfPipMinW = 180;
+const double kSelfPipHardMaxW = 420;
+const double kSelfPipDefaultW = 220;
+/// Height/width ratio of the preview: 16:9 per the final UX spec
+/// (§34: 180×101 min; §39: 420×236 max, defaultWidth 220).
+const double kSelfPipAspect = 9 / 16;
+
+/// Effective max width for a video area of [media].
+double selfPipMaxWidthFor(Size media) {
+  final byWidth = media.width * 0.35;
+  final byHeight = media.height * 0.4 / kSelfPipAspect; // w = h * 16/9
+  final max = math.min(kSelfPipHardMaxW, math.min(byWidth, byHeight));
+  // Never below the minimum even in a tiny area: position clamping
+  // handles the leftovers instead of shrinking to a useless dot (§34).
+  return max.clamp(kSelfPipMinW, kSelfPipHardMaxW);
+}
+
+/// Clamp a user-chosen width for the given area (min..responsive max).
+double selfPipWidthFor(Size media, double userW) =>
+    userW.clamp(kSelfPipMinW, selfPipMaxWidthFor(media));
+
+double selfPipHeightFor(double w) => w * kSelfPipAspect;
 
 /// Compact card geometry (§4, §42): fixed 300px width in both mini
 /// modes (no horizontal jump, §14), bar 52, preview 172 when shown.
