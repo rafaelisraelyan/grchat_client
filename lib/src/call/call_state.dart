@@ -937,9 +937,13 @@ class CallState extends Notifier<ActiveCall?> {
   Future<void> enableCamera() async {
     final cur = state;
     final pc = _pc;
+    // The gate is REAL local capture, not the call's `video` flag: a
+    // renegotiated peer video (we currently receive) also sets that flag,
+    // and this side must still be able to turn its own camera on — the
+    // later renegotiation adds the track to the same transceiver.
     if (cur == null ||
         pc == null ||
-        cur.video ||
+        _cameraTracks().isNotEmpty ||
         cur.phase != CallPhase.active ||
         _screen != null) {
       return;
