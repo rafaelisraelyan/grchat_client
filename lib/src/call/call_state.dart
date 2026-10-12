@@ -1254,9 +1254,10 @@ class CallState extends Notifier<ActiveCall?> {
       final sdp = (ev['sdp'] ?? '').toString();
       if (sdp.isEmpty) return;
       dlog('peer renegotiate offer ${SdpSummary.parse(sdp)}');
-      // Mirror the dial-time rule: a video m-line in the offer makes this
-      // a video call for us too (wide window, camera button available).
-      state = state?.copyWith(video: state!.video || sdp.contains('m=video'));
+      // Semantic note: `video` means OUR camera is on. Receiving the peer's
+      // late camera does NOT flip theirs — the receiver widens via
+      // remoteVideo (onTrack) and keeps the PiP slot hidden until they
+      // turn their own camera on with the now-working button.
       await pc.setRemoteDescription(RTCSessionDescription(sdp, 'offer'));
       _remoteDescSet = true;
       await _flushRemoteIce();

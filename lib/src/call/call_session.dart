@@ -202,9 +202,12 @@ UnifiedCall _fromDirect(Ref ref, ActiveCall call) {
   // Speaking/mute of the remote side are unknown to the P2P engine, so the
   // tile stays neutral. The renderer object keys the shared video: the same
   // track binding rides grid ↔ morph ↔ pill with no re-create (§4, §53).
+  // P2P pill preview (§8, §18): always the remote peer, never self-view.
+  // The late peer camera lands even in a voice-started call, so the
+  // preview keys on remoteVideo alone — own `video` stays out of it.
   final remoteRenderer = st.remoteRenderer;
   final hasRemoteVideo =
-      call.video && call.remoteVideo && remoteRenderer != null;
+      call.remoteVideo && remoteRenderer != null;
   final remote = CallParticipant(
       id: 'peer',
       nick: call.peerNick,
