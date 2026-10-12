@@ -478,7 +478,9 @@ class CallState extends Notifier<ActiveCall?> {
       'autoGainControl': true,
       'highpassFilter': true,
     };
-    // The user-picked (or OBS-preferred) microphone.
+    // The user-picked (or OBS-preferred) microphone. A stale pick (e.g.
+    // NVIDIA Broadcast was closed) falls back to the platform default
+    // silently: an exact-miss must not take the whole call down.
     final micId = await MediaPrefs.preferredMicId();
     if (micId != null && micId.isNotEmpty) {
       audio['deviceId'] = {'exact': micId};
@@ -533,8 +535,10 @@ class CallState extends Notifier<ActiveCall?> {
       final probe = await _firstFrameProbe(s);
       if (probe.frameArrived && probe.height >= c.$2 * 0.8) {
         realH = probe.height;
+        final usedId = await MediaPrefs.preferredCameraId();
         dlog('camera delivers ${c.$1}x${c.$2}@${c.$3} '
-            '(frames verified, real ${probe.width}x${probe.height})');
+            '(frames verified, real ${probe.width}x${probe.height}, '
+            'pick=${usedId == null || usedId.isEmpty ? 'auto' : 'explicit ' + usedId.substring(0, usedId.length < 8 ? usedId.length : 8)}…'})');
         chosen = s;
         break;
       }
