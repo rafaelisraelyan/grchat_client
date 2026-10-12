@@ -461,10 +461,12 @@ class CallState extends Notifier<ActiveCall?> {
     }
   }
 
-  /// Camera/mic capture. The camera is asked for 1080p/60 first. Desktop
-  /// opens the device with exactly the requested mode and has no
-  /// negotiation, so if that mode is refused outright we retry with the
-  /// old 720p/30 instead of failing the call.
+  /// Camera/mic capture. flutter_webrtc on desktop has no per-device
+  /// capability query and drivers open "whatever they can", so the probe
+  /// asks candidate profiles one by one, reads the REAL result via
+  /// getSettings(), keeps the best capture (most pixels, then fps) and
+  /// frees the rest. The winner is recommended to the tier logic as the
+  /// device's actual mode (capture height from the driver, not guessed).
   Future<MediaStream> _openLocalMedia(bool video) async {
     // Echo cancellation, noise suppression and auto gain stay on; the
     // high-pass filter removes desk/fan rumble that costs bits and clarity.
@@ -483,14 +485,63 @@ class CallState extends Notifier<ActiveCall?> {
       return navigator.mediaDevices
           .getUserMedia({'audio': audio, 'video': false});
     }
-    try {
-      return await navigator.mediaDevices
-          .getUserMedia({'audio': audio, 'video': cam(1920, 1080, 60)});
-    } catch (e) {
-      dlog('camera 1080p60 refused ($e), falling back to 720p30');
+    const candidates = [(1920, 1080, 30), (1280, 720, 60), (1280, 720, 30),
+        (640, 480, 30)];
+    MediaStream? best;
+    var bestPixels = 0;
+    var bestFps = 0.0;
+    for (final c in candidates) {
+      MediaStream s;
+      try {
+        s = await navigator.mediaDevices
+            .getUserMedia({'audio': audio, 'video': cam(c.$1, c.$2, c.$3)});
+      } catch (e) {
+        dlog('camera probe ${c.$2}p refused ($e)');
+        continue;
+      }
+      int w = 0, h = 0;
+      double f = 0;
+      try {
+        final tracks = s.getVideoTracks();
+        final st = tracks.isEmpty ? null : tracks.first.getSettings();
+        w = (st?['width'] as num?)?.round() ?? 0;
+        h = (st?['height'] as num?)?.round() ?? 0;
+        f = (st?['frameRate'] as num?)?.toDouble() ?? 0;
+      } catch (_) {}
+      dlog('camera probe ${c.$1}x${c.$2}@${c.$3} -> $w x $h @${f.round()}');
+      // Pixels dominate, fps breaks ties: capture can always be downscaled      // later, but never upscaled.
+      final pixels = w * h;
+      if (pixels > bestPixels ||
+          (pixels == bestPixels && f > bestFps)) {
+        await best?.dispose();
+        best = s;
+        bestPixels = pixels;
+        bestFps = f;
+      } else {
+        await s.dispose();
+      }
+    }
+    final stream = best;
+    if (stream == null) {
+      // Everything was refused; last resort so the call still connects.
+      dlog('camera probes all refused, falling back to 720p30');
       return navigator.mediaDevices
           .getUserMedia({'audio': audio, 'video': cam(1280, 720, 30)});
     }
+    // Capture height for the tier logic: the driver's report is the TRUE
+    // device mode. Outbound learning (from sent frames) sticks at the
+    // downscaled height after a tier shrinks the stream, so it can only
+    // under-estimate; weight the observed fps too.
+    try {
+      final tracks = stream.getVideoTracks();
+      final st = tracks.isEmpty ? null : tracks.first.getSettings();
+      final h = (st?['height'] as num?)?.round() ?? 0;
+      if (h > _captureHeight) {
+        _captureHeight = h;
+        dlog('capture height from driver: ${_captureHeight}p');
+      }
+    } catch (_) {}
+    return stream;
   }
 
   Future<void> _addLocal(RTCPeerConnection pc, bool video) async {
