@@ -909,7 +909,10 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                 cursor: pipCursor(),
                 onHover: (e) {
                   // Hover tracking in media space (§20); rebuild stays
-                  // local to this overlay (§26).
+                  // local to this overlay (§26). Skipped mid-gesture:
+                  // the drag/resize cursor covers it and the zone work
+                  // would only add per-move overhead during resize.
+                  if (_pipMode != _PipMode.idle) return;
                   final rect = _pipRect(mediaArea, pipSize);
                   final SelfPipZone? z = rect.contains(e.localPosition)
                       ? selfPipZoneFor(e.localPosition - rect.topLeft, pipSize)
@@ -1158,17 +1161,21 @@ Rect selfPipResizedRect({
     return Rect.fromLTWH(left, top, w, h);
   }
 
-  // --- FREE grabs: opposite corner fixed (§10), one diagonal projection
-  // (§9), every budget in a single clamp (§19–§21).
-  final diag = const Offset(16, 9).distance;
-  Offset u = switch (zone) {
-    SelfPipZone.bottomRight => const Offset(16, 9) / diag,
-    SelfPipZone.topLeft => const Offset(-16, -9) / diag,
-    SelfPipZone.bottomLeft => const Offset(-16, 9) / diag,
-    SelfPipZone.topRight => const Offset(16, -9) / diag,
-    _ => const Offset(16, 9) / diag,
+  // --- FREE grabs: opposite corner fixed (§10), one continuous scalar
+  // (§9), every budget in a single clamp (§19–§21). The scalar lives in
+  // WIDTH space: a pure horizontal pull maps 1:1 onto the width (the
+  // cursor never "lags" the card edge), a vertical pull adds a smooth
+  // 9/16 share. No normalization, no axis switching (§9).
+  final aspect = kSelfPipAspect; // 9/16 (h/w)
+  final (dxS, dyS) = switch (zone) {
+    SelfPipZone.bottomRight => (1.0, 1.0),
+    SelfPipZone.topLeft => (-1.0, -1.0),
+    SelfPipZone.bottomLeft => (-1.0, 1.0),
+    SelfPipZone.topRight => (1.0, -1.0),
+    _ => (1.0, 1.0),
   };
-  final projected = pointerDelta.dx * u.dx + pointerDelta.dy * u.dy;
+  final projected =
+      dxS * pointerDelta.dx + dyS * pointerDelta.dy * aspect;
   final fixed = switch (zone) {
     SelfPipZone.bottomRight => start.topLeft,
     SelfPipZone.topLeft => start.bottomRight,

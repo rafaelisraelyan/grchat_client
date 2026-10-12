@@ -179,6 +179,30 @@ void main() {
     expect(r.height, greaterThan(start.height));
   });
 
+  test('resize scalar: pure horizontal pull tracks width 1:1 (§9 feel)', () {
+    // Width-space scalar: dx maps exactly onto the width, dy adds a
+    // smooth 9/16 share — no normalized-projection under-pull.
+    final start = dockRect(
+        const DockSpot(DockEdge.left, 0.4), area, pip);
+    final h = selfPipResizedRect(
+        start: start,
+        pointerDelta: const Offset(60, 0),
+        zone: SelfPipZone.bottomRight,
+        dock: DockEdge.left,
+        media: area);
+    expect(h.width, closeTo(start.width + 60, 0.01),
+        reason: 'horizontal 1:1, no lag');
+    expect(h.topLeft, start.topLeft);
+    final v = selfPipResizedRect(
+        start: start,
+        pointerDelta: const Offset(0, 90),
+        zone: SelfPipZone.bottomRight,
+        dock: DockEdge.left,
+        media: area);
+    expect(v.width, closeTo(start.width + 90 * 9 / 16, 0.01),
+        reason: 'vertical adds a smooth 9/16 share');
+  });
+
   test('size policy: default sits strictly between min and typical max', () {
     expect(kSelfPipMinW, lessThan(kSelfPipDefaultW));
     expect(
