@@ -840,7 +840,11 @@ class CallWindow extends StatelessWidget {
     // The camera is reachable in every direct call: a call that started
     // on voice only turns the device on here (renegotiation), so the
     // button shows even before the initial `video` flag exists.
+    // Watching-only (peer video live, our camera off) renders the button
+    // RED videocam_off — the honest "your camera is off" affordance.
     final cameraLive = call.video && !call.cameraOff;
+    final watchingOnly =
+        (call.video || call.remoteVideo) && !cameraLive;
     return Row(mainAxisAlignment: MainAxisAlignment.center, children: [
       _roundBtn(
           call.muted ? Colors.red : null,
@@ -850,8 +854,8 @@ class CallWindow extends StatelessWidget {
       const SizedBox(width: 12),
       if (call.kind == CallKind.direct || call.video) ...[
         _roundBtn(
-            call.video && call.cameraOff ? Colors.red : null,
-            call.cameraOff ? Icons.videocam_off : Icons.videocam,
+            watchingOnly ? Colors.red : null,
+            watchingOnly ? Icons.videocam_off : Icons.videocam,
             cameraLive ? 'Выключить камеру' : 'Включить камеру',
             () => call.onToggleCamera()),
         const SizedBox(width: 12),
@@ -1337,6 +1341,10 @@ class MiniCallControlBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Watching-only (peer video live, our camera off) — red videocam_off.
+    final cameraLive = call.video && !call.cameraOff;
+    final watchingOnly =
+        (call.video || call.remoteVideo) && !cameraLive;
     return SizedBox(
       height: kBarHeight,
       child: Row(children: [
@@ -1393,16 +1401,18 @@ class MiniCallControlBar extends StatelessWidget {
             icon: call.muted ? Icons.mic_off : Icons.mic,
             onPressed: () => call.onToggleMute()),
         // 3. Local camera only (§8); hide-preview and camera-off are
-        // different actions and stay different buttons.
+        // different actions and stay different buttons. Watching-only
+        // (peer video live, ours off) — red videocam_off.
         _btn(
             tooltip: !_cameraAvailable
                 ? 'Камера недоступна'
-                : (call.cameraOff
-                    ? 'Включить камеру'
-                    : 'Выключить камеру'),
-            icon: call.cameraOff
+                : (cameraLive
+                    ? 'Выключить камеру'
+                    : 'Включить камеру'),
+            icon: watchingOnly
                 ? Icons.videocam_off
-                : Icons.videocam,
+                : (call.cameraOff ? Icons.videocam_off : Icons.videocam),
+            color: watchingOnly ? Colors.red : null,
             onPressed: _cameraAvailable
                 ? () => call.onToggleCamera()
                 : null),
