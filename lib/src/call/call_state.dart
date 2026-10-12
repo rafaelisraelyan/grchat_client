@@ -496,61 +496,81 @@ class CallState extends Notifier<ActiveCall?> {
     }
     const candidates = [(1920, 1080, 30), (1280, 720, 60), (1280, 720, 30),
         (640, 480, 30)];
-    MediaStream? best;
-    var bestPixels = 0;
-    var bestFps = 0.0;
+    MediaStream? chosen;
+    int realH = 0;
     for (final c in candidates) {
       MediaStream s;
       try {
         s = await navigator.mediaDevices
             .getUserMedia({'audio': audio, 'video': cam(c.$1, c.$2, c.$3)});
       } catch (e) {
-        dlog('camera probe ${c.$2}p refused ($e)');
+        // The ask was refused outright: the mode does not exist at all.
+        dlog('camera probe ${c.$1}x${c.$2}@${c.$3} refused ($e)');
         continue;
       }
-      int w = 0, h = 0;
-      double f = 0;
-      try {
-        final tracks = s.getVideoTracks();
-        final st = tracks.isEmpty ? null : tracks.first.getSettings();
-        w = (st?['width'] as num?)?.round() ?? 0;
-        h = (st?['height'] as num?)?.round() ?? 0;
-        f = (st?['frameRate'] as num?)?.toDouble() ?? 0;
-      } catch (_) {}
-      dlog('camera probe ${c.$1}x${c.$2}@${c.$3} -> $w x $h @${f.round()}');
-      // Pixels dominate, fps breaks ties: capture can always be downscaled      // later, but never upscaled.
-      final pixels = w * h;
-      if (pixels > bestPixels ||
-          (pixels == bestPixels && f > bestFps)) {
-        await best?.dispose();
-        best = s;
-        bestPixels = pixels;
-        bestFps = f;
-      } else {
-        await s.dispose();
+      // getSettings() on desktop echoes the REQUESTED constraints, not the
+      // real device mode, and a driver may "open" a mode it cannot
+      // actually deliver. Accept a candidate only when frames really
+      // reach a renderer.
+      final probe = await _firstFrameProbe(s);
+      if (probe.frameArrived) {
+        realH = probe.height;
+        dlog('camera delivers ${c.$1}x${c.$2}@${c.$3} '
+            '(frames verified, ${realH}p)');
+        chosen = s;
+        break;
       }
+      dlog('camera probe ${c.$1}x${c.$2}@${c.$3}: open ok, no frames');
+      await s.dispose();
     }
-    final stream = best;
+    final stream = chosen;
     if (stream == null) {
-      // Everything was refused; last resort so the call still connects.
-      dlog('camera probes all refused, falling back to 720p30');
+      // Every candidate "opened" but delivered nothing (driver wedged or
+      // a foreign holder). Last resort keeps the call connectable.
+      dlog('camera: no profile delivered frames, falling back to 720p30');
       return navigator.mediaDevices
           .getUserMedia({'audio': audio, 'video': cam(1280, 720, 30)});
     }
-    // Capture height for the tier logic: the driver's report is the TRUE
-    // device mode. Outbound learning (from sent frames) sticks at the
-    // downscaled height after a tier shrinks the stream, so it can only
-    // under-estimate; weight the observed fps too.
-    try {
-      final tracks = stream.getVideoTracks();
-      final st = tracks.isEmpty ? null : tracks.first.getSettings();
-      final h = (st?['height'] as num?)?.round() ?? 0;
-      if (h > _captureHeight) {
-        _captureHeight = h;
-        dlog('capture height from driver: ${_captureHeight}p');
-      }
-    } catch (_) {}
+    // TRUE capture height for the tier scale: verified by actual frames.
+    if (realH > _captureHeight) {
+      _captureHeight = realH;
+      dlog('capture height from device: ${_captureHeight}p');
+    }
     return stream;
+  }
+
+  /// Attaches a temporary renderer and waits for the first frame: the only
+  /// trustworthy proof that the camera actually delivers this profile.
+  Future<({bool frameArrived, int height})> _firstFrameProbe(
+      MediaStream stream) async {
+    final gotOne = Completer<int>();
+    RTCVideoRenderer? r;
+    try {
+      r = RTCVideoRenderer();
+      r.onFirstFrameRendered = () {
+        if (!gotOne.isCompleted) gotOne.complete(1);
+      };
+      await r.initialize();
+      r.srcObject = stream;
+      final timer = Timer(const Duration(milliseconds: 1500), () {
+        if (!gotOne.isCompleted) gotOne.complete(0);
+      });
+      final v = await gotOne.future;
+      timer.cancel();
+      var h = 0;
+      if (v == 1) {
+        // The renderer reports the frame geometry it actually received.
+        h = r.videoHeight;
+      }
+      return (frameArrived: v == 1, height: h);
+    } catch (e) {
+      dlog('camera frame probe failed: $e');
+      return (frameArrived: false, height: 0);
+    } finally {
+      try {
+        await r?.dispose();
+      } catch (_) {}
+    }
   }
 
   Future<void> _addLocal(RTCPeerConnection pc, bool video) async {
