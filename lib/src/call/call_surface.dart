@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' show lerpDouble;
 
+import 'package:flutter/gestures.dart' show kPrimaryMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -65,103 +66,27 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// navigation; a new session starts top-right again.
   DockSpot _dock = DockSpot.initial;
 
-  /// Self-preview drag (§30–§31, §6–§7): START captures the CURRENT
-  /// preview rect AND the pointer in the STABLE media coordinate space;
-  /// every update derives the new rect from startRect + TOTAL delta —
-  /// never accumulated deltas against a moving child (§7 feedback-loop
-  /// fix). Rebuilds stay LOCALIZED (§23–§24).
-  void _onPipDragStart(
-    Offset Function(Offset) toMedia,
-    Offset globalPos,
-    Size mediaArea,
-    Size pipSize,
-  ) {
-    _pipSnap.stop();
-    _pipSnapFrom = null;
-    _pipSnapTo = null;
-    _pipDragFrom = _pipRect(mediaArea, pipSize);
-    _pipDragPointer0 = toMedia(globalPos);
-    _pipDragPos = _pipDragFrom.topLeft;
-    dlog('SELF_PREVIEW_DRAG_START origin=$_pipDragPos start=${_pipDragFrom.topLeft} pointer0=$_pipDragPointer0');
-    _pipTick.value++;
-  }
+  /// Self-preview interaction (final architecture): the media viewport
+  /// carries ONE Listener whose localPosition IS the media coordinate —
+  /// stable parent space, no moving-child feedback, no global/local
+  /// conversions. During a gesture the single source of truth is the
+  /// LIVE rect (media-local); dock state is touched only at pointer-up
+  /// (§11–§12 of the positioning spec, §23).
+  Rect? _pipLiveRect;
+  bool _pipGestureIsResize = false;
+  SelfPipZone _pipGestureZone = SelfPipZone.center;
+  Rect _pipGestureStart = Rect.zero;
+  Offset _pipGesturePointer0 = Offset.zero;
 
-  void _onPipDragUpdate(
-    Offset Function(Offset) toMedia,
-    Offset globalPos,
-    Size mediaArea,
-    Size pipSize,
-  ) {
-    if (_pipDragFrom == Rect.zero) return;
-    // §6–§10: pointer converted into the same stable parent space; total
-    // delta against the START pointer; candidate = startRect.shift(delta);
-    // then ONE clamp into the safe video rect — the preview physically
-    // cannot leave the black viewport.
-    final now = toMedia(globalPos);
-    final delta = now - _pipDragPointer0;
-    final candidate = _pipDragFrom.shift(delta);
-    final safe = selfPipSafeRect(mediaArea);
-    final left = candidate.left.clamp(
-      safe.left,
-      math.max(safe.left, safe.right - pipSize.width),
-    ).toDouble();
-    final top = candidate.top.clamp(
-      safe.top,
-      math.max(safe.top, safe.bottom - pipSize.height),
-    ).toDouble();
-    _pipDragPos = Offset(left, top);
-    _pipTick.value++;
-  }
+  /// Hover zone for the cursor feedback (§20): null = pointer outside
+  /// the preview (plain cursor over the remote video).
+  SelfPipZone? _pipHoverZone;
 
-  void _onPipDragEnd(Size mediaArea, Size pipSize) {
-    if (_pipDragPos == null) return;
-    final rect = Rect.fromLTWH(
-      _pipDragPos!.dx,
-      _pipDragPos!.dy,
-      pipSize.width,
-      pipSize.height,
-    );
-    // Magnetic snap AFTER release only (§13–§15): nearest edge wins, the
-    // offset along it is preserved (§60); no snap during the drag (§11).
-    _pipDock = snapDock(rect, mediaArea, pipSize);
-    _pipSnapFrom = rect;
-    _pipSnapTo = dockRect(_pipDock, mediaArea, pipSize);
-    dlog(
-      'SELF_PREVIEW_DRAG_END edge=${_pipDock.edge} '
-      'offset=${_pipDock.offset.toStringAsFixed(2)}',
-    );
-    _pipDragPos = null;
-    _pipDragFrom = Rect.zero;
-    _pipTick.value++;
-    _pipSnap.forward(from: 0);
-  }
-
-  /// Resize interaction state (§22): mode enum derives from the zone;
-  /// the resize rect is derived from START rect + TOTAL pointer delta —
-  /// never an accumulated drift (§25). Pointers live in the STABLE media
-  /// coordinate space (§6).
-  SelfPipZone? _pipResizeZone;
-  Rect _pipResizeStart = Rect.zero;
-  Rect? _pipResizeRect;
-  Offset _pipResizePointer = Offset.zero;
-
-  /// Drag state (start rect + start pointer in media space, §7).
-  ///
-  /// Note: [_pipDragPos] keeps its role as the live TOP-LEFT of the drag
-  /// rect — but it is derived from startRect + TOTAL delta, never from
-  /// accumulated per-frame deltas.
-  Rect _pipDragFrom = Rect.zero;
-  Offset _pipDragPointer0 = Offset.zero;
-
-  /// Hover zone for the cursor feedback (§6, §28).
-  SelfPipZone _pipHoverZone = SelfPipZone.center;
-
-  /// Interaction mode (§22): a single enum, never a bool soup. Derived
-  /// from the active gesture + hovered/resize zone. Corners carry resize;
-  /// straight edges are plain drag (§1–§5, §32).
+  /// Interaction mode (§22): one enum, never a bool soup.
   _PipMode get _pipMode {
-    if (_pipResizeZone != null) {
-      return switch (_pipResizeZone!) {
+    if (_pipLiveRect != null) {
+      if (!_pipGestureIsResize) return _PipMode.dragging;
+      return switch (_pipGestureZone) {
         SelfPipZone.topLeft => _PipMode.resizingTopLeft,
         SelfPipZone.topRight => _PipMode.resizingTopRight,
         SelfPipZone.bottomLeft => _PipMode.resizingBottomLeft,
@@ -169,72 +94,126 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
         SelfPipZone.center => _PipMode.idle,
       };
     }
-    return _pipDragPos != null ? _PipMode.dragging : _PipMode.idle;
+    return _PipMode.idle;
   }
 
-  /// Resize START (§23): zone, start rect, start pointer in the STABLE
-  /// media space (§6); the running snap animation is stopped immediately
-  /// (§16).
-  void _onPipResizeStart(
-    Offset Function(Offset) toMedia,
-    Offset globalPointer,
-    Rect startRect,
-    SelfPipZone zone,
+  /// Geometry of the self-preview: the LIVE rect during a gesture (§15:
+  /// layout never re-derives it from dock mid-gesture), the snap flight
+  /// after release, otherwise the docked spot from fresh constraints.
+  Rect _pipRect(Size mediaArea, Size pipSize) {
+    if (_pipLiveRect != null) return _pipLiveRect!;
+    if (_pipSnapFrom != null && _pipSnapTo != null && !_pipSnap.isCompleted) {
+      return Rect.lerp(_pipSnapFrom!, _pipSnapTo!, _pipEase.value)!;
+    }
+    return dockRect(_pipDock, mediaArea, pipSize);
+  }
+
+  /// Pointer DOWN on the media viewport (§7–§8): starts a drag (anywhere
+  /// on the preview, corners included) or a corner resize. Nothing starts
+  /// when the camera is off or the pointer is outside the preview.
+  void _pipOnPointerDown(
+    PointerDownEvent e,
+    bool showSelf,
+    Size mediaArea,
+    Size pipSize,
   ) {
+    if (!showSelf) return;
+    // Primary button only (§8): secondary buttons stay idle.
+    if (e.buttons != kPrimaryMouseButton) return;
+    final p = e.localPosition; // media-local: stable parent space (§3)
+    final rect = _pipRect(mediaArea, pipSize);
+    if (!rect.contains(p)) return;
+    final zone = selfPipZoneFor(p - rect.topLeft, pipSize);
     _pipSnap.stop();
     _pipSnapFrom = null;
     _pipSnapTo = null;
-    _pipResizeZone = zone;
-    _pipResizeStart = startRect;
-    _pipResizeRect = startRect;
-    _pipResizePointer = toMedia(globalPointer);
+    _pipGestureIsResize = zone != SelfPipZone.center;
+    _pipGestureZone = zone;
+    _pipGestureStart = rect;
+    _pipGesturePointer0 = p;
+    _pipLiveRect = rect; // §24: start never moves the preview
     dlog(
-      'SELF_PREVIEW_RESIZE_START zone=$zone rect=${startRect.width.toStringAsFixed(0)}x${startRect.height.toStringAsFixed(0)}',
+      'SELF_PREVIEW_${_pipGestureIsResize ? 'RESIZE' : 'DRAG'}_START '
+      'zone=$zone rect=${rect.width.toStringAsFixed(0)}x${rect.height.toStringAsFixed(0)}',
     );
     _pipTick.value++;
   }
 
-  /// Resize UPDATE (§8, §24–§25): pointer converted into the same stable
-  /// media space; rect derived from startRect + TOTAL delta every frame —
-  /// no accumulated drift, no implicit tween lag (§8–§9).
-  void _onPipResizeUpdate(
-    Offset Function(Offset) toMedia,
-    Offset globalPos,
-    Size mediaArea,
-  ) {
-    if (_pipResizeZone == null) return;
-    final delta = toMedia(globalPos) - _pipResizePointer;
-    _pipResizeRect = selfPipResizedRect(
-      start: _pipResizeStart,
-      pointerDelta: delta,
-      zone: _pipResizeZone!,
-      dock: _pipDock.edge,
-      media: mediaArea,
-    );
-    _pipUserW = _pipResizeRect!.width;
-    _pipTick.value++;
-  }
-
-  /// Resize END (§16): keep the dock EDGE, recompute the offset along it
-  /// from the final rect (§60 model); animate only the residual clamp
-  /// correction (§10).
-  void _onPipResizeEnd(Size mediaArea) {
-    final zone = _pipResizeZone;
-    final rect = _pipResizeRect;
-    _pipResizeZone = null;
-    _pipResizeRect = null;
-    if (zone == null || rect == null) {
-      _pipTick.value++;
-      return;
+  /// Pointer MOVE (§8/§10, §16): candidate always from startRect + TOTAL
+  /// delta; one clamp into the safe viewport rect; doubles everywhere.
+  void _pipOnPointerMove(PointerMoveEvent e, Size mediaArea, Size pipSize) {
+    if (_pipLiveRect == null) return;
+    final delta = e.localPosition - _pipGesturePointer0;
+    if (_pipGestureIsResize) {
+      _pipLiveRect = selfPipResizedRect(
+        start: _pipGestureStart,
+        pointerDelta: delta,
+        zone: _pipGestureZone,
+        dock: _pipDock.edge,
+        media: mediaArea,
+      );
+    } else {
+      final safe = selfPipSafeRect(mediaArea);
+      final candidate = _pipGestureStart.shift(delta);
+      final left = candidate.left
+          .clamp(safe.left, math.max(safe.left, safe.right - pipSize.width))
+          .toDouble();
+      final top = candidate.top
+          .clamp(safe.top, math.max(safe.top, safe.bottom - pipSize.height))
+          .toDouble();
+      _pipLiveRect = Rect.fromLTWH(
+          left, top, _pipGestureStart.width, _pipGestureStart.height);
     }
-    final maxX = math.max(
-      kDockMargin,
-      mediaArea.width - kDockMargin - rect.width,
+    _pipTick.value++;
+  }
+
+  /// Pointer UP / CANCEL (§19, §12 of positioning, §23): persist dock +
+  /// size ONCE; animate ONLY a real snap/correction gap (§25).
+  void _pipOnPointerEnd(PointerEvent e, Size mediaArea) {
+    final rect = _pipLiveRect;
+    if (rect == null) return;
+    final wasResize = _pipGestureIsResize;
+    _pipLiveRect = null;
+    _pipGestureZone = SelfPipZone.center;
+    final safe = selfPipSafeRect(mediaArea);
+    final pipNow = Size(
+      rect.width,
+      selfPipHeightFor(rect.width),
     );
-    final maxY = math.max(
-      kDockMargin,
-      mediaArea.height - kDockMargin - rect.height,
+    // Belt & braces: the persisted spot is computed from a rect that is
+    // already inside the safe area (clamp handles any residue).
+    final settledRect = Rect.fromLTWH(
+      rect.left.clamp(safe.left, math.max(safe.left, safe.right - pipNow.width)),
+      rect.top.clamp(safe.top, math.max(safe.top, safe.bottom - pipNow.height)),
+      pipNow.width,
+      pipNow.height,
     );
+    if (wasResize) {
+      // Keep the dock EDGE, recompute the offset along it (§60 model).
+      _pipUserW = settledRect.width;
+      _pipDock = _pipDockSpotFor(settledRect, mediaArea, pipNow);
+    } else {
+      _pipDock = snapDock(settledRect, mediaArea, pipNow);
+    }
+    final target = dockRect(_pipDock, mediaArea, pipNow);
+    if (target.topLeft != settledRect.topLeft) {
+      // Only a real gap animates (§25/§27): 160ms, part of the release.
+      _pipSnapFrom = settledRect;
+      _pipSnapTo = target;
+      _pipSnap.forward(from: 0);
+    }
+    dlog(
+      'SELF_PREVIEW_${wasResize ? 'RESIZE' : 'DRAG'}_END '
+      'w=${settledRect.width.toStringAsFixed(0)} dock=$_pipDock',
+    );
+    _pipTick.value++;
+  }
+
+  /// Dock spot for a settled rect: SAME edge, offset re-derived (§13 of
+  /// positioning spec) — used after resizes to keep the flush edge.
+  DockSpot _pipDockSpotFor(Rect rect, Size mediaArea, Size pipSize) {
+    final maxX = math.max(kDockMargin, mediaArea.width - kDockMargin - pipSize.width);
+    final maxY = math.max(kDockMargin, mediaArea.height - kDockMargin - pipSize.height);
     double off;
     switch (_pipDock.edge) {
       case DockEdge.left || DockEdge.right:
@@ -244,47 +223,9 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       case DockEdge.top || DockEdge.bottom:
         off = (maxX <= kDockMargin)
             ? 0.5
-            : ((rect.left - kDockMargin) / (maxX - kDockMargin)).clamp(
-                0.0,
-                1.0,
-              );
+            : ((rect.left - kDockMargin) / (maxX - kDockMargin)).clamp(0.0, 1.0);
     }
-    _pipDock = DockSpot(_pipDock.edge, off);
-    final settled = dockRect(
-      _pipDock,
-      mediaArea,
-      Size(rect.width, rect.height),
-    );
-    if (settled.topLeft != rect.topLeft) {
-      // Small clamp correction animates (§10); the resize itself never did.
-      _pipSnapFrom = rect;
-      _pipSnapTo = settled;
-      _pipSnap.forward(from: 0);
-    }
-    dlog(
-      'SELF_PREVIEW_RESIZE_END w=${rect.width.toStringAsFixed(0)} '
-      'dock=$_pipDock',
-    );
-    _pipTick.value++;
-  }
-
-  /// Geometry of the self-preview inside the video area: drag position
-  /// while dragging, live resize rect while resizing, snap interpolation
-  /// during the flight, otherwise the docked spot. Constraints are
-  /// applied on read, so a small window can never strand the preview
-  /// offscreen (§62).
-  Rect _pipRect(Size mediaArea, Size pipSize) {
-    if (_pipResizeRect != null) {
-      return _pipResizeRect!;
-    }
-    if (_pipDragPos != null) {
-      final safe = clampCardPos(_pipDragPos!, mediaArea, pipSize);
-      return Rect.fromLTWH(safe.dx, safe.dy, pipSize.width, pipSize.height);
-    }
-    if (_pipSnapFrom != null && _pipSnapTo != null && !_pipSnap.isCompleted) {
-      return Rect.lerp(_pipSnapFrom!, _pipSnapTo!, _pipEase.value)!;
-    }
-    return dockRect(_pipDock, mediaArea, pipSize);
+    return DockSpot(_pipDock.edge, off);
   }
 
   /// Live drag position (card top-left), null when docked (§29–§32).
@@ -304,7 +245,6 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// Defaults to RIGHT (§25), survives camera off/on within the session
   /// (§40), resets when a new session starts (§41).
   DockSpot _pipDock = const DockSpot(DockEdge.right, 0.4);
-  Offset? _pipDragPos;
   Rect? _pipSnapFrom;
   Rect? _pipSnapTo;
 
@@ -313,17 +253,11 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
   /// resizes for the whole session (§40–§42); resets with a new session.
   double _pipUserW = kSelfPipDefaultW;
 
-  /// Localized rebuild clock for the overlay subtree: drag updates bump
-  /// this instead of [setState], so a 60Hz mouse move never rebuilds the
-  /// whole call window (§23–§24). The manager rebuilds the frame driven
-  /// by [TickerProviderStateMixin].
+  /// Localized rebuild clock for the overlay subtree: pointer updates
+  /// bump this instead of [setState], so a 60Hz mouse move never rebuilds
+  /// the whole call window (§23–§24). The manager rebuilds the frame
+  /// driven by [TickerProviderStateMixin].
   final ValueNotifier<int> _pipTick = ValueNotifier(0);
-
-  /// Clear drag state when the session ends (§25): no stale drag origin.
-  void _pipCancelDrag() {
-    _pipDragPos = null;
-    _pipTick.value++;
-  }
 
   late final AnimationController _pipSnap = AnimationController(
     vsync: this,
@@ -531,9 +465,10 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
       // default width (§43).
       _pipDock = const DockSpot(DockEdge.right, 0.4);
       _pipUserW = kSelfPipDefaultW;
-      _pipResizeZone = null;
-      _pipResizeRect = null;
-      _pipDragPos = null;
+      _pipLiveRect = null;
+      _pipGestureIsResize = false;
+      _pipGestureZone = SelfPipZone.center;
+      _pipHoverZone = null;
       _pipSnapFrom = null;
       _pipSnapTo = null;
       _pipSnap.reset();
@@ -885,18 +820,16 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
     );
   }
 
-  /// Rounded, draggable, edge-snapping, RESIZABLE self preview inside the
-  /// video area. Invisible (and gesture-less) when the camera is off; the
-  /// RenderObject tree keeps the video texture alive meanwhile (§32).
-  /// Sized by the user within MIN/responsive-MAX (§33–§43).
+  /// Rounded, draggable, corner-resizable self preview. Physically a
+  /// child of the media viewport stack (§1 of the positioning spec): its
+  /// coordinates are LOCAL to the black video area, with a hard clip so
+  /// nothing can ever paint over header/controls.
   ///
-  /// DESKTOP-WINDOW INTERACTION (§1–§14): no visible resize icon. The
-  /// video renderer never hit-tests (IgnorePointer); on top of it an
-  /// interaction layer holds the CENTER move surface plus INVISIBLE
-  /// edge/corner resize zones (corners win, §4). Cursors are the only
-  /// resize affordance: grab/grabbing inside, per-zone resize cursors on
-  /// edges and rounded corners. Pan events fire for the primary pointer
-  /// only (§8).
+  /// INTERACTION: ONE Listener at the viewport level — its localPosition
+  /// is the stable media coordinate, so neither the moving preview nor
+  /// global/render-box conversions exist. Inner area + straight edges =
+  /// move; the four rounded corners (12px, invisible, corner-follows-
+  /// pointer) = resize. Cursors are the only affordance (§20, §32).
   Widget _pipOverlay(bool showSelf, RTCVideoRenderer? local) {
     return Positioned.fill(
       child: AnimatedScale(
@@ -906,193 +839,110 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
         child: AnimatedOpacity(
           opacity: showSelf ? 1.0 : 0.0,
           duration: const Duration(milliseconds: 180),
-          child: IgnorePointer(
-            ignoring: !showSelf,
-            child: LayoutBuilder(
-              builder: (ctx, cons) {
-                final mediaArea = cons.biggest;
-                // §6: ONE stable media coordinate space. Global pointer
-                // events convert through the media box each event; the
-                // box is fresh from the current layout pass (§14–§15).
-                final mediaBox =
-                    ctx.findRenderObject() as RenderBox?;
-                Offset toMedia(Offset global) {
-                  final box = mediaBox;
-                  if (box == null || !box.attached) return global;
-                  return box.globalToLocal(global);
-                }
-
-                // Live size clamp (§38): window resizes clamp the user
-                // width, but mid-BUILD mutation is forbidden — sync after
-                // the frame instead (§42).
-                final pendingW = selfPipWidthFor(mediaArea, _pipUserW);
-                if (pendingW != _pipUserW) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (!mounted) return;
-                    final eff = selfPipWidthFor(mediaArea, _pipUserW);
-                    if (eff != _pipUserW) {
-                      _pipUserW = eff;
-                      _pipTick.value++;
-                    }
-                  });
-                }
-                final effW = selfPipWidthFor(mediaArea, _pipUserW);
-                final pipSize = Size(effW, selfPipHeightFor(effW));
-                // Video NEVER hit-tests (§3); RepaintBoundary isolates the
-                // texture so drag/resize geometry never repaints the whole
-                // scene (§16, §24).
-                final video = RepaintBoundary(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.black54, width: 1),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.35),
-                          blurRadius: 18,
-                          offset: const Offset(0, 8),
-                        ),
-                      ],
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: IgnorePointer(
-                      child: RTCVideoView(
-                        local!,
-                        mirror: true,
-                        objectFit:
-                            RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                      ),
-                    ),
-                  ),
-                );
-                // Center move surface (§29, §7): start rect + TOTAL delta
-                // in the stable media space; no accumulated drift.
-                final drag = GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onPanStart: (d) =>
-                      _onPipDragStart(toMedia, d.globalPosition, mediaArea, pipSize),
-                  onPanUpdate: (d) =>
-                      _onPipDragUpdate(toMedia, d.globalPosition, mediaArea, pipSize),
-                  onPanEnd: (_) => _onPipDragEnd(mediaArea, pipSize),
-                  onPanCancel: _pipCancelDrag,
-                  child: Stack(
-                    children: [
-                      Positioned.fill(child: video),
-                      Positioned.fill(
-                        child: ColoredBox(
-                          color: Colors.white.withValues(alpha: 0.001),
-                        ),
+          child: LayoutBuilder(
+            builder: (ctx, cons) {
+              final mediaArea = cons.biggest;
+              // Window-resize clamp of the user width: mid-BUILD mutation
+              // is forbidden — sync after the frame (§14/§42).
+              final pendingW = selfPipWidthFor(mediaArea, _pipUserW);
+              if (pendingW != _pipUserW) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  final eff = selfPipWidthFor(mediaArea, _pipUserW);
+                  if (eff != _pipUserW) {
+                    _pipUserW = eff;
+                    _pipTick.value++;
+                  }
+                });
+              }
+              // During a gesture the LIVE rect width IS the size; between
+              // gestures the user width rules (§17/§23 of positioning).
+              final liveW = _pipLiveRect?.width ?? selfPipWidthFor(mediaArea, _pipUserW);
+              final pipSize = Size(liveW, selfPipHeightFor(liveW));
+              final video = RepaintBoundary(
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.black54, width: 1),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.35),
+                        blurRadius: 18,
+                        offset: const Offset(0, 8),
                       ),
                     ],
                   ),
-                );
-                // INVISIBLE corner resize zones (§1–§5, §32): corners
-                // only, snug against the visible rounded corner (~12px
-                // from the outer border). No drawn handles (§6); the
-                // cursor IS the affordance (§7).
-                const corner = 12.0;
-                Widget zone(double zoneSize, Alignment align, SelfPipZone z) {
-                  return Align(
-                    alignment: align,
-                    child: MouseRegion(
-                      cursor: switch (z) {
-                        SelfPipZone.topLeft || SelfPipZone.bottomRight =>
-                          SystemMouseCursors.resizeUpLeftDownRight,
-                        SelfPipZone.topRight || SelfPipZone.bottomLeft =>
-                          SystemMouseCursors.resizeUpRightDownLeft,
-                        _ => SystemMouseCursors.grab,
-                      },
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onPanStart: (d) {
-                          // Start rect = the CURRENT visual rect (§23) in
-                          // media space; the pointer too (§6).
-                          final cur = _pipRect(mediaArea, pipSize);
-                          _onPipResizeStart(
-                              toMedia, d.globalPosition, cur, z);
-                        },
-                        onPanUpdate: (d) => _onPipResizeUpdate(
-                          toMedia,
-                          d.globalPosition,
-                          mediaArea,
-                        ),
-                        onPanEnd: (_) => _onPipResizeEnd(mediaArea),
-                        onPanCancel: () {
-                          // §25: cancel back to the last valid dock spot.
-                          _pipResizeZone = null;
-                          _pipResizeRect = null;
-                          _pipTick.value++;
-                        },
-                        child: SizedBox(width: zoneSize, height: zoneSize),
-                      ),
-                    ),
-                  );
-                }
-
-                // Cursor affordance (§6–§7, §32): grab everywhere except
-                // the four corners, which get diagonal resize cursors. No
-                // edge cursors — straight edges are plain drag now.
-                MouseCursor pipCursor() {
-                  if (_pipMode != _PipMode.idle) {
+                  clipBehavior: Clip.antiAlias,
+                  child: RTCVideoView(
+                    local!,
+                    mirror: true,
+                    objectFit:
+                        RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                  ),
+                ),
+              );
+              MouseCursor pipCursor() {
+                switch (_pipMode) {
+                  case _PipMode.dragging:
                     return SystemMouseCursors.grabbing;
-                  }
-                  return switch (_pipHoverZone) {
-                    SelfPipZone.topLeft || SelfPipZone.bottomRight =>
-                      SystemMouseCursors.resizeUpLeftDownRight,
-                    SelfPipZone.topRight || SelfPipZone.bottomLeft =>
-                      SystemMouseCursors.resizeUpRightDownLeft,
-                    _ => SystemMouseCursors.grab,
-                  };
+                  case _PipMode.resizingTopLeft ||
+                      _PipMode.resizingBottomRight:
+                    return SystemMouseCursors.resizeUpLeftDownRight;
+                  case _PipMode.resizingTopRight ||
+                      _PipMode.resizingBottomLeft:
+                    return SystemMouseCursors.resizeUpRightDownLeft;
+                  case _PipMode.idle:
+                    final z = _pipHoverZone;
+                    if (z == null) return SystemMouseCursors.basic;
+                    return switch (z) {
+                      SelfPipZone.topLeft || SelfPipZone.bottomRight =>
+                        SystemMouseCursors.resizeUpLeftDownRight,
+                      SelfPipZone.topRight || SelfPipZone.bottomLeft =>
+                        SystemMouseCursors.resizeUpRightDownLeft,
+                      SelfPipZone.center => SystemMouseCursors.grab,
+                    };
                 }
+              }
 
-                return MouseRegion(
-                  cursor: pipCursor(),
-                  onHover: (e) {
-                    // Hover-zone tracking for the cursor (§6–§7, §28);
-                    // rebuilds stay localized to the overlay (§26).
-                    final z = selfPipZoneFor(e.localPosition, pipSize);
-                    if (z != _pipHoverZone) {
-                      _pipHoverZone = z;
-                      _pipTick.value++;
-                    }
-                  },
+              return MouseRegion(
+                opaque: false,
+                cursor: pipCursor(),
+                onHover: (e) {
+                  // Hover tracking in media space (§20); rebuild stays
+                  // local to this overlay (§26).
+                  final rect = _pipRect(mediaArea, pipSize);
+                  final SelfPipZone? z = rect.contains(e.localPosition)
+                      ? selfPipZoneFor(e.localPosition - rect.topLeft, pipSize)
+                      : null;
+                  if (z != _pipHoverZone) {
+                    _pipHoverZone = z;
+                    _pipTick.value++;
+                  }
+                },
+                child: Listener(
+                  behavior: HitTestBehavior.translucent,
+                  onPointerDown: (e) =>
+                      _pipOnPointerDown(e, showSelf, mediaArea, pipSize),
+                  onPointerMove: (e) => _pipOnPointerMove(e, mediaArea, pipSize),
+                  onPointerUp: (e) => _pipOnPointerEnd(e, mediaArea),
+                  onPointerCancel: (e) => _pipOnPointerEnd(e, mediaArea),
                   child: AnimatedBuilder(
                     animation: Listenable.merge([_pipEase, _pipTick]),
-                    child: Stack(
-                      children: [
-                        drag,
-                        // Corners FIRST in the hit order (§4).
-                        zone(corner, Alignment.topLeft, SelfPipZone.topLeft),
-                        zone(corner, Alignment.topRight, SelfPipZone.topRight),
-                        zone(
-                          corner,
-                          Alignment.bottomLeft,
-                          SelfPipZone.bottomLeft,
-                        ),
-                        zone(
-                          corner,
-                          Alignment.bottomRight,
-                          SelfPipZone.bottomRight,
-                        ),
-                        // No edge zones at all (§1–§3, §32): straight
-                        // edges are plain drag — hit falls through to
-                        // the move surface below.
-                      ],
-                    ),
-                    builder: (b, pipView) => Stack(
+                    child: video,
+                    builder: (b, v) => Stack(
                       clipBehavior: Clip.none,
                       fit: StackFit.expand,
                       children: [
                         Positioned.fromRect(
                           rect: _pipRect(mediaArea, pipSize),
-                          child: pipView!,
+                          child: v!,
                         ),
                       ],
                     ),
                   ),
-                );
-              },
-            ),
+                ),
+              );
+            },
           ),
         ),
       ),
