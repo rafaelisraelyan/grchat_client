@@ -554,7 +554,10 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                     ]),
               ),
       ),
-      if (call.video && local != null)
+      // PiP slot lives whenever our video flag is on: a failed/busy late
+      // camera still keeps its place (grey icon) so the geometry of the
+      // window is stable.
+      if (call.video)
         Positioned(
           right: 10,
           bottom: 10,
@@ -566,14 +569,17 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: Colors.grey.shade700)),
             clipBehavior: Clip.antiAlias,
-            child: call.cameraOff
+            child: (local == null)
                 ? const Center(
-                    child: Icon(Icons.videocam_off,
-                        color: Colors.grey))
-                : RTCVideoView(local,
-                    mirror: true,
-                    objectFit: RTCVideoViewObjectFit
-                        .RTCVideoViewObjectFitCover),
+                    child: Icon(Icons.videocam_off, color: Colors.grey))
+                : call.cameraOff
+                    ? const Center(
+                        child: Icon(Icons.videocam_off,
+                            color: Colors.grey))
+                    : RTCVideoView(local,
+                        mirror: true,
+                        objectFit: RTCVideoViewObjectFit
+                            .RTCVideoViewObjectFitCover),
           ),
         ),
     ]);
