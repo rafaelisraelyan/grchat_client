@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -23,6 +25,23 @@ const _errText = <String, String>{
   'RATE_LIMITED': 'Слишком часто, подожди немного',
 };
 
+/// Connection failures map to plain phrases — no raw exceptions in the UI.
+/// TLS is the only mode, so a server without TLS reads as exactly that.
+String connectErrorText(Object e) {
+  // Certificate failures arrive as HandshakeException too: check the text
+  // first so an untrusted cert is not reported as "no TLS on the server".
+  final s = e.toString().toLowerCase();
+  if (s.contains('certificate') ||
+      s.contains('issuer') ||
+      s.contains('verify')) {
+    return 'Сертификат сервера не доверенный';
+  }
+  if (e is HandshakeException) {
+    return 'Сервер не поддерживает защищённое соединение';
+  }
+  return 'Нет соединения с сервером';
+}
+
 class AuthScreen extends ConsumerStatefulWidget {
   const AuthScreen({super.key});
 
@@ -38,7 +57,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   final _password = TextEditingController();
   final _code = TextEditingController();
   final _host = TextEditingController(text: '127.0.0.1');
-  final _port = TextEditingController(text: '8181');
+  final _port = TextEditingController(text: '8443');
   String? _error;
   bool _busy = false;
   DateTime? _resendAt;
@@ -50,10 +69,17 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       try {
         final prefs = await SharedPreferences.getInstance();
         final h = prefs.getString('server_host');
-        final p = prefs.getInt('server_port');
+        var p = prefs.getInt('server_port');
         if (!mounted) return;
         if (h != null && h.isNotEmpty) _host.text = h;
-        if (p != null) _port.text = p.toString();
+        // TLS is the only mode now. Drop the obsolete toggle key and
+        // migrate a saved plaintext port (8181) to the TLS one.
+        await prefs.remove('server_tls');
+        if (p != null && p != 8181) _port.text = p.toString();
+        if (p == 8181) {
+          _port.text = '8443';
+          await prefs.setInt('server_port', 8443);
+        }
         setState(() {});
       } catch (_) {}
     }();
@@ -73,7 +99,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   String get _hostValue =>
       _host.text.trim().isEmpty ? '127.0.0.1' : _host.text.trim();
-  int get _portValue => int.tryParse(_port.text.trim()) ?? 8181;
+  int get _portValue => int.tryParse(_port.text.trim()) ?? 8443;
 
   Future<void> _connect() async {
     final conn = ref.read(connectionProvider);
@@ -102,8 +128,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       // Raw server codes never reach the user; unknown ones degrade to a
       // generic phrase instead of leaking internals (§54).
       setState(() => _error = _errText[e.code] ?? 'Не вышло, попробуй ещё раз');
-    } catch (_) {
-      setState(() => _error = 'Нет соединения с сервером');
+    } catch (e) {
+      setState(() => _error = connectErrorText(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }

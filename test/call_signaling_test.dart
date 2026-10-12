@@ -151,8 +151,43 @@ Future<Map<String, dynamic>?> _waitFor(
 
 void main() {
   test('call signaling: errors + decline reason', () async {
-    final a = GrchatConnection();
-    final b = GrchatConnection();
+    // The dev server now prefers TLS 8443; the loopback-only plain 8181
+    // remains as a fallback for test rigs. Neither is reachable -> skip
+    // (the test needs a live signalling peer, do not report a false fail).
+    Connector connector;
+    ({String host, int port}) target;
+    final devCtx = devTrustContext(
+        isDebug: true,
+        caPath: const String.fromEnvironment('GRCHAT_DEV_CA'));
+    final tlsOk = await SecureSocket
+        .connect('127.0.0.1', 8443,
+            context: devCtx, onBadCertificate: (_) => false)
+        .then((s) {
+      s.destroy();
+      return true;
+    }).catchError((_) => false);
+    if (tlsOk) {
+      connector = (h, p) => SecureSocket.connect(h, p,
+          context: devCtx, onBadCertificate: (_) => false);
+      target = (host: '127.0.0.1', port: 8443);
+    } else {
+      final plainOk = await Socket.connect('127.0.0.1', 8181,
+          timeout: const Duration(seconds: 2))
+          .then((s) {
+        s.destroy();
+        return true;
+      }).catchError((_) => false);
+      if (!plainOk) {
+        // ignore: avoid_print
+        print('SKIP: no live dev server on 8443 (TLS) nor 8181 (plain)');
+        return;
+      }
+      connector =
+          (h, p) => Socket.connect(h, p, timeout: const Duration(seconds: 5));
+      target = (host: '127.0.0.1', port: 8181);
+    }
+    final a = GrchatConnection(connector: connector);
+    final b = GrchatConnection(connector: connector);
     // Capture pushes from the start: broadcast streams drop events
     // that arrive with no listener attached.
     final aPushes = <Map<String, dynamic>>[];
@@ -160,8 +195,8 @@ void main() {
     final subA = a.pushes.listen(aPushes.add);
     final subB = b.pushes.listen(bPushes.add);
     try {
-      await a.connect('127.0.0.1', 8181);
-      await b.connect('127.0.0.1', 8181);
+      await a.connect(target.host, target.port);
+      await b.connect(target.host, target.port);
       final tokA = await _loginFixture(a, _fixA.nick, _fixA.email);
       final tokB = await _loginFixture(b, _fixB.nick, _fixB.email);
 

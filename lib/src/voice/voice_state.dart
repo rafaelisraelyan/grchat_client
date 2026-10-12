@@ -350,7 +350,7 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
       } catch (_) {}
       rethrow;
     }
-    final room = Room(roomOptions: grchatRoomOptions());
+    final room = newRoom();
     try {
       _attach(room);
       await room.connect(creds.url, creds.token);

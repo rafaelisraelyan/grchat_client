@@ -1,82 +1,97 @@
-/// Outgoing SDP tuning for P2P calls (both endpoints run this client).
-///
-/// Two contained munges, applied to our local offer/answer before
-/// setLocalDescription — never to remote SDP, never to signaling logic:
-/// - Opus: pin `maxaveragebitrate=32000` + `useinbandfec=1`. Voice stays
-///   full quality while the uplink stops bursting; FEC rides out loss.
-///   DTX stays off: it clips first syllables after silence.
-/// - Video: cap the section bandwidth at `b=AS:1500` (720p talking heads
-///   need no more; the cap fights congestion collapse on weak uplinks).
-/// Pure string surgery, fully unit-tested; a no-match input passes
-/// through byte-identical.
-String tuneLocalSdp(String sdp) {
-  final tunedAudio = _tuneOpus(sdp);
-  return _capVideoBandwidth(tunedAudio, 1500);
-}
+/// Pure SDP helpers for the P2P path (no WebRTC imports: unit-testable).
+library;
 
-String _tuneOpus(String sdp) {
-  final lines = sdp.split('\n');
-  var inAudio = false;
-  var opusPt = '';
-  for (final raw in lines) {
-    final line = raw.trim();
-    if (line.startsWith('m=audio')) {
-      inAudio = true;
-      continue;
-    }
-    if (line.startsWith('m=')) {
-      inAudio = false;
-      continue;
-    }
-    if (inAudio && opusPt.isEmpty) {
-      final m = RegExp(r'^a=rtpmap:(\d+)\s+opus/48000', caseSensitive: false)
-          .firstMatch(line);
-      if (m != null) opusPt = m.group(1)!;
-    }
+/// Opus parameters for high-quality voice calls. Each one is only added when
+/// the fmtp line does not already carry that key, so a browser default or a
+/// future explicit setting is never overridden.
+///
+/// The fmtp in OUR local description states what WE want to RECEIVE, so both
+/// peers applying this makes the traffic symmetric:
+/// - maxaveragebitrate=64000: 64 kbit/s mono full-band voice is close to
+///   transparent (libwebrtc defaults to ~32 kbit/s when this is absent);
+/// - maxplaybackrate / sprop-maxcapturerate=48000: full 48 kHz bandwidth,
+///   no band-limiting;
+/// - useinbandfec=1: forward error correction inside the stream;
+/// - usedtx=0: continuous transmission. DTX saves almost nothing on a 1:1
+///   link and can clip the first syllable after a pause;
+/// - cbr=0: variable bitrate, better quality per bit;
+/// - stereo=0 / sprop-stereo=0: a microphone is mono, stereo would waste
+///   half the bits.
+const opusFmtpDefaults = <String, String>{
+  'useinbandfec': '1',
+  'usedtx': '0',
+  'maxaveragebitrate': '64000',
+  'maxplaybackrate': '48000',
+  'sprop-maxcapturerate': '48000',
+  'cbr': '0',
+  'stereo': '0',
+  'sprop-stereo': '0',
+};
+
+/// Matching sender-side ceiling (bit/s) for the audio encoding.
+const opusSenderMaxBitrate = 64000;
+
+/// Adds [opusFmtpDefaults] to every Opus payload type in [sdp]. Returns the
+/// input unchanged when there is no Opus line. Keeps the original line
+/// endings (CRLF in real SDP).
+String tuneOpusSdp(String sdp, {Map<String, String> params = opusFmtpDefaults}) {
+  if (sdp.isEmpty) return sdp;
+  final eol = sdp.contains('\r\n') ? '\r\n' : '\n';
+  final lines = sdp.split(eol);
+
+  final pts = <String>{};
+  final rtpmap = RegExp(r'^a=rtpmap:(\d+) opus/48000(?:/2)?\s*$',
+      caseSensitive: false);
+  for (final l in lines) {
+    final m = rtpmap.firstMatch(l);
+    if (m != null) pts.add(m.group(1)!);
   }
-  if (opusPt.isEmpty) return sdp;
+  if (pts.isEmpty) return sdp;
+
   final out = <String>[];
-  var fmtpDone = false;
-  for (final raw in lines) {
-    final line = raw.trim();
-    if (!fmtpDone && line.startsWith('a=fmtp:$opusPt')) {
-      var params = line.substring('a=fmtp:$opusPt'.length).trim();
-      params = _setFmtp(params,
-          {'maxaveragebitrate': '32000', 'useinbandfec': '1'});
-      out.add(_restoreEol(raw, 'a=fmtp:$opusPt $params'));
-      fmtpDone = true;
+  for (final l in lines) {
+    final fm = RegExp(r'^a=fmtp:(\d+) (.*)$').firstMatch(l);
+    if (fm != null && pts.contains(fm.group(1))) {
+      out.add('a=fmtp:${fm.group(1)} ${_merge(fm.group(2)!, params)}');
       continue;
     }
-    out.add(raw);
-  }
-  if (!fmtpDone) {
-    // No fmtp for the Opus payload: add one right after its rtpmap.
-    final withFmtp = <String>[];
-    for (final raw in out) {
-      withFmtp.add(raw);
-      if (raw.trim().startsWith('a=rtpmap:$opusPt')) {
-        withFmtp.add(_restoreEol(raw,
-            'a=fmtp:$opusPt maxaveragebitrate=32000;useinbandfec=1'));
+    out.add(l);
+    final rm = rtpmap.firstMatch(l);
+    if (rm != null) {
+      final pt = rm.group(1)!;
+      // No fmtp line for this payload anywhere: add one right after rtpmap.
+      final hasFmtp =
+          lines.any((x) => x.startsWith('a=fmtp:$pt '));
+      if (!hasFmtp) {
+        out.add('a=fmtp:$pt ${_merge('', params)}');
       }
     }
-    return withFmtp.join('\n');
   }
-  return out.join('\n');
+  return out.join(eol);
 }
 
-String _setFmtp(String params, Map<String, String> set) {
-  final kept = <String>[];
-  final keys = set.keys.map((k) => k.toLowerCase()).toSet();
-  for (final p in params.split(';')) {
-    final t = p.trim();
-    if (t.isEmpty) continue;
-    final k = t.split('=').first.trim().toLowerCase();
-    if (!keys.contains(k)) kept.add(t);
+String _merge(String existing, Map<String, String> params) {
+  final parts = existing
+      .split(';')
+      .map((e) => e.trim())
+      .where((e) => e.isNotEmpty)
+      .toList();
+  final have = parts.map((e) => e.split('=').first.trim()).toSet();
+  for (final e in params.entries) {
+    if (!have.contains(e.key)) parts.add('${e.key}=${e.value}');
   }
-  for (final e in set.entries) {
-    kept.add('${e.key}=${e.value}');
-  }
-  return kept.join(';');
+  return parts.join(';');
+}
+
+/// Outgoing SDP tuning for P2P calls (both endpoints run this client).
+///
+/// Applies [tuneOpusSdp] (full Opus profile) and caps the video section
+/// bandwidth at `b=AS:1500` (720p talking heads need no more; the cap
+/// fights congestion collapse on weak uplinks). Pure string surgery, fully
+/// unit-tested; a no-match input passes through byte-identical.
+String tuneLocalSdp(String sdp) {
+  final tunedAudio = tuneOpusSdp(sdp);
+  return _capVideoBandwidth(tunedAudio, 1500);
 }
 
 String _capVideoBandwidth(String sdp, int kbps) {

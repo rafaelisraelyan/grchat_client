@@ -12,7 +12,9 @@ void main() {
       s.listen((_) {}, onDone: () => s.destroy());
     });
 
-    final conn = GrchatConnection();
+    final conn = GrchatConnection(
+        connector: (h, p) =>
+            Socket.connect(h, p, timeout: const Duration(seconds: 5)));
     final seen = <ConnStatus>[];
     final statusSub = conn.status.listen(seen.add);
 

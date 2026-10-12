@@ -66,27 +66,38 @@ class CallApi {
     return r;
   }
 
-  /// LiveKit SFU join token for a group DM I belong to.
+  /// LiveKit SFU join token for a group DM I belong to. The room URL must
+  /// be wss:// — media sessions over plaintext ws:// are refused in one
+  /// place here, so groups and voice share the same gate.
   Future<({String url, String token, String room})> livekitToken(
       String dmId) async {
     final r = await _conn.request('livekit_token',
         fields: {..._auth, 'dm_id': dmId});
     _throwIfError(r);
+    final url = r['url'] as String;
+    if (!url.startsWith('wss://')) {
+      throw GrchatException('INSECURE_ROOM_URL', r);
+    }
     return (
-      url: r['url'] as String,
+      url: url,
       token: r['token'] as String,
       room: r['room'] as String
     );
   }
 
   /// LiveKit SFU join token for a voice channel I may enter (audio-only).
+  /// Same wss:// gate as [livekitToken].
   Future<({String url, String token, String room})> voiceToken(
       String channelId) async {
     final r = await _conn.request('voice_token',
         fields: {..._auth, 'channel_id': channelId});
     _throwIfError(r);
+    final url = r['url'] as String;
+    if (!url.startsWith('wss://')) {
+      throw GrchatException('INSECURE_ROOM_URL', r);
+    }
     return (
-      url: r['url'] as String,
+      url: url,
       token: r['token'] as String,
       room: r['room'] as String
     );

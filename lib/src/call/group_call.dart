@@ -150,7 +150,7 @@ class GroupCallState extends Notifier<GroupCall?> {
     }
     final api = ref.read(groupCallApiProvider);
     final creds = await api.livekitToken(dmId);
-    final room = Room(roomOptions: grchatRoomOptions());
+    final room = newRoom();
     try {
       _attach(room);
       await room.connect(creds.url, creds.token);
@@ -248,7 +248,7 @@ class GroupCallState extends Notifier<GroupCall?> {
       return;
     }
     final api = ref.read(groupCallApiProvider);
-    final room = Room(roomOptions: grchatRoomOptions());
+    final room = newRoom();
     try {
       _attach(room);
       final creds = await api.livekitToken(cur.dmId);

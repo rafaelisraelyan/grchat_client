@@ -2,18 +2,56 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 /// Transport state for the UI banner.
 enum ConnStatus { connected, connecting, offline }
+
+/// Injectable socket factory for tests. Production always uses TLS.
+typedef Connector = Future<Socket> Function(String host, int port);
+
+/// Dev CA PEM path from `--dart-define=GRCHAT_DEV_CA=<path>`. Empty in
+/// normal builds; only ever read in debug builds (see [shouldTrustDevCa]).
+const _devCaFromDefine = String.fromEnvironment('GRCHAT_DEV_CA');
+
+/// Pure decision: the dev CA is trusted only in a debug build with a path.
+/// Release builds never trust it, whatever the define says.
+bool shouldTrustDevCa({required bool isDebug, required String caPath}) =>
+    isDebug && caPath.isNotEmpty;
+
+/// Trust context with the dev CA added on top of the system roots, or null
+/// when the dev CA must not be trusted (release, or no path given).
+SecurityContext? devTrustContext(
+    {required bool isDebug, required String caPath}) {
+  if (!shouldTrustDevCa(isDebug: isDebug, caPath: caPath)) return null;
+  final ctx = SecurityContext(withTrustedRoots: true);
+  ctx.setTrustedCertificatesBytes(File(caPath).readAsBytesSync());
+  return ctx;
+}
 
 /// One JSONL connection: 1 line = 1 JSON. Responses carry `req_id`,
 /// server pushes don't. Matches responses to requests, exposes pushes.
 ///
+/// TLS-only: every connection is a SecureSocket. Certificates are verified
+/// by the platform trust store; `onBadCertificate` is always false. The dev
+/// CA is an explicit debug-only addition (see [devTrustContext]).
+///
 /// Drops auto-reconnect with backoff (1/2/5/10/15/30s) until [dispose].
-/// Re-auth and state resync live one layer up (see HomeState.resync).
 class GrchatConnection {
-  GrchatConnection({this.onBadCertificate});
+  GrchatConnection({
+    Connector? connector,
+    String devCaPath = _devCaFromDefine,
+    bool isDebug = kDebugMode,
+  }) : _connector = connector ??
+            _secureConnector(devCaPath: devCaPath, isDebug: isDebug);
 
-  final bool Function(X509Certificate cert)? onBadCertificate;
+  final Connector _connector;
+
+  static Connector _secureConnector(
+          {required String devCaPath, required bool isDebug}) =>
+      (host, port) => SecureSocket.connect(host, port,
+          context: devTrustContext(isDebug: isDebug, caPath: devCaPath),
+          onBadCertificate: (_) => false);
 
   Socket? _socket;
   StreamSubscription<String>? _sub;
@@ -26,7 +64,7 @@ class GrchatConnection {
   var _manualClose = true;
   String? _host;
   int? _port;
-  bool _tls = false;
+  Object? _lastConnectError;
 
   static const _backoff = [1, 2, 5, 10, 15, 30];
 
@@ -34,14 +72,19 @@ class GrchatConnection {
   Stream<ConnStatus> get status => _statusCtl.stream;
   bool get isOpen => _socket != null;
 
-  Future<void> connect(String host, int port, {bool tls = false}) async {
+  /// First attempt is awaited and its failure is rethrown (certificate or
+  /// handshake problems must reach the UI). Retries continue in background.
+  Future<void> connect(String host, int port) async {
     _gen++;
     _manualClose = false;
     _host = host;
     _port = port;
-    _tls = tls;
     await _open();
-    if (!isOpen) _loop(_gen);
+    if (!isOpen) {
+      _loop(_gen);
+      final err = _lastConnectError;
+      if (err != null) throw err;
+    }
   }
 
   /// Force an immediate reconnect attempt (banner retry button).
@@ -59,12 +102,11 @@ class GrchatConnection {
     await _closeSocket();
     _statusCtl.add(ConnStatus.connecting);
     try {
-      _socket = _tls
-          ? await SecureSocket.connect(host, port,
-              onBadCertificate: onBadCertificate ?? (_) => false)
-          : await Socket.connect(host, port);
-    } catch (_) {
+      _socket = await _connector(host, port);
+      _lastConnectError = null;
+    } catch (e) {
       _socket = null;
+      _lastConnectError = e;
       return;
     }
     _sub = _socket!

@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grchat_client/src/update/update_service.dart';
 
@@ -28,6 +31,67 @@ void main() {
       expect(UpdateCenter.isNewerForTest('1.1.10', '1.1.9'), isTrue,
           reason: 'numeric, not lexicographic: 10 > 9');
       expect(UpdateCenter.isNewerForTest('1.1.9', '1.1.10'), isFalse);
+    });
+  });
+
+  /// The trust gate: an update installs only with a valid Ed25519 signature
+  /// from the baked-in key. Everything malformed must fail closed.
+  group('update signature', () {
+    final data = utf8.encode('fake zip bytes');
+
+    Future<(List<int> pub, List<int> sig)> signed(List<int> payload) async {
+      final algo = Ed25519();
+      final kp = await algo.newKeyPair();
+      final pub = (await kp.extractPublicKey()).bytes;
+      final sig = await algo.sign(payload, keyPair: kp);
+      return (pub, sig.bytes);
+    }
+
+    test('valid signature verifies', () async {
+      final (pub, sig) = await signed(data);
+      expect(
+          await UpdateCenter.verifySignature(
+              data: data, signature: sig, publicKey: pub),
+          isTrue);
+    });
+
+    test('tampered data is rejected', () async {
+      final (pub, sig) = await signed(data);
+      expect(
+          await UpdateCenter.verifySignature(
+              data: utf8.encode('evil zip bytes'),
+              signature: sig,
+              publicKey: pub),
+          isFalse);
+    });
+
+    test('signature from another key is rejected', () async {
+      final (_, sig) = await signed(data);
+      final (otherPub, _) = await signed(data);
+      expect(
+          await UpdateCenter.verifySignature(
+              data: data, signature: sig, publicKey: otherPub),
+          isFalse);
+    });
+
+    test('malformed lengths fail closed, never throw', () async {
+      expect(
+          await UpdateCenter.verifySignature(
+              data: data, signature: [1, 2, 3], publicKey: List.filled(32, 0)),
+          isFalse);
+      expect(
+          await UpdateCenter.verifySignature(
+              data: data, signature: List.filled(64, 0), publicKey: [1]),
+          isFalse);
+    });
+
+    test('hex parsing is strict', () {
+      expect(UpdateCenter.parseHex('00ff', 2), [0, 255]);
+      expect(UpdateCenter.parseHex('00ff\n', 2), [0, 255]);
+      expect(UpdateCenter.parseHex('00ff', 3), isNull);
+      expect(UpdateCenter.parseHex('zz', 1), isNull);
+      expect(UpdateCenter.parseHex('', 32), isNull,
+          reason: 'empty key constant = signing not configured');
     });
   });
 

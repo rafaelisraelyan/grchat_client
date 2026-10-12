@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:crypto/crypto.dart';
+import 'package:cryptography/cryptography.dart' as cg;
 import 'package:riverpod/riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -20,7 +21,8 @@ class UpdateInfo {
       required this.url,
       required this.sizeBytes,
       required this.prerelease,
-      this.sha256Url});
+      this.sha256Url,
+      this.sigUrl});
   final String version;
   final String tag;
   final String url;
@@ -28,8 +30,13 @@ class UpdateInfo {
   final bool prerelease;
 
   /// URL of the `<asset>.sha256` sidecar, if the release published one.
-  /// Absent on older releases — verification is skipped, not failed.
+  /// Integrity only (catches a corrupt download); it is NOT the trust gate,
+  /// because it lives in the same release as the zip.
   final String? sha256Url;
+
+  /// URL of the `<asset>.sig` Ed25519 signature (hex). The trust gate:
+  /// no valid signature means no install.
+  final String? sigUrl;
 }
 
 enum UpdateStatus { idle, checking, available, downloading, uptodate, error }
@@ -51,6 +58,12 @@ class UpdateCenter extends Notifier<UpdateUiState> {
       'https://api.github.com/repos/rafaelisraelyan/grchat-releases/releases';
   static const _assetName = 'grchat_client-windows.zip';
   static const _channelKey = 'update_channel';
+
+  /// Ed25519 public key (64 hex chars) that release zips must be signed
+  /// with. Generate the pair with `dart run tool/sign_release.dart keygen`,
+  /// paste the PUBLIC half here, keep the private half off GitHub.
+  /// Empty = signing not configured yet: installs are refused (fail closed).
+  static const updatePublicKeyHex = '';
 
   /// In-place install only exists on Windows (PowerShell + Expand-Archive).
   /// Other platforms see the version notice and fetch the dmg by hand.
@@ -117,10 +130,14 @@ class UpdateCenter extends Notifier<UpdateUiState> {
             status: UpdateStatus.downloading, info: info, progress: p);
       });
       if (!await _verify(zip, info)) {
+        // The file is deleted: never leave an unverified zip lying around.
+        try {
+          await tmp.delete(recursive: true);
+        } catch (_) {}
         state = UpdateUiState(
             status: UpdateStatus.error,
             info: info,
-            message: 'Файл обновления повреждён');
+            message: 'Обновление не прошло проверку подписи');
         return;
       }
       await _apply(zip, info.version);
@@ -154,6 +171,7 @@ class UpdateCenter extends Notifier<UpdateUiState> {
         if (ch == UpdateChannel.release && pre) continue;
         String? url;
         String? shaUrl;
+        String? sigUrl;
         var size = 0;
         for (final a in (m['assets'] as List? ?? const [])) {
           final am = a as Map<String, dynamic>;
@@ -162,6 +180,8 @@ class UpdateCenter extends Notifier<UpdateUiState> {
             size = (am['size'] as num?)?.toInt() ?? 0;
           } else if (am['name'] == '$_assetName.sha256') {
             shaUrl = am['browser_download_url'] as String?;
+          } else if (am['name'] == '$_assetName.sig') {
+            sigUrl = am['browser_download_url'] as String?;
           }
         }
         if (url == null) continue;
@@ -173,6 +193,7 @@ class UpdateCenter extends Notifier<UpdateUiState> {
           'size': size,
           'pre': pre,
           'sha256': shaUrl,
+          'sig': sigUrl,
         };
       }
       return null;
@@ -190,24 +211,85 @@ class UpdateCenter extends Notifier<UpdateUiState> {
         url: m['url'] as String,
         sizeBytes: m['size'] as int,
         prerelease: m['pre'] as bool,
-        sha256Url: m['sha256'] as String?);
+        sha256Url: m['sha256'] as String?,
+        sigUrl: m['sig'] as String?);
   }
 
-  /// Integrity gate before executing anything: the zip is unpacked over the
-  /// install dir and relaunched, so a corrupt or swapped file is a code-exec
-  /// vector. Releases without a sidecar (older than 1.1.1) skip the check.
+  /// Trust gate before executing anything: the zip is unpacked over the
+  /// install dir and relaunched, so a swapped file is a code-exec vector.
+  ///
+  /// 1. The Ed25519 signature must verify against the key baked into this
+  ///    build. No signature, no key, malformed or wrong signature = refuse
+  ///    (fail closed). A sha256 sidecar alone proves nothing: whoever can
+  ///    replace the zip in the release can replace the sidecar too.
+  /// 2. If a sha256 sidecar is present it must also match (corruption
+  ///    check on top of the signature).
   Future<bool> _verify(File zip, UpdateInfo info) async {
-    final shaUrl = info.sha256Url;
-    if (shaUrl == null || shaUrl.isEmpty) return true;
-    final expected = (await _fetchText(shaUrl)).split(RegExp(r'\s+')).first;
-    if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(expected)) {
-      dlog('update sha sidecar malformed');
+    final pub = parseHex(updatePublicKeyHex, 32);
+    if (pub == null) {
+      dlog('update refused: no valid public key configured in this build');
       return false;
     }
-    final digest = sha256.convert(await zip.readAsBytes()).toString();
-    final ok = digest.toLowerCase() == expected.toLowerCase();
-    if (!ok) dlog('update sha mismatch');
-    return ok;
+    final sigUrl = info.sigUrl;
+    if (sigUrl == null || sigUrl.isEmpty) {
+      dlog('update refused: release has no .sig asset');
+      return false;
+    }
+    final sig = parseHex(await _fetchText(sigUrl), 64);
+    if (sig == null) {
+      dlog('update refused: signature malformed');
+      return false;
+    }
+    final bytes = await zip.readAsBytes();
+    if (!await verifySignature(data: bytes, signature: sig, publicKey: pub)) {
+      dlog('update refused: signature does not verify');
+      return false;
+    }
+    final shaUrl = info.sha256Url;
+    if (shaUrl != null && shaUrl.isNotEmpty) {
+      final expected =
+          (await _fetchText(shaUrl)).split(RegExp(r'\s+')).first;
+      if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(expected)) {
+        dlog('update sha sidecar malformed');
+        return false;
+      }
+      final digest = sha256.convert(bytes).toString();
+      if (digest.toLowerCase() != expected.toLowerCase()) {
+        dlog('update sha mismatch');
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Pure Ed25519 check (testable). False on any malformed input.
+  static Future<bool> verifySignature(
+      {required List<int> data,
+      required List<int> signature,
+      required List<int> publicKey}) async {
+    if (publicKey.length != 32 || signature.length != 64) return false;
+    try {
+      return await cg.Ed25519().verify(
+        data,
+        signature: cg.Signature(signature,
+            publicKey: cg.SimplePublicKey(publicKey,
+                type: cg.KeyPairType.ed25519)),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Hex string of exactly [bytes] bytes → bytes, else null. Pure.
+  static List<int>? parseHex(String s, int bytes) {
+    final h = s.trim().split(RegExp(r'\s+')).first;
+    if (h.length != bytes * 2 || !RegExp(r'^[0-9a-fA-F]+$').hasMatch(h)) {
+      return null;
+    }
+    return [
+      for (var i = 0; i < h.length; i += 2)
+        int.parse(h.substring(i, i + 2), radix: 16)
+    ];
   }
 
   Future<String> _fetchText(String url) async {
