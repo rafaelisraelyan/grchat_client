@@ -4,12 +4,15 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' show MediaDeviceInfo;
 
 import '../app/providers.dart';
 import '../app/theme.dart';
+import '../call/call_state.dart';
+import '../call/group_call.dart' show groupCallProvider;
 import '../desktop/autostart.dart';
 import '../desktop/desktop.dart';
 import '../desktop/desktop_log.dart';
 import '../media/media_prefs.dart';
 import '../notify/notify.dart';
 import '../update/update_service.dart';
+import '../voice/voice_state.dart';
 
 final storageUsageProvider = FutureProvider<Map<String, int>>((ref) async {
   final s = ref.watch(sessionProvider);
@@ -29,22 +32,24 @@ final storageUsageProvider = FutureProvider<Map<String, int>>((ref) async {
 });
 
 /// «Аудио и видео»: выбор камеры и микрофона из устройств системы.
-/// Выбор сохраняется и используется при открытии медиа в звонках; OBS
-/// Virtual Camera подсвечивается как универсальный вариант (честные 30
-/// fps через её MJPG-капчу) и становится default'ом, если выбор не задан.
-class _MediaDevicesSection extends StatefulWidget {
+/// Выбор сохраняется и используется при открытии медиа в звонках; когда
+/// звонок уже активен, смена применяется ЖИВО (switchCamera / LiveKit
+/// setVideoInputDevice) - без перезвона. Дефолт по правилу «первая
+/// физическая камера» описан в media_prefs (виртуальные помечены, но
+/// приоритета больше не имеют).
+class _MediaDevicesSection extends ConsumerStatefulWidget {
   const _MediaDevicesSection();
 
   @override
-  State<_MediaDevicesSection> createState() => _MediaDevicesSectionState();
+  ConsumerState<_MediaDevicesSection> createState() =>
+      _MediaDevicesSectionState();
 }
 
-class _MediaDevicesSectionState extends State<_MediaDevicesSection> {
+class _MediaDevicesSectionState extends ConsumerState<_MediaDevicesSection> {
   String? _cameraId;
   String? _micId;
   List<MediaDeviceInfo>? _cameras;
   List<MediaDeviceInfo>? _mics;
-  String? _obsId;
   bool _loading = false;
 
   @override
@@ -75,12 +80,10 @@ class _MediaDevicesSectionState extends State<_MediaDevicesSection> {
       // tests) are surfaced as an empty list.
       final cams = await MediaPrefs.cameras();
       final mics = await MediaPrefs.mics();
-      final obsId = await MediaPrefs.obsVirtualCamera();
       if (!mounted) return;
       setState(() {
         _cameras = cams;
         _mics = mics;
-        _obsId = obsId;
         _loading = false;
       });
     } catch (_) {
@@ -88,10 +91,44 @@ class _MediaDevicesSectionState extends State<_MediaDevicesSection> {
       setState(() {
         _cameras = const [];
         _mics = const [];
-        _obsId = null;
         _loading = false;
       });
     }
+  }
+
+  /// A camera pick pressed while some call/room is live switches the
+  /// capture NOW (P2P via replaceTrack, LiveKit rooms via
+  /// setVideoInputDevice). Empty id = Сбросить выбор → the default rule
+  /// (first physical camera). Returns true when a live session applied it.
+  Future<bool> _applyCameraLive(String id) async {
+    try {
+      if (await ref.read(callStateProvider.notifier).switchCamera(id)) {
+        return true;
+      }
+      if (await ref.read(groupCallProvider.notifier).switchVideoDevice(id)) {
+        return true;
+      }
+      if (await ref.read(voiceSessionProvider.notifier).switchVideoDevice(id)) {
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// Same for the microphone pick (replaceTrack / setAudioInputDevice).
+  Future<bool> _applyMicLive(String id) async {
+    try {
+      if (await ref.read(callStateProvider.notifier).switchMicrophone(id)) {
+        return true;
+      }
+      if (await ref.read(groupCallProvider.notifier).switchMicDevice(id)) {
+        return true;
+      }
+      if (await ref.read(voiceSessionProvider.notifier).switchMicDevice(id)) {
+        return true;
+      }
+    } catch (_) {}
+    return false;
   }
 
   @override
@@ -102,9 +139,17 @@ class _MediaDevicesSectionState extends State<_MediaDevicesSection> {
         title: 'Камера',
         entries: _cameras,
         currentId: _cameraId,
-        obsId: _obsId,
+        virtualLabels: true,
         onChange: (id) async {
           await MediaPrefs.setCameraDeviceId(id);
+          // Live application: first P2P, then LiveKit rooms; «Автомати
+          // чески» resolves the default rule (first physical camera).
+          if (id == null || id.isEmpty) {
+            final def = await MediaPrefs.defaultCameraId();
+            if (def != null) await _applyCameraLive(def);
+          } else {
+            await _applyCameraLive(id);
+          }
           await _loadSelection();
           await _refresh();
         },
@@ -114,26 +159,19 @@ class _MediaDevicesSectionState extends State<_MediaDevicesSection> {
         title: 'Микрофон',
         entries: _mics,
         currentId: _micId,
-        obsId: null,
+        virtualLabels: false,
         onChange: (id) async {
           await MediaPrefs.setMicDeviceId(id);
+          if (id == null || id.isEmpty) {
+            final def = await MediaPrefs.defaultMicId();
+            if (def != null) await _applyMicLive(def);
+          } else {
+            await _applyMicLive(id);
+          }
           await _loadSelection();
           await _refresh();
         },
       ),
-      if (_obsId == null &&
-          _cameras != null &&
-          !_cameras!.any((d) => MediaPrefs.looksLikeObs(d.label)))
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-          child: Text(
-            'Универсальный вариант для 30 fps — OBS Virtual Camera: установи '
-            'OBS и нажми «Start Virtual Camera», камера появится в списке '
-            'и станет автоматическим выбором.',
-            style: TextStyle(
-                fontSize: 12, color: GrchatColors.of(context).textMuted),
-          ),
-        ),
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         child: Align(
@@ -143,11 +181,14 @@ class _MediaDevicesSectionState extends State<_MediaDevicesSection> {
                 ? const SizedBox(
                     width: 16,
                     height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2))
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Icon(Icons.refresh, size: 18),
-            label: Text(_cameras == null
-                ? 'Загрузить список устройств'
-                : 'Перечитать устройства'),
+            label: Text(
+              _cameras == null
+                  ? 'Загрузить список устройств'
+                  : 'Перечитать устройства',
+            ),
             onPressed: _loading ? null : _refresh,
           ),
         ),
@@ -157,32 +198,40 @@ class _MediaDevicesSectionState extends State<_MediaDevicesSection> {
 
   Widget _mediaSection(BuildContext context, String title, List<Widget> rows) {
     final c = GrchatColors.of(context);
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
-        child: Text(title,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
+          child: Text(
+            title,
             style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: c.textMuted)),
-      ),
-      Container(
-        decoration: BoxDecoration(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: c.textMuted,
+            ),
+          ),
+        ),
+        Container(
+          decoration: BoxDecoration(
             color: c.surface,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: c.borderSubtle)),
-        child: Column(children: rows),
-      ),
-    ]);
+            border: Border.all(color: c.borderSubtle),
+          ),
+          child: Column(children: rows),
+        ),
+      ],
+    );
   }
 
-  Widget _pickRow(
-      {required IconData icon,
-      required String title,
-      required List<MediaDeviceInfo>? entries,
-      required String? currentId,
-      required String? obsId,
-      required Future<void> Function(String?) onChange}) {
+  Widget _pickRow({
+    required IconData icon,
+    required String title,
+    required List<MediaDeviceInfo>? entries,
+    required String? currentId,
+    required bool virtualLabels,
+    required Future<void> Function(String?) onChange,
+  }) {
     return ListTile(
       leading: Icon(icon),
       title: Text(title),
@@ -198,27 +247,25 @@ class _MediaDevicesSectionState extends State<_MediaDevicesSection> {
                 items: [
                   DropdownMenuItem<String>(
                     value: '',
-                    child: Text(currentId == null || currentId.isEmpty
-                        ? 'Автоматически'
-                        : 'Автоматически (сбросить выбор)'),
+                    child: Text(
+                      currentId == null || currentId.isEmpty
+                          ? 'Автоматически'
+                          : 'Автоматически (сбросить выбор)',
+                    ),
                   ),
                   for (final d in entries)
                     DropdownMenuItem<String>(
                       value: d.deviceId,
-                      child: Row(children: [
-                        Expanded(
-                          child: Text(
-                            _devLabel(d),
-                            overflow: TextOverflow.ellipsis,
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              _devLabel(d, virtualLabels),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        ),
-                        if (MediaPrefs.looksLikeObs(d.label) ||
-                            d.deviceId == obsId)
-                          const Padding(
-                            padding: EdgeInsets.only(left: 6),
-                            child: Icon(Icons.stars, size: 16),
-                          ),
-                      ]),
+                        ],
+                      ),
                     ),
                 ],
                 onChanged: (v) => onChange(v),
@@ -227,18 +274,20 @@ class _MediaDevicesSectionState extends State<_MediaDevicesSection> {
     );
   }
 
-  String _devLabel(MediaDeviceInfo d) {
+  String _devLabel(MediaDeviceInfo d, bool virtualLabels) {
     final label = d.label.isEmpty ? 'Устройство ${d.deviceId}' : d.label;
-    return MediaPrefs.looksLikeObs(d.label) ? '$label (30 fps)' : label;
+    return virtualLabels && MediaPrefs.looksVirtual(d.label)
+        ? '$label (виртуальная)'
+        : label;
   }
 
   String _labelFor(List<MediaDeviceInfo> entries, String? currentId) {
     if (currentId == null || currentId.isEmpty) {
-      return 'Автоматически (по умолчанию)';
+      return 'Автоматически (первая физическая камера)';
     }
     final d = entries.where((e) => e.deviceId == currentId).toList();
     if (d.isEmpty) return 'Автоматически (устройство недоступно)';
-    return _devLabel(d.first);
+    return _devLabel(d.first, true);
   }
 }
 
@@ -284,12 +333,10 @@ class _NotificationsRow extends ConsumerStatefulWidget {
   const _NotificationsRow();
 
   @override
-  ConsumerState<_NotificationsRow> createState() =>
-      _NotificationsRowState();
+  ConsumerState<_NotificationsRow> createState() => _NotificationsRowState();
 }
 
-class _NotificationsRowState
-    extends ConsumerState<_NotificationsRow> {
+class _NotificationsRowState extends ConsumerState<_NotificationsRow> {
   bool? _on;
 
   @override
@@ -311,9 +358,7 @@ class _NotificationsRowState
             ? null
             : (_) async {
                 final next = !(_on ?? true);
-                await ref
-                    .read(notifyBackendProvider)
-                    .setEnabled(next);
+                await ref.read(notifyBackendProvider).setEnabled(next);
                 if (mounted) setState(() => _on = next);
               },
       ),
@@ -321,7 +366,8 @@ class _NotificationsRowState
   }
 }
 
-class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key});
+class SettingsScreen extends ConsumerWidget {
+  const SettingsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -334,44 +380,44 @@ class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key})
             padding: const EdgeInsets.all(16),
             children: [
               _section(context, 'Аккаунт', [
-                _row(context,
-                    icon: Icons.person,
-                    title: ref.watch(sessionProvider)?.nick ?? '?',
-                    subtitle: 'Никнейм'),
+                _row(
+                  context,
+                  icon: Icons.person,
+                  title: ref.watch(sessionProvider)?.nick ?? '?',
+                  subtitle: 'Никнейм',
+                ),
               ]),
-              _section(context, 'Оформление', [
-                _themeRow(context, ref),
-              ]),
+              _section(context, 'Оформление', [_themeRow(context, ref)]),
               const _MediaDevicesSection(),
-              _section(context, 'Хранилище', [
-                _storageRow(ref),
-              ]),
+              _section(context, 'Хранилище', [_storageRow(ref)]),
               if (Autostart.supported)
                 _section(context, 'Система', [
                   const _AutostartRow(),
                   const _NotificationsRow(),
-                  _row(context,
-                      icon: Icons.notifications,
-                      title:
-                          'Уведомления: ${DesktopKit.notify?.status ?? '—'}',
-                      subtitle: 'Системные тосты'),
-                  _row(context,
-                      icon: Icons.web_asset,
-                      title: 'Трей: ${DesktopKit.tray?.status ?? '—'}',
-                      subtitle: 'Иконка и меню'),
-                  _row(context,
-                      icon: Icons.description,
-                      title: 'Лог трея и тостов',
-                      subtitle: DesktopLog.path),
+                  _row(
+                    context,
+                    icon: Icons.notifications,
+                    title: 'Уведомления: ${DesktopKit.notify?.status ?? '—'}',
+                    subtitle: 'Системные тосты',
+                  ),
+                  _row(
+                    context,
+                    icon: Icons.web_asset,
+                    title: 'Трей: ${DesktopKit.tray?.status ?? '—'}',
+                    subtitle: 'Иконка и меню',
+                  ),
+                  _row(
+                    context,
+                    icon: Icons.description,
+                    title: 'Лог трея и тостов',
+                    subtitle: DesktopLog.path,
+                  ),
                 ]),
-              _section(context, 'Обновления', [
-                _updateRows(context, ref),
-              ]),
+              _section(context, 'Обновления', [_updateRows(context, ref)]),
               const SizedBox(height: 8),
               OutlinedButton.icon(
                 icon: const Icon(Icons.logout, color: Colors.red),
-                label: const Text('Выйти',
-                    style: TextStyle(color: Colors.red)),
+                label: const Text('Выйти', style: TextStyle(color: Colors.red)),
                 onPressed: () async {
                   await ref.read(connectionProvider).dispose();
                   ref.read(sessionProvider.notifier).set(null);
@@ -387,29 +433,38 @@ class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key})
 
   Widget _section(BuildContext context, String title, List<Widget> rows) {
     final c = GrchatColors.of(context);
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
-        child: Text(title,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
+          child: Text(
+            title,
             style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: c.textMuted)),
-      ),
-      Container(
-        decoration: BoxDecoration(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: c.textMuted,
+            ),
+          ),
+        ),
+        Container(
+          decoration: BoxDecoration(
             color: c.surface,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: c.borderSubtle)),
-        child: Column(children: rows),
-      ),
-    ]);
+            border: Border.all(color: c.borderSubtle),
+          ),
+          child: Column(children: rows),
+        ),
+      ],
+    );
   }
 
-  Widget _row(BuildContext context,
-      {required IconData icon,
-      required String title,
-      required String subtitle}) {
+  Widget _row(
+    BuildContext context, {
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
     return ListTile(
       leading: Icon(icon),
       title: Text(title),
@@ -425,11 +480,13 @@ class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key})
       trailing: SegmentedButton<ThemeMode>(
         segments: const [
           ButtonSegment(
-              value: ThemeMode.dark,
-              icon: Icon(Icons.dark_mode, size: 18)),
+            value: ThemeMode.dark,
+            icon: Icon(Icons.dark_mode, size: 18),
+          ),
           ButtonSegment(
-              value: ThemeMode.light,
-              icon: Icon(Icons.light_mode, size: 18)),
+            value: ThemeMode.light,
+            icon: Icon(Icons.light_mode, size: 18),
+          ),
         ],
         selected: {mode == ThemeMode.system ? ThemeMode.dark : mode},
         onSelectionChanged: (s) {
@@ -452,18 +509,17 @@ class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key})
         final frac = quota == 0 ? 0.0 : (used / quota).clamp(0.0, 1.0);
         return ListTile(
           leading: const Icon(Icons.cloud),
-          title: Text(
-              '${_size(used)} из ${_size(quota)} использовано'),
+          title: Text('${_size(used)} из ${_size(quota)} использовано'),
           subtitle: Padding(
             padding: const EdgeInsets.only(top: 8),
             child: LinearProgressIndicator(value: frac),
           ),
         );
       },
-      loading: () => const ListTile(
-          leading: Icon(Icons.cloud), title: Text('…')),
-      error: (_, _) => const ListTile(
-          leading: Icon(Icons.cloud), title: Text('—')),
+      loading: () =>
+          const ListTile(leading: Icon(Icons.cloud), title: Text('…')),
+      error: (_, _) =>
+          const ListTile(leading: Icon(Icons.cloud), title: Text('—')),
     );
   }
 
@@ -479,41 +535,41 @@ class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key})
     // ancestor inside the section's background container for ink.
     return Material(
       color: Colors.transparent,
-      child:
-          Column(mainAxisSize: MainAxisSize.min, children: [
-      FutureBuilder<String>(
-        future: center.currentVersion(),
-        builder: (ctx, snap) => ListTile(
-          leading: const Icon(Icons.system_update),
-          title: Text('Версия ${snap.data ?? '…'}'),
-          subtitle: channel.when(
-            data: (c) => Text(
-                c == UpdateChannel.beta ? 'Канал: бета' : 'Канал: релиз'),
-            loading: () => const Text('Канал: …'),
-            error: (_, _) => const Text('Канал: релиз'),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FutureBuilder<String>(
+            future: center.currentVersion(),
+            builder: (ctx, snap) => ListTile(
+              leading: const Icon(Icons.system_update),
+              title: Text('Версия ${snap.data ?? '…'}'),
+              subtitle: channel.when(
+                data: (c) => Text(
+                  c == UpdateChannel.beta ? 'Канал: бета' : 'Канал: релиз',
+                ),
+                loading: () => const Text('Канал: …'),
+                error: (_, _) => const Text('Канал: релиз'),
+              ),
+              trailing: SegmentedButton<UpdateChannel>(
+                segments: const [
+                  ButtonSegment(
+                    value: UpdateChannel.release,
+                    label: Text('Релиз'),
+                  ),
+                  ButtonSegment(value: UpdateChannel.beta, label: Text('Бета')),
+                ],
+                selected: {channel.value ?? UpdateChannel.release},
+                onSelectionChanged: (s) => center.setChannel(s.first),
+              ),
+            ),
           ),
-          trailing: SegmentedButton<UpdateChannel>(
-            segments: const [
-              ButtonSegment(
-                  value: UpdateChannel.release,
-                  label: Text('Релиз')),
-              ButtonSegment(
-                  value: UpdateChannel.beta, label: Text('Бета')),
-            ],
-            selected: {
-              channel.value ?? UpdateChannel.release
-            },
-            onSelectionChanged: (s) => center.setChannel(s.first),
-          ),
-        ),
+          _updateStatus(context, ref, upd),
+        ],
       ),
-      _updateStatus(context, ref, upd),
-          ]),
     );
   }
 
-  Widget _updateStatus(
-      BuildContext context, WidgetRef ref, UpdateUiState upd) {
+  Widget _updateStatus(BuildContext context, WidgetRef ref, UpdateUiState upd) {
     final center = ref.read(updateCenterProvider.notifier);
     switch (upd.status) {
       case UpdateStatus.idle:
@@ -525,38 +581,41 @@ class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key})
       case UpdateStatus.checking:
         return const ListTile(
           leading: SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2)),
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
           title: Text('Проверяем…'),
         );
       case UpdateStatus.uptodate:
         return ListTile(
-          leading:
-              Icon(Icons.check, color: GrchatColors.of(context).success),
+          leading: Icon(Icons.check, color: GrchatColors.of(context).success),
           title: const Text('Установлена последняя версия'),
           onTap: () => center.check(),
         );
       case UpdateStatus.available:
         final info = upd.info!;
-        final size =
-            '${(info.sizeBytes / 1048576).toStringAsFixed(1)} МБ';
+        final size = '${(info.sizeBytes / 1048576).toStringAsFixed(1)} МБ';
         if (!UpdateCenter.supportsInstall) {
           // macOS/Linux: no in-place install yet, the dmg is fetched by hand.
           return ListTile(
             leading: const Icon(Icons.download),
             title: Text(
-                'Доступна ${info.version}${info.prerelease ? ' (бета)' : ''}'),
+              'Доступна ${info.version}${info.prerelease ? ' (бета)' : ''}',
+            ),
             subtitle: Text(
-                '$size — для этой платформы скачайте сборку из grchat-releases вручную'),
+              '$size — для этой платформы скачайте сборку из grchat-releases вручную',
+            ),
           );
         }
         return ListTile(
           leading: const Icon(Icons.download),
           title: Text(
-              'Доступна ${info.version}${info.prerelease ? ' (бета)' : ''}'),
+            'Доступна ${info.version}${info.prerelease ? ' (бета)' : ''}',
+          ),
           subtitle: Text(
-              '$size — скачивание закроет приложение и установит обновление'),
+            '$size — скачивание закроет приложение и установит обновление',
+          ),
           onTap: () => center.downloadAndInstall(),
         );
       case UpdateStatus.downloading:
@@ -565,14 +624,15 @@ class SettingsScreen extends ConsumerWidget {  const SettingsScreen({super.key})
           title: const Text('Скачиваем обновление…'),
           subtitle: Padding(
             padding: const EdgeInsets.only(top: 8),
-            child:
-                LinearProgressIndicator(value: upd.progress ?? 0),
+            child: LinearProgressIndicator(value: upd.progress ?? 0),
           ),
         );
       case UpdateStatus.error:
         return ListTile(
-          leading:
-              Icon(Icons.error_outline, color: GrchatColors.of(context).danger),
+          leading: Icon(
+            Icons.error_outline,
+            color: GrchatColors.of(context).danger,
+          ),
           title: Text(upd.message ?? 'Ошибка'),
           onTap: () => center.check(),
         );

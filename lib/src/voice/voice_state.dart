@@ -18,8 +18,7 @@ class VoiceState extends Notifier<Map<String, Set<String>>> {
   Map<String, Set<String>> build() => {};
 
   void ensureListening() {
-    _pushSub ??=
-        ref.read(connectionProvider).pushes.listen(_onPush);
+    _pushSub ??= ref.read(connectionProvider).pushes.listen(_onPush);
   }
 
   String? get joinedChannelId {
@@ -33,8 +32,12 @@ class VoiceState extends Notifier<Map<String, Set<String>>> {
   Future<void> join(String channelId) async {
     final s = ref.read(sessionProvider);
     if (s == null) return;
-    final r = await ref.read(connectionProvider).request('voice_join',
-        fields: {'session_token': s.token, 'channel_id': channelId});
+    final r = await ref
+        .read(connectionProvider)
+        .request(
+          'voice_join',
+          fields: {'session_token': s.token, 'channel_id': channelId},
+        );
     if (r['type'] == 'error') {
       throw GrchatException(r['code']?.toString() ?? 'UNKNOWN');
     }
@@ -46,8 +49,12 @@ class VoiceState extends Notifier<Map<String, Set<String>>> {
     if (s == null) return;
     final cur = joinedChannelId;
     if (cur == null) return;
-    await ref.read(connectionProvider).request('voice_leave',
-        fields: {'session_token': s.token, 'channel_id': cur});
+    await ref
+        .read(connectionProvider)
+        .request(
+          'voice_leave',
+          fields: {'session_token': s.token, 'channel_id': cur},
+        );
     final next = Map<String, Set<String>>.from(state);
     next[cur]?.remove(s.userId);
     state = next;
@@ -56,8 +63,12 @@ class VoiceState extends Notifier<Map<String, Set<String>>> {
   Future<void> refresh(String channelId) async {
     final s = ref.read(sessionProvider);
     if (s == null) return;
-    final r = await ref.read(connectionProvider).request('voice_members',
-        fields: {'session_token': s.token, 'channel_id': channelId});
+    final r = await ref
+        .read(connectionProvider)
+        .request(
+          'voice_members',
+          fields: {'session_token': s.token, 'channel_id': channelId},
+        );
     if (r['type'] == 'error') return;
     final ids = ((r['members'] as List?) ?? const [])
         .map((m) => ((m as Map)['user_id'] ?? '').toString())
@@ -90,16 +101,17 @@ final voiceStateProvider =
 /// One voice-channel participant as shown under the channel: signaling gives
 /// membership + nicks, the SFU room gives speaking + mute.
 class VoicePeer {
-  VoicePeer(
-      {required this.id,
-      required this.nick,
-      required this.speaking,
-      required this.muted,
-      required this.self,
-      this.serverMuted = false,
-      this.localMuted = false,
-      this.videoTrack,
-      this.audioLevel = 0.0});
+  VoicePeer({
+    required this.id,
+    required this.nick,
+    required this.speaking,
+    required this.muted,
+    required this.self,
+    this.serverMuted = false,
+    this.localMuted = false,
+    this.videoTrack,
+    this.audioLevel = 0.0,
+  });
   final String id;
   final String nick;
   final bool speaking;
@@ -148,18 +160,16 @@ List<VoicePeer> mergeVoicePeers({
     final fallback = id.length > 8 ? id.substring(0, 8) : id;
     final sm = !self && serverMuted.contains(id);
     final lm = !self && (mutedPeers.contains(id) || deafened);
-    final effectiveMuted =
-        self ? selfMuted : (r?.muted ?? true) || sm || lm;
+    final effectiveMuted = self ? selfMuted : (r?.muted ?? true) || sm || lm;
     final rname = r?.name;
     final rspeaking = r?.speaking ?? false;
-    final speakingNow =
-        (self ? selfSpeaking : rspeaking) && !effectiveMuted;
+    final speakingNow = (self ? selfSpeaking : rspeaking) && !effectiveMuted;
     // Raw SFU levels are jittery; 0.1 steps keep the ring calm and let the
     // engine skip no-op rebuilds. Silent or muted = no ring at all.
     final raw = (levels[id] ?? 0.0).clamp(0.0, 1.0);
-    final level =
-        speakingNow ? (raw * 10).roundToDouble() / 10 : 0.0;
-    peers.add(VoicePeer(
+    final level = speakingNow ? (raw * 10).roundToDouble() / 10 : 0.0;
+    peers.add(
+      VoicePeer(
         id: id,
         nick: self ? myNick : (nicks[id] ?? rname ?? fallback),
         speaking: speakingNow,
@@ -168,7 +178,9 @@ List<VoicePeer> mergeVoicePeers({
         serverMuted: sm,
         localMuted: lm,
         videoTrack: videos[id],
-        audioLevel: level));
+        audioLevel: level,
+      ),
+    );
   }
   peers.sort((a, b) {
     if (a.self != b.self) return a.self ? -1 : 1;
@@ -180,18 +192,19 @@ List<VoicePeer> mergeVoicePeers({
 /// A joined voice channel: persistent SFU room, audio-only, no ringing.
 /// Separate from the signaling roster (VoiceState): this is the media session.
 class VoiceSession {
-  const VoiceSession(
-      {required this.channelId,
-      required this.title,
-      required this.room,
-      this.peers = const [],
-      this.muted = false,
-      this.deafened = false,
-      this.serverMutedMe = false,
-      this.userLimit = 0,
-      this.minimized = false,
-      this.cameraOff = true,
-      this.displayedSpeakerId});
+  const VoiceSession({
+    required this.channelId,
+    required this.title,
+    required this.room,
+    this.peers = const [],
+    this.muted = false,
+    this.deafened = false,
+    this.serverMutedMe = false,
+    this.userLimit = 0,
+    this.minimized = false,
+    this.cameraOff = true,
+    this.displayedSpeakerId,
+  });
 
   final String channelId;
   final String title;
@@ -218,29 +231,30 @@ class VoiceSession {
   /// first-remote fallback. Never self (§19).
   final String? displayedSpeakerId;
 
-  VoiceSession copyWith(
-          {List<VoicePeer>? peers,
-          bool? muted,
-          bool? deafened,
-          bool? serverMutedMe,
-          int? userLimit,
-          bool? minimized,
-          bool? cameraOff,
-          String? Function()? displayedSpeakerId}) =>
-      VoiceSession(
-          channelId: channelId,
-          title: title,
-          room: room,
-          peers: peers ?? this.peers,
-          muted: muted ?? this.muted,
-          deafened: deafened ?? this.deafened,
-          serverMutedMe: serverMutedMe ?? this.serverMutedMe,
-          userLimit: userLimit ?? this.userLimit,
-          minimized: minimized ?? this.minimized,
-          cameraOff: cameraOff ?? this.cameraOff,
-          displayedSpeakerId: displayedSpeakerId != null
-              ? displayedSpeakerId()
-              : this.displayedSpeakerId);
+  VoiceSession copyWith({
+    List<VoicePeer>? peers,
+    bool? muted,
+    bool? deafened,
+    bool? serverMutedMe,
+    int? userLimit,
+    bool? minimized,
+    bool? cameraOff,
+    String? Function()? displayedSpeakerId,
+  }) => VoiceSession(
+    channelId: channelId,
+    title: title,
+    room: room,
+    peers: peers ?? this.peers,
+    muted: muted ?? this.muted,
+    deafened: deafened ?? this.deafened,
+    serverMutedMe: serverMutedMe ?? this.serverMutedMe,
+    userLimit: userLimit ?? this.userLimit,
+    minimized: minimized ?? this.minimized,
+    cameraOff: cameraOff ?? this.cameraOff,
+    displayedSpeakerId: displayedSpeakerId != null
+        ? displayedSpeakerId()
+        : this.displayedSpeakerId,
+  );
 }
 
 final voiceSessionApiProvider = Provider<CallApi>((ref) {
@@ -253,6 +267,39 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
   Room? _room;
   EventsListener<RoomEvent>? _roomEvents;
   StreamSubscription<Map<String, dynamic>>? _pushSub;
+
+  /// LIVE camera device change in the voice room (§switch-camera): the SDK
+  /// restarts the published track; false = no live room.
+  Future<bool> switchVideoDevice(String deviceId) async {
+    final room = _room;
+    if (room == null) return false;
+    try {
+      await room.setVideoInputDevice(
+        MediaDevice(deviceId, deviceId, 'videoinput', null),
+      );
+      dlog('voice video device switched: $deviceId');
+      return true;
+    } catch (e) {
+      dlog('voice video device switch failed: $e');
+      return false;
+    }
+  }
+
+  /// Same for the microphone input.
+  Future<bool> switchMicDevice(String deviceId) async {
+    final room = _room;
+    if (room == null) return false;
+    try {
+      await room.setAudioInputDevice(
+        MediaDevice(deviceId, deviceId, 'audioinput', null),
+      );
+      dlog('voice mic device switched: $deviceId');
+      return true;
+    } catch (e) {
+      dlog('voice mic device switch failed: $e');
+      return false;
+    }
+  }
 
   /// Mic-level sampler: LiveKit only emits speaking transitions, so levels
   /// for the ring opacity are polled. 16 Hz + 0.1 quantization + no-op guard
@@ -284,15 +331,13 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
       if (cur == null) return;
       _refreshRoster(cur.channelId).then((_) => _syncPeers());
     });
-    _pushSub ??=
-        ref.read(connectionProvider).pushes.listen(_onPush);
+    _pushSub ??= ref.read(connectionProvider).pushes.listen(_onPush);
     ref.onDispose(() => _pushSub?.cancel());
     return null;
   }
 
   void ensureListening() {
-    _pushSub ??=
-        ref.read(connectionProvider).pushes.listen(_onPush);
+    _pushSub ??= ref.read(connectionProvider).pushes.listen(_onPush);
   }
 
   void _onPush(Map<String, dynamic> ev) {
@@ -357,11 +402,13 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
       await room.localParticipant?.setMicrophoneEnabled(true);
       dlog('voice joined room=${creds.room}');
       state = VoiceSession(
-          channelId: channelId, title: title, room: creds.room);
+        channelId: channelId,
+        title: title,
+        room: creds.room,
+      );
       _speakerFocus.reset();
       _levelTimer?.cancel();
-      _levelTimer =
-          Timer.periodic(const Duration(milliseconds: 60), (_) {
+      _levelTimer = Timer.periodic(const Duration(milliseconds: 60), (_) {
         if (state == null || _room == null) return;
         _syncPeers();
       });
@@ -471,19 +518,24 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
   /// Moderator mute in a channel. Works without joining it; when it targets
   /// my own channel the lock applies immediately, otherwise the roster
   /// refresh picks it up. Returns a confirmation line for the toast.
-  Future<String?> serverMute(
-      {required String channelId,
-      required String userId,
-      required bool muted}) async {
+  Future<String?> serverMute({
+    required String channelId,
+    required String userId,
+    required bool muted,
+  }) async {
     final s = ref.read(sessionProvider);
     if (s == null || userId.isEmpty) return null;
-    final r = await ref.read(connectionProvider).request('voice_mute',
-        fields: {
-          'session_token': s.token,
-          'channel_id': channelId,
-          'user_id': userId,
-          'muted': muted,
-        });
+    final r = await ref
+        .read(connectionProvider)
+        .request(
+          'voice_mute',
+          fields: {
+            'session_token': s.token,
+            'channel_id': channelId,
+            'user_id': userId,
+            'muted': muted,
+          },
+        );
     if (r['type'] == 'error') {
       throw GrchatException(r['code']?.toString() ?? 'UNKNOWN');
     }
@@ -510,16 +562,19 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
 
   /// Owner/admin: cap occupants (0 = unlimited). Channel-scoped, works
   /// without joining: management is not presence. Applies to future joins.
-  Future<void> setLimit(
-      {required String channelId, required int limit}) async {
+  Future<void> setLimit({required String channelId, required int limit}) async {
     final s = ref.read(sessionProvider);
     if (s == null || channelId.isEmpty) return;
-    final r = await ref.read(connectionProvider).request('voice_limit',
-        fields: {
-          'session_token': s.token,
-          'channel_id': channelId,
-          'user_limit': limit
-        });
+    final r = await ref
+        .read(connectionProvider)
+        .request(
+          'voice_limit',
+          fields: {
+            'session_token': s.token,
+            'channel_id': channelId,
+            'user_limit': limit,
+          },
+        );
     if (r['type'] == 'error') {
       throw GrchatException(r['code']?.toString() ?? 'UNKNOWN');
     }
@@ -600,42 +655,42 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     final s = ref.read(sessionProvider);
     final myId = s?.userId ?? '';
     final next = mergeVoicePeers(
-        signalingIds: ids,
-        nicks: nicks[cur.channelId] ?? {},
-        room: r,
-        videos: vids,
-        levels: lvls,
-        myId: myId,
-        myNick: s?.nick ?? '?',
-        selfMuted: cur.muted,
-        selfSpeaking: room?.localParticipant?.isSpeaking ?? false,
-        mutedPeers: mutedPeers,
-        serverMuted: serverMuted,
-        deafened: cur.deafened);
+      signalingIds: ids,
+      nicks: nicks[cur.channelId] ?? {},
+      room: r,
+      videos: vids,
+      levels: lvls,
+      myId: myId,
+      myNick: s?.nick ?? '?',
+      selfMuted: cur.muted,
+      selfSpeaking: room?.localParticipant?.isSpeaking ?? false,
+      mutedPeers: mutedPeers,
+      serverMuted: serverMuted,
+      deafened: cur.deafened,
+    );
     // Stabilized pill preview (§38): remotes only, never self. Silence
     // holds the last display; a speaker who left clears (facade falls back
     // to the first remaining remote, §22).
     final remoteIds = {
-      for (final p in next) if (!p.self) p.id,
+      for (final p in next)
+        if (!p.self) p.id,
     };
     final displayed = _speakerFocus.update(
-        levels: {for (final id in remoteIds) id: lvls[id] ?? 0.0},
-        speaking: {
-          for (final p in next)
-            if (!p.self && p.speaking) p.id,
-        },
-        knownIds: remoteIds,
-        now: DateTime.now());
+      levels: {for (final id in remoteIds) id: lvls[id] ?? 0.0},
+      speaking: {
+        for (final p in next)
+          if (!p.self && p.speaking) p.id,
+      },
+      knownIds: remoteIds,
+      now: DateTime.now(),
+    );
     // The level ticker fires 16×/s: publish only on visible change,
     // otherwise the whole sidebar + call grid would rebuild for nothing.
-    if (!_samePeers(cur.peers, next) ||
-        cur.displayedSpeakerId != displayed) {
-      state = cur.copyWith(
-          peers: next, displayedSpeakerId: () => displayed);
-      dlog('voice levels: ${[
-        for (final p in next)
-          '${p.nick}=${p.speaking ? 's' : '-'}${p.audioLevel.toStringAsFixed(1)}${p.muted ? 'm' : ''}'
-      ].join(' ')}');
+    if (!_samePeers(cur.peers, next) || cur.displayedSpeakerId != displayed) {
+      state = cur.copyWith(peers: next, displayedSpeakerId: () => displayed);
+      dlog(
+        'voice levels: ${[for (final p in next) '${p.nick}=${p.speaking ? 's' : '-'}${p.audioLevel.toStringAsFixed(1)}${p.muted ? 'm' : ''}'].join(' ')}',
+      );
     }
     _enforceSubscriptions();
   }
@@ -670,7 +725,8 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     final room = _room;
     if (cur == null || room == null) return;
     for (final p in room.remoteParticipants.values) {
-      final hear = !serverMuted.contains(p.identity) &&
+      final hear =
+          !serverMuted.contains(p.identity) &&
           !mutedPeers.contains(p.identity) &&
           !cur.deafened;
       if (_appliedSubs[p.identity] == hear) continue;
@@ -702,8 +758,12 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     final s = ref.read(sessionProvider);
     if (s == null) return;
     try {
-      final r = await ref.read(connectionProvider).request('voice_members',
-          fields: {'session_token': s.token, 'channel_id': channelId});
+      final r = await ref
+          .read(connectionProvider)
+          .request(
+            'voice_members',
+            fields: {'session_token': s.token, 'channel_id': channelId},
+          );
       if (r['type'] == 'error') return;
       final m = <String, String>{};
       final sm = <String>{};
@@ -744,8 +804,9 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
   }
 }
 
-final voiceSessionProvider =
-    NotifierProvider<VoiceSessionState, VoiceSession?>(VoiceSessionState.new);
+final voiceSessionProvider = NotifierProvider<VoiceSessionState, VoiceSession?>(
+  VoiceSessionState.new,
+);
 
 /// Raw server codes must never reach the UI.
 String friendlyVoiceError(Object e) {

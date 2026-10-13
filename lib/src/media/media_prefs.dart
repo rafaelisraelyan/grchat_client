@@ -6,15 +6,45 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// User-selectable capture devices. The choice persists and the camera/
 /// microphone open path feeds it into getUserMedia constraints.
 ///
-/// OBS Virtual Camera is the universal fix for the DirectShow 15 fps
-/// ceiling: OBS itself uses a well-driven MJPG pipeline, so its virtual
-/// camera typically delivers a true 30 fps we can carry. It is marked in
-/// the device list and auto-preferred when the user has no explicit
-/// choice; installing OBS itself is the user's one-time setup (an
-/// application cannot install a system-wide camera filter silently).
+/// Device-selection grammar on the desktop plugin (§2026-10-13): BOTH the
+/// camera and the recording device are matched ONLY through the legacy
+/// `optional: [{sourceId: ...}]` values; a `deviceId` (any feather) only
+/// selects the audio OUTPUT and `{exact: N}`-style maps are ignored for
+/// inputs. Before the sourceId fix every pick was cosmetic: the capture
+/// always opened device index 0.
+///
+/// Default device rule (§default-camera 2026-10-13): with no explicit
+/// choice the FIRST PHYSICAL camera wins. Virtual cameras (OBS, NVIDIA
+/// Broadcast, Snap Camera, …) are NOT the default any more — they were
+/// promoted by the old "DirectShow 15 fps ceiling" assumption, which the
+/// plugin path proved wrong (OBS VC delivers honest 1080p60 through our
+/// DS stack once the device is selected properly).
 abstract final class MediaPrefs {
   static const cameraKey = 'media.cameraDeviceId';
   static const micKey = 'media.micDeviceId';
+
+  /// Substrings (lowercased) marking a VIRTUAL camera. One list for the
+  /// default rule and the settings labeling.
+  static const virtualMarkers = <String>[
+    'obs',
+    'virtual',
+    'nvidia broadcast',
+    'snap camera',
+    'manycam',
+    'xsplit',
+    'droidcam',
+    'camo',
+    'privacy view',
+  ];
+
+  /// True when the label matches [virtualMarkers] (case-insensitive).
+  static bool looksVirtual(String label) {
+    final low = label.toLowerCase();
+    for (final m in virtualMarkers) {
+      if (low.contains(m)) return true;
+    }
+    return false;
+  }
 
   /// Tests run without platform channels: a broken channel counts as «no
   /// persisted choice» and must never crash the settings screen.
@@ -34,13 +64,11 @@ abstract final class MediaPrefs {
     }
   }
 
-  static Future<List<MediaDeviceInfo>> cameras() async => (await _devices())
-      .where((d) => d.kind == 'videoinput')
-      .toList();
+  static Future<List<MediaDeviceInfo>> cameras() async =>
+      (await _devices()).where((d) => d.kind == 'videoinput').toList();
 
-  static Future<List<MediaDeviceInfo>> mics() async => (await _devices())
-      .where((d) => d.kind == 'audioinput')
-      .toList();
+  static Future<List<MediaDeviceInfo>> mics() async =>
+      (await _devices()).where((d) => d.kind == 'audioinput').toList();
 
   static Future<String?> cameraDeviceId() async {
     final p = await _prefs();
@@ -72,32 +100,62 @@ abstract final class MediaPrefs {
     }
   }
 
-  /// The OBS virtual camera device when present (its label carries OBS).
-  static Future<String?> obsVirtualCamera() async {
-    for (final d in await cameras()) {
-      if (d.label.toLowerCase().contains('obs')) return d.deviceId;
+  /// The default pick from an already-captured device snapshot: the first
+  /// PHYSICAL camera; when none exists, whatever is there. Pure so the
+  /// rule is testable without platform channels.
+  static String? defaultDeviceIdFrom(
+    List<({String id, String label})> devices,
+  ) {
+    for (final d in devices) {
+      if (!looksVirtual(d.label)) return d.id;
     }
-    return null;
+    return devices.isEmpty ? null : devices.first.id;
   }
 
-  /// Best-effort default: the user's explicit pick wins, then OBS virtual
-  /// camera, then whatever the platform gives.
-  static Future<String?> preferredCameraId() async {
+  static Future<String?> defaultCameraId() async {
+    final cams = await cameras();
+    return defaultDeviceIdFrom(
+      cams.map((d) => (id: d.deviceId, label: d.label)).toList(),
+    );
+  }
+
+  static Future<String?> defaultMicId() async {
+    final all = await mics();
+    return defaultDeviceIdFrom(
+      all.map((d) => (id: d.deviceId, label: d.label)).toList(),
+    );
+  }
+
+  /// Resolves the camera the capture opens: the explicit pick when it still
+  /// exists (a stale pick is quietly reset to the default and the stored
+  /// value cleared), else the default rule above.
+  static Future<String?> resolveCameraId() async {
     final explicit = await cameraDeviceId();
-    if (explicit != null && explicit.isNotEmpty) return explicit;
-    return obsVirtualCamera();
+    final devices = await cameras();
+    final byId = {for (final d in devices) d.deviceId: d.label};
+    if (explicit != null && explicit.isNotEmpty) {
+      if (byId.containsKey(explicit)) return explicit;
+      // The stored camera disappeared: quiet fallback + reset the pick.
+      await setCameraDeviceId(null);
+    }
+    return defaultDeviceIdFrom(
+      devices.map((d) => (id: d.deviceId, label: d.label)).toList(),
+    );
   }
 
-  static Future<String?> preferredMicId() async {
+  /// Same contract as [resolveCameraId] for the microphone; the default
+  /// rule applies too (first physical - virtual MICS are rare but
+  /// Broadcast and OBS mic filters exist).
+  static Future<String?> resolveMicId() async {
     final explicit = await micDeviceId();
-    if (explicit != null && explicit.isNotEmpty) return explicit;
-    return null;
+    final devices = await mics();
+    final byId = {for (final d in devices) d.deviceId: d.label};
+    if (explicit != null && explicit.isNotEmpty) {
+      if (byId.containsKey(explicit)) return explicit;
+      await setMicDeviceId(null);
+    }
+    return defaultDeviceIdFrom(
+      devices.map((d) => (id: d.deviceId, label: d.label)).toList(),
+    );
   }
-
-  /// Devices with this substring get marked as the universal fallback in
-  /// the settings UI.
-  static const obsMarker = 'obs';
-
-  static bool looksLikeObs(String label) =>
-      label.toLowerCase().contains(obsMarker);
 }

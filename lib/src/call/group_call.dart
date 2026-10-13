@@ -84,23 +84,22 @@ class GroupCall {
     bool? cameraOff,
     bool? minimized,
     String? Function()? displayedSpeakerId,
-  }) =>
-      GroupCall(
-        dmId: dmId,
-        title: title,
-        room: room,
-        video: video,
-        outgoing: outgoing,
-        phase: phase ?? this.phase,
-        callId: callId ?? this.callId,
-        peers: peers ?? this.peers,
-        muted: muted ?? this.muted,
-        cameraOff: cameraOff ?? this.cameraOff,
-        minimized: minimized ?? this.minimized,
-        displayedSpeakerId: displayedSpeakerId != null
-            ? displayedSpeakerId()
-            : this.displayedSpeakerId,
-      );
+  }) => GroupCall(
+    dmId: dmId,
+    title: title,
+    room: room,
+    video: video,
+    outgoing: outgoing,
+    phase: phase ?? this.phase,
+    callId: callId ?? this.callId,
+    peers: peers ?? this.peers,
+    muted: muted ?? this.muted,
+    cameraOff: cameraOff ?? this.cameraOff,
+    minimized: minimized ?? this.minimized,
+    displayedSpeakerId: displayedSpeakerId != null
+        ? displayedSpeakerId()
+        : this.displayedSpeakerId,
+  );
 }
 
 final groupCallApiProvider = Provider<CallApi>((ref) {
@@ -114,6 +113,41 @@ class GroupCallState extends Notifier<GroupCall?> {
   EventsListener<RoomEvent>? _roomEvents;
   StreamSubscription<Map<String, dynamic>>? _pushSub;
 
+  /// LIVE camera device change in the SFU room (§switch-camera): the SDK
+  /// restarts the published track on the named device - no renegotiation,
+  /// no republish; false means there is no live room (then the settings
+  /// row silently waits for the next join).
+  Future<bool> switchVideoDevice(String deviceId) async {
+    final room = _room;
+    if (room == null) return false;
+    try {
+      await room.setVideoInputDevice(
+        MediaDevice(deviceId, deviceId, 'videoinput', null),
+      );
+      dlog('group video device switched: $deviceId');
+      return true;
+    } catch (e) {
+      dlog('group video device switch failed: $e');
+      return false;
+    }
+  }
+
+  /// Same for the microphone input.
+  Future<bool> switchMicDevice(String deviceId) async {
+    final room = _room;
+    if (room == null) return false;
+    try {
+      await room.setAudioInputDevice(
+        MediaDevice(deviceId, deviceId, 'audioinput', null),
+      );
+      dlog('group mic device switched: $deviceId');
+      return true;
+    } catch (e) {
+      dlog('group mic device switch failed: $e');
+      return false;
+    }
+  }
+
   /// Level sampler for the stabilized pill preview (§38): 8 Hz, guarded
   /// publishes only. Reset per session so a new room starts unbiased.
   Timer? _levelTimer;
@@ -123,8 +157,7 @@ class GroupCallState extends Notifier<GroupCall?> {
   GroupCall? build() => null;
 
   void ensureListening() {
-    _pushSub ??=
-        ref.read(connectionProvider).pushes.listen(_onPush);
+    _pushSub ??= ref.read(connectionProvider).pushes.listen(_onPush);
   }
 
   VideoTrack? get localVideoTrack {
@@ -139,10 +172,11 @@ class GroupCallState extends Notifier<GroupCall?> {
 
   /// Outgoing group call: join the SFU room first, then ring the members
   /// through the stock invite fan-out.
-  Future<void> join(
-      {required String dmId,
-      required String title,
-      required bool video}) async {
+  Future<void> join({
+    required String dmId,
+    required String title,
+    required bool video,
+  }) async {
     if (state != null) return;
     if (ref.read(callStateProvider) != null) {
       ref.read(callNoticeProvider.notifier).show('Занято');
@@ -154,8 +188,7 @@ class GroupCallState extends Notifier<GroupCall?> {
     try {
       _attach(room);
       await room.connect(creds.url, creds.token);
-      await room.localParticipant
-          ?.setMicrophoneEnabled(true);
+      await room.localParticipant?.setMicrophoneEnabled(true);
       if (video) {
         try {
           await room.localParticipant?.setCameraEnabled(true);
@@ -164,26 +197,26 @@ class GroupCallState extends Notifier<GroupCall?> {
         }
       }
       state = GroupCall(
-          dmId: dmId,
-          title: title,
-          room: creds.room,
-          video: video,
-          outgoing: true,
-          phase: GroupPhase.active);
+        dmId: dmId,
+        title: title,
+        room: creds.room,
+        video: video,
+        outgoing: true,
+        phase: GroupPhase.active,
+      );
       _startLevels();
       _syncPeers();
       try {
         final callId = await api.offer(
-            dmId: dmId,
-            sdp: buildSfuMarker(creds.room, video));
+          dmId: dmId,
+          sdp: buildSfuMarker(creds.room, video),
+        );
         state = state?.copyWith(callId: callId);
       } catch (e) {
         // Invite failed (e.g. everyone offline): stay in the room so a
         // late joiner still lands; the error is shown, not thrown.
         dlog('group invite failed: $e');
-        ref
-            .read(callNoticeProvider.notifier)
-            .show(friendlyGroupError(e));
+        ref.read(callNoticeProvider.notifier).show(friendlyGroupError(e));
       }
     } catch (e) {
       await _leaveRoom();
@@ -192,12 +225,13 @@ class GroupCallState extends Notifier<GroupCall?> {
   }
 
   /// Incoming SFU invite from the signaling fan-out.
-  void incoming(
-      {required String callId,
-      required String dmId,
-      required String room,
-      required bool video,
-      required String fromNick}) {
+  void incoming({
+    required String callId,
+    required String dmId,
+    required String room,
+    required bool video,
+    required String fromNick,
+  }) {
     // One pending at a time (§15, §16): switching or ringing elsewhere
     // means BUSY. A live session of any kind gets call waiting instead:
     // group ringing holds no media, accept is a coordinator switch.
@@ -223,13 +257,14 @@ class GroupCallState extends Notifier<GroupCall?> {
     }
     dlog('group incoming room=$room from=$fromNick');
     state = GroupCall(
-        dmId: dmId,
-        title: _dmTitle(dmId),
-        room: room,
-        video: video,
-        outgoing: false,
-        phase: GroupPhase.ringing,
-        callId: callId);
+      dmId: dmId,
+      title: _dmTitle(dmId),
+      room: room,
+      video: video,
+      outgoing: false,
+      phase: GroupPhase.ringing,
+      callId: callId,
+    );
   }
 
   String _dmTitle(String dmId) {
@@ -267,9 +302,10 @@ class GroupCallState extends Notifier<GroupCall?> {
       // Acknowledge over signaling so the caller tracks + records.
       // The marker sdp is convention only; media lives in the room.
       await api.answer(
-          callId: cur.callId!,
-          accept: true,
-          sdp: buildSfuMarker(cur.room, cur.video));
+        callId: cur.callId!,
+        accept: true,
+        sdp: buildSfuMarker(cur.room, cur.video),
+      );
     } catch (e) {
       await decline();
       rethrow;
@@ -295,9 +331,7 @@ class GroupCallState extends Notifier<GroupCall?> {
     if (cur == null) return;
     if (cur.callId != null) {
       try {
-        await ref
-            .read(groupCallApiProvider)
-            .hangup(cur.callId!);
+        await ref.read(groupCallApiProvider).hangup(cur.callId!);
       } catch (_) {}
     }
     await _leaveRoom();
@@ -365,8 +399,7 @@ class GroupCallState extends Notifier<GroupCall?> {
   /// stale object wipes whatever the other side changed (same clobber class
   /// as the 1-1 remoteVideo bug). The dmId+room check keeps a patch from
   /// leaking onto a different call that started meanwhile.
-  void _patchIfSame(
-      GroupCall cur, GroupCall Function(GroupCall live) patch) {
+  void _patchIfSame(GroupCall cur, GroupCall Function(GroupCall live) patch) {
     final live = state;
     if (live == null) return;
     if (live.dmId != cur.dmId || live.room != cur.room) return;
@@ -413,32 +446,35 @@ class GroupCallState extends Notifier<GroupCall?> {
       if (p.isSpeaking && !audioMuted) speaking.add(p.identity);
       // Quantized like voice: raw SFU floats jitter every frame, and the
       // 8 Hz guard below must only fire on visible change.
-      final level =
-          (p.audioLevel.clamp(0.0, 1.0) * 10).roundToDouble() / 10;
+      final level = (p.audioLevel.clamp(0.0, 1.0) * 10).roundToDouble() / 10;
       levels[p.identity] = level;
-      peers.add(GroupPeer(
+      peers.add(
+        GroupPeer(
           identity: p.identity,
           name: p.name.isNotEmpty ? p.name : p.identity,
           videoTrack: video,
           audioMuted: audioMuted,
           speaking: p.isSpeaking && !audioMuted,
-          audioLevel: level));
+          audioLevel: level,
+        ),
+      );
     }
     // Stabilized pill preview (§38): remotes only, silence holds last.
     final displayed = _speakerFocus.update(
-        levels: levels,
-        speaking: speaking,
-        knownIds: levels.keys.toSet(),
-        now: DateTime.now());
-    if (_samePeers(cur.peers, peers) &&
-        cur.displayedSpeakerId == displayed) {
+      levels: levels,
+      speaking: speaking,
+      knownIds: levels.keys.toSet(),
+      now: DateTime.now(),
+    );
+    if (_samePeers(cur.peers, peers) && cur.displayedSpeakerId == displayed) {
       return;
     }
     dlog('group peers=${peers.length} focus=${displayed ?? '-'}');
     _patchIfSame(
-        cur,
-        (live) => live.copyWith(
-            peers: peers, displayedSpeakerId: () => displayed));
+      cur,
+      (live) =>
+          live.copyWith(peers: peers, displayedSpeakerId: () => displayed),
+    );
   }
 
   /// Guard the 8 Hz sampler: publish only on visible change (§52).
@@ -472,7 +508,9 @@ class GroupCallState extends Notifier<GroupCall?> {
     dlog('group room lost');
     // Never vanish silently: the window is gone, so the toast is the only
     // trace of why. The user redials by hand from the DM.
-    ref.read(callNoticeProvider.notifier).show('Соединение с комнатой потеряно');
+    ref
+        .read(callNoticeProvider.notifier)
+        .show('Соединение с комнатой потеряно');
     if (state?.phase == GroupPhase.active) {
       ref.read(callTonesProvider).endBlip();
     }
@@ -501,9 +539,7 @@ class GroupCallState extends Notifier<GroupCall?> {
     switch (ev['type']?.toString()) {
       case 'call_ended':
         final cur = state;
-        if (cur == null ||
-            cur.callId == null ||
-            ev['call_id'] != cur.callId) {
+        if (cur == null || cur.callId == null || ev['call_id'] != cur.callId) {
           return;
         }
         dlog('group ended by signaling');
@@ -517,8 +553,9 @@ class GroupCallState extends Notifier<GroupCall?> {
   }
 }
 
-final groupCallProvider =
-    NotifierProvider<GroupCallState, GroupCall?>(GroupCallState.new);
+final groupCallProvider = NotifierProvider<GroupCallState, GroupCall?>(
+  GroupCallState.new,
+);
 
 /// Raw server codes must never reach the UI.
 String friendlyGroupError(Object e) {

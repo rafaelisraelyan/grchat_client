@@ -15,6 +15,8 @@ import '../widgets/avatar.dart';
 import '../widgets/toast.dart';
 import 'call_session.dart';
 import 'call_state.dart';
+import 'camera_notice.dart';
+import '../settings/settings_screen.dart' show SettingsScreen;
 import 'dock_state.dart';
 import 'group_call.dart' show friendlyGroupError;
 import 'media_session.dart';
@@ -810,37 +812,77 @@ class _CallOverlayHostState extends ConsumerState<CallOverlayHost>
                   ),
                 ),
         ),
-        // Camera fps floor (§capture-fps): when the capture delivers fewer
-        // fps than the tier asks, say it out loud - higher tiers only
-        // enlarge the picture, they cannot smooth the motion. Rendered
-        // BELOW the pip layer, so a parked preview simply covers it.
-        if (call.video && call.phase == CallPhase.active)
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 10,
-            child: Center(
-              child: Consumer(
-                builder: (context, ref, _) {
-                  final cap = ref.watch(cameraFpsCapProvider);
-                  if (cap <= 0) return const SizedBox.shrink();
-                  return Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.55),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      'Камера: $cap fps',
-                      style: const TextStyle(
-                          fontSize: 11, color: Colors.white70),
-                    ),
-                  );
-                },
-              ),
-            ),
+        // Low-fps user banner (§switch-banner): shown once per call when
+        // the capture ceiling is low. NOT a snack/dialog: a quiet floating
+        // card over the media area with the settings shortcut and the
+        // close button.
+        Positioned(
+          left: 14,
+          right: 14,
+          top: 40,
+          child: Consumer(
+            builder: (context, ref, _) {
+              final banner = ref.watch(cameraCapBannerProvider);
+              if (banner == null) return const SizedBox.shrink();
+              return Center(
+                child: Container(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.72),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.2)),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        banner.withSettingsButton
+                            ? 'Камера отдаёт ${banner.capFps} fps (чаще всего '
+                                'из-за слабого света). Добавьте света или '
+                                'выберите другую камеру в настройках.'
+                            : 'Камера отдаёт ${banner.capFps} fps (чаще всего '
+                                'из-за слабого света). Попробуйте добавить '
+                                'света.',
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.white),
+                      ),
+                      const SizedBox(height: 4),
+                      Row(children: [
+                        if (banner.withSettingsButton)
+                          TextButton(
+                            style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              foregroundColor: Colors.cyanAccent,
+                            ),
+                            onPressed: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                    builder: (_) => const SettingsScreen())),
+                            child: const Text('Настройки',
+                                style: TextStyle(fontSize: 12)),
+                          ),
+                        const Spacer(),
+                        IconButton(
+                          tooltip: 'Закрыть',
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.close,
+                              size: 18, color: Colors.white70),
+                          onPressed: () => ref
+                              .read(cameraCapBannerProvider.notifier)
+                              .hide(),
+                        ),
+                      ]),
+                    ],
+                  ),
+                ),
+              );
+            },
           ),
+        ),
         // Floating self preview (§25–§40): clipped by the window's own
         // rounded rect; drag anywhere; snap to the nearest edge with
         // offset preserved (§35–§37); position lives ON THE HOST so
