@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' show MediaDeviceInfo;
@@ -6,6 +7,7 @@ import '../app/providers.dart';
 import '../app/theme.dart';
 import '../call/call_state.dart';
 import '../call/group_call.dart' show groupCallProvider;
+import '../call/reconnect_watch.dart';
 import '../desktop/autostart.dart';
 import '../desktop/desktop.dart';
 import '../desktop/desktop_log.dart';
@@ -74,6 +76,7 @@ class _MediaDevicesSectionState extends ConsumerState<_MediaDevicesSection> {
 
   Future<void> _refresh() async {
     if (_loading) return;
+    if (!mounted) return;
     setState(() => _loading = true);
     try {
       // Enumerating walks platform channels; errors (e.g. no plugin in
@@ -198,6 +201,57 @@ class _MediaDevicesSectionState extends ConsumerState<_MediaDevicesSection> {
           ),
         ),
       ),
+      // Debug-only link simulation (§reconnect): the grace period cannot be
+      // exercised by breaking the network on ONE machine (signaling rides
+      // loopback, media rides a host candidate that survives WiFi-off via the
+      // virtual adapter). These buttons feed the REAL machine, so the banner,
+      // the recovery and the 10 s expiry are verified deterministically.
+      if (kDebugMode) ...[
+        const Divider(height: 24),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            'Диагностика звонка (debug)',
+            style: TextStyle(
+              fontSize: 12,
+              color: GrchatColors.of(context).textMuted,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                icon: const Icon(Icons.wifi_off, size: 18),
+                label: const Text('Обрыв 2 с'),
+                onPressed: () => ref
+                    .read(callStateProvider.notifier)
+                    .debugSimulateLinkState(
+                      link: LinkState.disconnected,
+                      recoverAfter: const Duration(seconds: 2),
+                    ),
+              ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.timer_off, size: 18),
+                label: const Text('Обрыв >10 с'),
+                onPressed: () => ref
+                    .read(callStateProvider.notifier)
+                    .debugSimulateLinkState(link: LinkState.disconnected),
+              ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.link_off, size: 18),
+                label: const Text('Сброс сразу'),
+                onPressed: () => ref
+                    .read(callStateProvider.notifier)
+                    .debugSimulateLinkState(link: LinkState.failed),
+              ),
+            ],
+          ),
+        ),
+      ],
     ]);
   }
 

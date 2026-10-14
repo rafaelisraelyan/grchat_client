@@ -9,6 +9,7 @@ import '../auth/auth_repository.dart';
 import 'call_api.dart';
 import 'call_diagnostics.dart';
 import 'call_tones.dart';
+import 'reconnect_watch.dart';
 import 'sdp_tuning.dart';
 import 'group_call.dart' show groupCallProvider;
 import 'media_session.dart';
@@ -180,8 +181,58 @@ class CallState extends Notifier<ActiveCall?> {
   /// the callee staring at "Подключение видео…" forever.
   bool _remoteVideoArrived = false;
 
-  /// Inbound-counter watchdog for the remote camera (§remote-mute).
+  /// Stale-async guard for camera work (§epoch-guard). A capture, a
+  /// replaceTrack or a renegotiation can outlive the session it started in:
+  /// the call ended, or a new one began, while a 1.5–3 s probe was running.
+  /// Every async boundary checks this BEFORE touching live state, and the
+  /// acquired capture is released rather than attached to somebody else's
+  /// PeerConnection.
+  bool _cameraWorkIsStale(int epoch, String callId) {
+    final cur = state;
+    if (epoch != _epoch) return true;
+    if (cur == null || cur.callId != callId) return true;
+    return false;
+  }
+
+  /// Releases a capture that must never reach the wire.
+  Future<void> _discardStaleCapture(MediaStream? cam, String why) async {
+    if (cam == null) return;
+    dlog('stale camera capture released: $why');
+    await _releaseStream(cam, 'stale capture ($why)');
+  }
+
+/// Inbound-counter watchdog for the remote camera (§remote-mute).
   final _remoteVideoWatch = RemoteVideoWatch();
+
+  /// Why the last camera open failed, so every caller shows the SAME honest
+  /// wording (§camera-busy).
+  CameraBlock _cameraBlock = CameraBlock.none;
+
+  /// Session generation (§epoch-guard). Bumped for every NEW transport, so
+  /// any async camera work (a capture probe takes 1.5–3 s) that outlives its
+  /// call is dropped instead of attaching a stale track to the next call's
+  /// PeerConnection.
+  int _epoch = 0;
+
+  /// Monotonic per-transport generation. Public so tests and the reconnect
+  /// machine can reason about staleness.
+  int get callEpoch => _epoch;
+
+  /// Link-loss machine + its grace timer (§reconnect).
+  final _reconnect = ReconnectWatch();
+  Timer? _reconnectTimer;
+
+  /// Pending simulated recovery of [debugSimulateLinkState] (debug builds).
+  Timer? _debugLinkTimer;
+
+  /// The call is being torn down right now: transport events are ignored.
+  ///
+  /// `hangup()` is async (server round-trip first), so between the moment we
+  /// DECIDE to end and the moment the transport is actually closed a dying
+  /// PeerConnection still emits `iceConnection=disconnected`. Without this
+  /// flag that late event started a fresh grace period for a call that no
+  /// longer existed (2026-10-14 19:11:48).
+  bool _tearingDown = false;
 
   /// Sanitizes a capture-side fps reading before it may become a tier ceiling
   /// (§capture-fps). A black-hole virtual camera (AMD Privacy View, measured
@@ -257,6 +308,16 @@ class CallState extends Notifier<ActiveCall?> {
 
   Future<RTCPeerConnection> _newPc(String callId) async {
     final pc = await createPeerConnection(await _rtcConfig(), {});
+    // A new transport is a new session generation (§epoch-guard): everything
+    // async that belonged to the previous call becomes stale right here.
+    _epoch++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _debugLinkTimer?.cancel();
+    _debugLinkTimer = null;
+    _reconnect.reset();
+    _tearingDown = false;
+    dlog('session epoch -> $_epoch');
     _remoteDescSet = false;
     _remoteIce.clear();
     _remoteVideoArrived = false;
@@ -289,20 +350,43 @@ class CallState extends Notifier<ActiveCall?> {
     pc.onIceGatheringState = (s) => dlog('pc iceGathering=$s');
     pc.onConnectionState = (s) {
       dlog('pc connection=$s');
-      if (s == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-        state = state?.copyWith(linkDown: false);
-        _startQuality();
-        _logStatsSnapshot('connected');
-      } else if (s ==
-              RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
-          s == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
-        // Never auto-hangup on a wobble (§57): banner only.
-        if (state?.phase == CallPhase.active) {
-          state = state?.copyWith(linkDown: true);
-        }
+      _onLinkState(s, from: pc);
+    };
+    pc.onIceConnectionState = (s) {
+      dlog('pc iceConnection=$s');
+      // ICE state is the reliable transient signal; the peer-connection
+      // state alone missed the 2026-10-14 drop entirely (only iceConnection
+      // fired, and nothing reacted to it).
+      switch (s) {
+        case RTCIceConnectionState.RTCIceConnectionStateConnected:
+        case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+          _onLinkState(
+            RTCPeerConnectionState.RTCPeerConnectionStateConnected,
+            from: pc,
+          );
+        case RTCIceConnectionState.RTCIceConnectionStateChecking ||
+          RTCIceConnectionState.RTCIceConnectionStateNew:
+          // Startup phase: never a failure, never a grace period.
+          break;
+        case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
+          _onLinkState(
+            RTCPeerConnectionState.RTCPeerConnectionStateDisconnected,
+            from: pc,
+          );
+        case RTCIceConnectionState.RTCIceConnectionStateFailed:
+          _onLinkState(
+            RTCPeerConnectionState.RTCPeerConnectionStateFailed,
+            from: pc,
+          );
+        case RTCIceConnectionState.RTCIceConnectionStateClosed:
+          _onLinkState(
+            RTCPeerConnectionState.RTCPeerConnectionStateClosed,
+            from: pc,
+          );
+        default:
+          break;
       }
     };
-    pc.onIceConnectionState = (s) => dlog('pc iceConnection=$s');
     pc.onTrack = (ev) => _onTrack(ev);
     // Legacy fallback: Unified Plan delivers via onTrack; keep for old
     // endpoints, but never let it clobber the onTrack stream.
@@ -316,7 +400,171 @@ class CallState extends Notifier<ActiveCall?> {
     return pc;
   }
 
-  /// Remote track arrival (§17, §20, §21): never drop, never reuse the
+  /// The transport state → link verdict mapping (§reconnect). PURE and
+  /// static: this mapping is where the 2026-10-14 outage came from -
+  /// `Connecting` (the normal startup phase of every call, 14 ms before
+  /// Connected) was folded into "closed" and hung up healthy calls. Every
+  /// state must be classified explicitly, never by the leftover default.
+  static LinkState linkStateFor(RTCPeerConnectionState s) {
+    switch (s) {
+      case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
+        return LinkState.connected;
+      case RTCPeerConnectionState.RTCPeerConnectionStateConnecting:
+      case RTCPeerConnectionState.RTCPeerConnectionStateNew:
+        // Startup / ICE checking: NOT a failure, NOT a grace period.
+        return LinkState.connecting;
+      case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
+        return LinkState.disconnected;
+      case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
+        return LinkState.failed;
+      default:
+        // Anything else (closed and future states) is treated as closed on
+        // purpose: unknown must not keep a call alive forever.
+        return LinkState.closed;
+    }
+  }
+
+/// The link-loss state machine (§reconnect): one transport state event in,
+  /// one verdict out. A transient loss NEVER ends the call by itself - the
+  /// grace period does, and only for the call that lost the link (the timer
+  /// is scoped to [epoch] + callId, so a callback from a finished call can
+  /// never finish a different one).
+  void _onLinkState(RTCPeerConnectionState s, {RTCPeerConnection? from}) {
+    final cur = state;
+    if (cur == null || cur.phase != CallPhase.active) return;
+    if (_tearingDown) {
+      dlog('link event ignored: the call is being torn down');
+      return;
+    }
+    // Only the LIVE transport may steer the machine: an event from a replaced
+    // PeerConnection belongs to a session that is already gone.
+    if (from != null && !identical(from, _pc)) {
+      dlog('link event ignored: it came from a replaced transport');
+      return;
+    }
+    final verdict = _reconnect.onState(
+      state: linkStateFor(s),
+      epoch: _epoch,
+      callId: cur.callId,
+      now: DateTime.now(),
+    );
+    switch (verdict) {
+      case LinkVerdict.stale:
+        dlog('link event ignored: belongs to another call/epoch');
+      case LinkVerdict.none:
+        break;
+      case LinkVerdict.enterReconnecting:
+        dlog(
+          'link lost: reconnecting for up to '
+          '${_reconnect.grace.inSeconds}s (call=${cur.callId})',
+        );
+        state = cur.copyWith(linkDown: true);
+        _reconnectTimer?.cancel();
+        final epoch = _epoch;
+        final callId = cur.callId;
+        _reconnectTimer = Timer(_reconnect.grace, () {
+          final tick = _reconnect.onTick(
+            epoch: epoch,
+            callId: callId,
+            now: DateTime.now(),
+          );
+          if (tick != LinkVerdict.endNow) {
+            dlog('reconnect grace tick: $tick (nothing to end)');
+            return;
+          }
+          dlog('reconnect grace expired: ending the call with a reason');
+          unawaited(_endForLinkLoss());
+        });
+      case LinkVerdict.recovered:
+        dlog('link recovered: same session continues');
+        _reconnectTimer?.cancel();
+        _reconnectTimer = null;
+        state = cur.copyWith(linkDown: false);
+        _startQuality();
+      case LinkVerdict.endNow:
+        dlog('link definitive failure ($s): ending the call');
+        unawaited(_endForLinkLoss());
+    }
+  }
+
+  /// DEBUG-ONLY (§reconnect): feed a synthetic transport state into the REAL
+  /// link-loss machine.
+  ///
+  /// Why this exists: verifying the grace period by "turning the WiFi off"
+  /// proves nothing on a single machine - signaling rides loopback
+  /// (127.0.0.1:8443) and media rides a HOST candidate, which survives via
+  /// the virtual adapter (172.19.0.1 / happ-xray), so the call never drops.
+  /// This hook makes the scenario deterministic and repeatable.
+  ///
+  /// Scoped exactly like the real timer: epoch + callId are captured and
+  /// re-checked, so a pending simulation can never finish a DIFFERENT call.
+  void debugSimulateLinkState({required LinkState link, Duration? recoverAfter}) {
+    final cur = state;
+    if (cur == null || cur.phase != CallPhase.active) {
+      _notice('Симуляция обрыва — только в активном звонке');
+      dlog('DEBUG link simulation ignored: no active call');
+      return;
+    }
+    final epoch = _epoch;
+    final callId = cur.callId;
+    _debugLinkTimer?.cancel();
+    dlog(
+      'DEBUG link simulation: $link '
+      '(recoverAfter=${recoverAfter?.inSeconds ?? '-'}s)',
+    );
+    // Say what the user is about to see: the buttons deliberately break the
+    // call, and an unexplained hangup reads as a bug.
+    if (recoverAfter != null) {
+      _notice('Симуляция: обрыв ${recoverAfter.inSeconds} с — связь вернётся');
+    } else if (link == LinkState.failed || link == LinkState.closed) {
+      _notice('Симуляция: сброс связи — звонок завершится сразу');
+    } else {
+      _notice(
+        'Симуляция: обрыв без восстановления — звонок завершится через '
+        '${_reconnect.grace.inSeconds} с',
+      );
+    }
+    _onLinkState(
+      switch (link) {
+        LinkState.connected =>
+          RTCPeerConnectionState.RTCPeerConnectionStateConnected,
+        LinkState.connecting =>
+          RTCPeerConnectionState.RTCPeerConnectionStateConnecting,
+        LinkState.disconnected =>
+          RTCPeerConnectionState.RTCPeerConnectionStateDisconnected,
+        LinkState.failed =>
+          RTCPeerConnectionState.RTCPeerConnectionStateFailed,
+        LinkState.closed =>
+          RTCPeerConnectionState.RTCPeerConnectionStateClosed,
+      },
+    );
+    if (recoverAfter == null) return;
+    _debugLinkTimer = Timer(recoverAfter, () {
+      if (epoch != _epoch || state?.callId != callId) {
+        dlog('DEBUG simulated recovery ignored: another call is live');
+        return;
+      }
+      dlog('DEBUG simulated recovery');
+      _onLinkState(RTCPeerConnectionState.RTCPeerConnectionStateConnected);
+    });
+  }
+
+  /// Ends the live call because the transport is gone: the user is told WHY
+  /// and the reason is logged (every teardown is attributable from now on).
+  Future<void> _endForLinkLoss() async {
+    final cur = state;
+    if (cur == null || cur.phase != CallPhase.active) return;
+    _tearingDown = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _debugLinkTimer?.cancel();
+    _debugLinkTimer = null;
+    dlog('call ended: reason=link-loss');
+    _notice('Соединение потеряно');
+    await hangup();
+  }
+
+/// Remote track arrival (§17, §20, §21): never drop, never reuse the
   /// local renderer, never recreate renderers per event.
   Future<void> _onTrack(RTCTrackEvent ev) async {
     final track = ev.track;
@@ -837,28 +1085,35 @@ class CallState extends Notifier<ActiveCall?> {
     final explicitTarget =
         deviceId != null && deviceId.isNotEmpty && !allowOtherDevices;
 
-    // Cross-process arbitration: another grchat instance may already own
-    // the camera. Rather than both sides "opening" the SAME device and
-    // getting zero frames, we skip the resolved camera (the one that
-    // instance almost certainly holds) and let the walk below try the
-    // others - two windows can hold two different cameras. A NAMED device
-    // keeps its no-substitution contract: the caller decides the fallback.
-    final lockFree = CameraLock.acquire();
-    if (!lockFree) {
-      dlog('camera busy (another grchat instance owns it) - trying other devices');
+    // Cross-process arbitration (§camera-busy): the CameraLock means ANOTHER
+    // grchat window is already streaming from a camera. Touching ANY device
+    // here is what kills calls: on 2026-10-14 the second window's walk opened
+    // `Camera (NVIDIA Broadcast)` - the very device the first window was
+    // streaming - and 56 ms later the peer's ICE dropped and its call ended.
+    // The lock has no per-device granularity, so "try another camera" here is
+    // a guess that usually picks the busy one. Therefore: nothing is opened,
+    // the caller keeps the video call and tells the user why (§call-type).
+    // The walk below is for FOREIGN holders (NVIDIA Broadcast holding the
+    // physical camera) - those only bite when we own the lock.
+    if (!CameraLock.acquire()) {
+      dlog('camera busy (another grchat instance owns it) - no device is touched');
+      _cameraBlock = CameraBlock.anotherInstance;
+      return null;
     }
+    _cameraBlock = CameraBlock.none;
 
-    if (lockFree || allowOtherDevices) {
-      final first = await _tryCameraDevice(
-        camId,
-        audio,
-        expect: explicitTarget ? deviceId : null,
-      );
-      if (first.stream != null) {
-        _applyCaptureHeight(first.height);
-        return first.stream;
-      }
+    final first = await _tryCameraDevice(
+      camId,
+      audio,
+      expect: explicitTarget ? deviceId : null,
+    );
+    if (first.stream != null) {
+      _applyCaptureHeight(first.height);
+      return first.stream;
     }
+    // Nothing delivered and no other window is involved: a foreign holder
+    // (or a wedged driver) is the honest explanation for the failure.
+    _cameraBlock = CameraBlock.deviceDead;
 
     // A device switch MUST NOT land on another camera or on the blind
     // fallback: its job is a VERIFIED capture of the named device - all
@@ -867,12 +1122,7 @@ class CallState extends Notifier<ActiveCall?> {
     // camera), and the old capture stays live (§switch-camera failure
     // contract).
     if (explicitTarget) {
-      if (!lockFree) {
-        dlog(
-          'camera switch: $deviceId not tried - another grchat instance '
-          'owns the camera right now',
-        );
-      } else if (keepLockOnFail) {
+      if (keepLockOnFail) {
         dlog(
           'camera switch: no verified profile for $deviceId - switch '
           'aborted, the lock stays with this instance',
@@ -940,6 +1190,8 @@ class CallState extends Notifier<ActiveCall?> {
       _applyCaptureHeight(probe.height);
       return stream;
     } catch (e) {
+      final block = classifyCaptureError(e.toString());
+      if (block == CameraBlock.permissions) _cameraBlock = block;
       if (!keepLockOnFail) {
         CameraLock.release();
       }
@@ -1069,7 +1321,11 @@ class CallState extends Notifier<ActiveCall?> {
         if (audio != null) constraints['audio'] = audio;
         s = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (e) {
-        // The ask was refused outright: the mode does not exist at all.
+        // The ask was refused outright: the mode does not exist at all, or
+        // the OS denied access. Only an explicit denial is remembered, so the
+        // notice can name a proven reason (§camera-busy).
+        final block = classifyCaptureError(e.toString());
+        if (block == CameraBlock.permissions) _cameraBlock = block;
         dlog('camera probe [$dev] ${c.$1}x${c.$2}@${c.$3} refused ($e)');
         continue;
       }
@@ -1441,6 +1697,9 @@ class CallState extends Notifier<ActiveCall?> {
   /// The accepted pending ([exceptPendingId]) keeps its dry offer while a
   /// displaced transport underneath is dropped. Idempotent (§38).
   Future<void> endAll({String? exceptPendingId}) async {
+    // From here on this call is finished, whatever the server round-trip
+    // takes: transport events must stop steering it (§reconnect).
+    _tearingDown = true;
     final cur = state;
     if (cur != null &&
         !cur.outgoing &&
@@ -1536,11 +1795,19 @@ class CallState extends Notifier<ActiveCall?> {
       return;
     }
     _renegoLock = true;
+    // §epoch-guard (see [_enableAfterRelease]): nothing captured here may
+    // reach a session that has already been replaced.
+    final epoch = _epoch;
+    final callId = cur.callId;
     try {
       final cam = await _captureCamera(null);
       if (cam == null) {
         dlog('enable camera: device unavailable');
-        _notice('Камера недоступна или занята другим приложением');
+        _notice(cameraBlockNotice(_cameraBlock));
+        return;
+      }
+      if (_cameraWorkIsStale(epoch, callId)) {
+        await _discardStaleCapture(cam, 'late enable');
         return;
       }
       _localVideo = cam;
@@ -1734,15 +2001,30 @@ class CallState extends Notifier<ActiveCall?> {
     }
     if (_switchBusy) return;
     _switchBusy = true;
+    // §epoch-guard: the capture below takes seconds; the session may end or
+    // change under us, and a stale track must never touch this sender.
+    final epoch = _epoch;
+    final callId = cur.callId;
     try {
       final cam = await _captureCamera(null);
       if (cam == null) {
         dlog('camera re-enable: device unavailable');
-        _notice('Камера недоступна или занята другим приложением');
+        _notice(cameraBlockNotice(_cameraBlock));
+        return;
+      }
+      if (_cameraWorkIsStale(epoch, callId)) {
+        await _discardStaleCapture(cam, 're-enable');
         return;
       }
       final track = cam.getVideoTracks().first;
       await _videoSender!.replaceTrack(track);
+      if (_cameraWorkIsStale(epoch, callId)) {
+        await _discardStaleCapture(cam, 're-enable after replaceTrack');
+        try {
+          await _videoSender!.replaceTrack(null);
+        } catch (_) {}
+        return;
+      }
       try {
         await _local?.addTrack(track);
       } catch (_) {}
@@ -1801,6 +2083,11 @@ class CallState extends Notifier<ActiveCall?> {
     final stored = await MediaPrefs.cameraDeviceId();
     final previousDevice = _openedCameraId;
     final wasOff = cur.cameraOff;
+    // §epoch-guard: a device switch is the longest camera operation (open +
+    // probes + restore). It must never publish into a session that ended
+    // while it was running.
+    final epoch = _epoch;
+    final callId = cur.callId;
     try {
       // 1) END the current capture (the OFF half of the cycle, §switch-camera):
       // the old DirectShow pin must be fully closed before the target
@@ -1837,11 +2124,19 @@ class CallState extends Notifier<ActiveCall?> {
       if (cam == null) {
         throw StateError('device unavailable');
       }
+      if (_cameraWorkIsStale(epoch, callId)) {
+        await _discardStaleCapture(cam, 'switch');
+        return false;
+      }
       final newTrack = cam.getVideoTracks().first;
       if (wasOff) newTrack.enabled = false;
 
       // 3) BIND the fresh track (the ON half of the cycle).
       await _videoSender!.replaceTrack(newTrack);
+      if (_cameraWorkIsStale(epoch, callId)) {
+        await _discardStaleCapture(cam, 'switch after replaceTrack');
+        return false;
+      }
       try {
         await _local?.addTrack(newTrack);
       } catch (_) {}
@@ -1871,22 +2166,27 @@ class CallState extends Notifier<ActiveCall?> {
         } catch (_) {}
       }
       if (restored != null) {
-        final t = restored.getVideoTracks().first;
-        if (wasOff) t.enabled = false;
-        try {
-          await _videoSender!.replaceTrack(t);
-        } catch (_) {}
-        try {
-          await _local?.addTrack(t);
-        } catch (_) {}
-        _localVideo = restored;
-        if (_localR != null) _localR!.srcObject = restored;
-        state = state?.copyWith(video: true, cameraOff: wasOff);
-        dlog('camera switch failed, previous device restored');
-        await _ensureVideoSends();
+        if (_cameraWorkIsStale(epoch, callId)) {
+          // The call is gone: the restore must not resurrect it anywhere.
+          await _discardStaleCapture(restored, 'switch restore');
+        } else {
+          final t = restored.getVideoTracks().first;
+          if (wasOff) t.enabled = false;
+          try {
+            await _videoSender!.replaceTrack(t);
+          } catch (_) {}
+          try {
+            await _local?.addTrack(t);
+          } catch (_) {}
+          _localVideo = restored;
+          if (_localR != null) _localR!.srcObject = restored;
+          state = state?.copyWith(video: true, cameraOff: wasOff);
+          dlog('camera switch failed, previous device restored');
+          await _ensureVideoSends();
+        }
       }
       await MediaPrefs.setCameraDeviceId(stored);
-      _notice('Камера недоступна или занята другим приложением');
+      _notice(cameraBlockNotice(_cameraBlock));
       return false;
     } finally {
       _switchBusy = false;
@@ -2412,6 +2712,18 @@ class CallState extends Notifier<ActiveCall?> {
     _remoteDescSet = false;
     _remoteVideoArrived = false;
     _stopQuality();
+    // §reconnect: the transport is gone. The epoch moves so any event from the
+    // dying PeerConnection (its ICE state fires once more ~60 ms later, 2026-10-14
+    // 19:04:32) is classified as [LinkVerdict.stale] instead of starting a
+    // second grace period for a call that no longer exists. The watch KEEPS
+    // its (epoch, callId) identity on purpose - resetting it here would
+    // erase exactly the evidence that makes a late event stale; the identity
+    // is replaced in [_newPc].
+    _epoch++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _debugLinkTimer?.cancel();
+    _debugLinkTimer = null;
     _videoSender = null;
     _videoTransceiver = null;
     _captureMissingAtStart = false;

@@ -1376,7 +1376,7 @@ class CallWindow extends StatelessWidget {
             if (call.linkDown && call.phase == CallPhase.active) ...[
               const SizedBox(height: 8),
               const Text(
-                'Восстанавливаем соединение…',
+                'Переподключение…',
                 style: TextStyle(fontSize: 12, color: Colors.orange),
               ),
             ],
