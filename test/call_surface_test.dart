@@ -152,7 +152,7 @@ void main() {
               phase: CallPhase.active,
               linkDown: true));
       expect(
-          find.text('Восстанавливаем соединение…'), findsOneWidget);
+          find.text('Переподключение…'), findsOneWidget);
     });
 
     testWidgets('minimize keeps the call, restore brings it back',
