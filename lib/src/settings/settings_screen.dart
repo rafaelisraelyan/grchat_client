@@ -100,9 +100,14 @@ class _MediaDevicesSectionState extends ConsumerState<_MediaDevicesSection> {
   /// capture NOW (P2P via replaceTrack, LiveKit rooms via
   /// setVideoInputDevice). Empty id = Сбросить выбор → the default rule
   /// (first physical camera). Returns true when a live session applied it.
-  Future<bool> _applyCameraLive(String id) async {
+  /// [auto] = the «Автоматически» branch: no device was named, so the P2P
+  /// path may land on another WORKING camera instead of failing when the
+  /// default is held by another program (§dial-camera-walk).
+  Future<bool> _applyCameraLive(String id, {bool auto = false}) async {
     try {
-      if (await ref.read(callStateProvider.notifier).switchCamera(id)) {
+      if (await ref
+          .read(callStateProvider.notifier)
+          .switchCamera(id, auto: auto)) {
         return true;
       }
       if (await ref.read(groupCallProvider.notifier).switchVideoDevice(id)) {
@@ -146,7 +151,7 @@ class _MediaDevicesSectionState extends ConsumerState<_MediaDevicesSection> {
           // чески» resolves the default rule (first physical camera).
           if (id == null || id.isEmpty) {
             final def = await MediaPrefs.defaultCameraId();
-            if (def != null) await _applyCameraLive(def);
+            if (def != null) await _applyCameraLive(def, auto: true);
           } else {
             await _applyCameraLive(id);
           }

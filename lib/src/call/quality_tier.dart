@@ -35,6 +35,16 @@ const videoTiers = <VideoTier>[
 
 const videoStartTier = 1;
 
+/// HARD ceiling for the camera's frame rate, decided by the owner (2026-10-14):
+/// 60 fps is the maximum for both what we ASK the capture for and what the
+/// sender is allowed to be told. Nothing above it is real on this machine —
+/// the highest tier is 1080p60 — while a reading above it is a sign of a
+/// synthetic source (a privacy / black-hole virtual camera measured ~465 fps
+/// of black on 2026-10-14). Higher numbers would only burn bandwidth on a
+/// light that is off. Single source of truth: the ladder, the tier params,
+/// the fps learner and the tick sanitizer all clamp here.
+const int kMaxCameraFps = 60;
+
 /// What to hand to RTCRtpEncoding for [t] given the real capture size.
 class TierParams {
   const TierParams(
@@ -51,12 +61,14 @@ class TierParams {
 }
 
 /// [captureHeight]/[captureFps] come from the track settings; 0 = unknown.
-/// A tier never upscales and never asks for more fps than the camera gives.
+/// A tier never upscales, never asks for more fps than the camera gives, and
+/// never exceeds [kMaxCameraFps] — the owner's hard ceiling.
 TierParams tierParams(VideoTier t,
     {required int captureHeight, required double captureFps}) {
   final scale = captureHeight > t.height ? captureHeight / t.height : 1.0;
   final cam = captureFps.floor();
-  final fps = captureFps > 0 && cam < t.fps ? (cam < 1 ? 1 : cam) : t.fps;
+  var fps = captureFps > 0 && cam < t.fps ? (cam < 1 ? 1 : cam) : t.fps;
+  if (fps > kMaxCameraFps) fps = kMaxCameraFps;
   return TierParams(
       scaleDownBy: scale, maxFramerate: fps, maxBitrate: t.kbps * 1000);
 }
@@ -76,7 +88,14 @@ class FpsCapLearn {
   int _ticks = 0;
 
   void update(double inputFps, {required int tierFps}) {
+    // A reading above the hard ceiling is not a camera characteristic but a
+    // synthetic source (black-hole virtual camera, §kMaxCameraFps): it must
+    // never become a committed floor.
     final observed = inputFps.floor();
+    if (observed > kMaxCameraFps) {
+      reset();
+      return;
+    }
     // A capture at tierFps-1 (29/30) is the tier rate within measurement
     // noise: flooring there would buy nothing and could flap.
     final candidate =
@@ -116,7 +135,9 @@ class LinkMetrics {
       this.videoBytesSent,
       this.framesPerSecond,
       this.inputFps = 0,
-      this.videoOut = false});
+      this.videoOut = false,
+      this.inboundVideoBytes,
+      this.inboundVideoPackets});
 
   /// Height of the video frames actually being SENT right now (outbound-rtp
   /// frameHeight). With no downscale applied this is the real capture
@@ -136,6 +157,13 @@ class LinkMetrics {
   /// Splits "video exists but produced nothing" (bytesSent absent/zero) from
   /// "no outbound video stats whatsoever" — the two need different handling.
   final bool videoOut;
+
+  /// Cumulative bytes/packets of the INCOMING video stream (inbound-rtp
+  /// bytesReceived/packetsReceived). The peer turning their camera off stops
+  /// these counters while our renderer keeps the LAST frame — a frozen tile
+  /// that looks like a live black screen (§remote-mute).
+  final double? inboundVideoBytes;
+  final double? inboundVideoPackets;
 
   /// Frames per second actually sent (outbound-rtp framesPerSecond).
   final double? framesPerSecond;
@@ -178,6 +206,8 @@ class LinkMetrics {
     double? frameWidth;
     double? videoBytesSent;
     double? framesPerSecond;
+    double? inBytes;
+    double? inPackets;
     double captureFps = 0;
     var videoOut = false;
 
@@ -224,6 +254,12 @@ class LinkMetrics {
         if (b != null && b > 0) videoBytesSent = b;
         final f = _d(r.values['framesPerSecond']);
         if (f != null && f > 0) framesPerSecond = f;
+      } else if (r.type == 'inbound-rtp' && kind == 'video') {
+        // The peer's stream: frozen counters = their camera is off (§remote-mute).
+        final b = _d(r.values['bytesReceived']);
+        if (b != null && b > 0) inBytes = b;
+        final p = _d(r.values['packetsReceived']);
+        if (p != null && p > 0) inPackets = p;
       } else if (r.values['InputFramesPerSecond'] != null) {
         // Send source stats: capture-side fps BEFORE the encoder adapts.
         final f = _d(r.values['InputFramesPerSecond']);
@@ -240,7 +276,77 @@ class LinkMetrics {
         videoBytesSent: videoBytesSent,
         framesPerSecond: framesPerSecond,
         inputFps: captureFps,
-        videoOut: videoOut);
+        videoOut: videoOut,
+        inboundVideoBytes: inBytes,
+        inboundVideoPackets: inPackets);
+  }
+}
+
+/// Decides whether the REMOTE video is still live, from the inbound counters
+/// only (§remote-mute).
+///
+/// Why: when the peer turns their camera off, the receiver keeps rendering the
+/// last decoded frame forever — a frozen (usually black) tile with nothing
+/// saying the camera went off. This plugin's desktop build fires no mute
+/// event, so the only honest signal is "not a single new inbound video byte
+/// for N ticks". A dead link looks the same, and the fallback picture (the
+/// avatar) is right for both.
+///
+/// Deliberately conservative: one missing sample proves nothing, the first
+/// sample only primes the baseline, and the verdict needs [staleTicks]
+/// consecutive frozen ticks before it flips.
+class RemoteVideoWatch {
+  RemoteVideoWatch({this.staleTicks = 2});
+
+  /// Ticks without a single new inbound video byte before the remote counts
+  /// as gone. The stats tick is 3 s, so two ticks ≈ 6 s of black frozen
+  /// frame before the UI falls back - long enough that a hiccup is invisible.
+  final int staleTicks;
+
+  int _bytes = -1;
+  int _stale = 0;
+  bool _gone = false;
+
+  /// True while the remote video counts as NOT live.
+  bool get gone => _gone;
+
+  /// Feed one tick. Returns true when the verdict CHANGED (the caller then
+  /// flips `remoteVideo` and logs), false when nothing moved — including
+  /// every sample that carries no inbound counter at all.
+  bool update({required double? inboundBytes, required bool expectVideo}) {
+    if (!expectVideo) {
+      // No remote video in this call: nothing to watch, start clean so a
+      // later enable is judged from a fresh baseline.
+      _bytes = -1;
+      _stale = 0;
+      if (_gone) {
+        _gone = false;
+        return true;
+      }
+      return false;
+    }
+    if (inboundBytes == null) return false; // no report, no verdict
+    final b = inboundBytes.round();
+    if (_bytes < 0) {
+      _bytes = b;
+      _stale = 0;
+      return false;
+    }
+    if (b != _bytes) {
+      _bytes = b;
+      _stale = 0;
+      if (_gone) {
+        _gone = false;
+        return true;
+      }
+      return false;
+    }
+    _stale++;
+    if (!_gone && _stale >= staleTicks) {
+      _gone = true;
+      return true;
+    }
+    return false;
   }
 }
 

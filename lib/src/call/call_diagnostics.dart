@@ -7,18 +7,28 @@ import '../desktop/desktop_log.dart';
 
 /// Structured WebRTC diagnostics (§8–§9, §25–§27).
 ///
-/// Debug builds only: [dlog] is a no-op in release. Mirrors to the desktop
-/// log file so release testers can attach it. Never logs TURN
-/// credentials — only candidate types and byte counters.
+/// Debug builds only: [dlog] prints nothing to the console in release.
+/// Mirrors to the desktop log file so release testers can attach it. Never
+/// logs TURN credentials — only candidate types and byte counters.
+///
+/// Every line carries the writing process id: BOTH windows of a two-window
+/// test write the SAME desktop log, and without the tag the camera events of
+/// two peers interleave into a story that cannot be attributed (2026-10-14:
+/// a 4-click camera toggle was reconstructed by hand from track ids).
 void dlog(String line) {
+  final tag = '[webrtc ${_pidTag()}] $line';
   if (kDebugMode) {
     // ignore: avoid_print
-    print('[webrtc] $line');
+    print(tag);
   }
   try {
-    DesktopLog.write('[webrtc] $line');
+    DesktopLog.write(tag);
   } catch (_) {}
 }
+
+/// `pid-1234`, resolved once per process.
+String _pidTag() => _pid ??= 'pid-${pid.toString()}';
+String? _pid;
 
 String platformTag() {
   if (Platform.isWindows) return 'Windows';

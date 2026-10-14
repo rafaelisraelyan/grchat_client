@@ -37,6 +37,26 @@ abstract final class MediaPrefs {
     'privacy view',
   ];
 
+  /// Virtual cameras that are a BLACK HOLE by design (privacy/shadow
+  /// devices): while their host app shows nothing they deliver a synthetic
+  /// black stream — measured 2026-10-14 as 1280x720 at ~465 fps, burning
+  /// ~620 kbit/s so the peer sees a black screen that looks like a UI bug.
+  /// They stay selectable by hand, but the dial-time walk must try every
+  /// REAL camera before one of these (§dial-camera-walk).
+  static const blackHoleMarkers = <String>[
+    'privacy view',
+    'dazzle',
+  ];
+
+  /// True when the label matches [blackHoleMarkers] (case-insensitive).
+  static bool looksBlackHole(String label) {
+    final low = label.toLowerCase();
+    for (final m in blackHoleMarkers) {
+      if (low.contains(m)) return true;
+    }
+    return false;
+  }
+
   /// True when the label matches [virtualMarkers] (case-insensitive).
   static bool looksVirtual(String label) {
     final low = label.toLowerCase();
@@ -157,5 +177,30 @@ abstract final class MediaPrefs {
     return defaultDeviceIdFrom(
       devices.map((d) => (id: d.deviceId, label: d.label)).toList(),
     );
+  }
+
+  /// The rescue order for a camera that delivered nothing at call start
+  /// (§dial-camera-walk): every OTHER camera, ordered by how likely it is to
+  /// be usable — physical first (the default rule), then ordinary virtual
+  /// cameras (OBS / Broadcast outputs deliver real frames), and privacy /
+  /// black-hole devices LAST: they hand out synthetic black video, so a call
+  /// that "rescued" itself onto one looks broken (2026-10-14). Capped at
+  /// [limit]: the walk rescues a dead default, it must not spend the dial
+  /// time on a shelf of dead devices. Pure so the rule is testable without
+  /// platform channels.
+  static List<({String id, String label})> walkOrderFrom(
+    List<({String id, String label})> devices,
+    String? used, {
+    int limit = 3,
+  }) {
+    final rest = devices.where((d) => d.id != used).toList()
+      ..sort((a, b) => _walkRank(a.label).compareTo(_walkRank(b.label)));
+    return rest.take(limit).toList();
+  }
+
+  /// 0 = real camera, 1 = virtual camera, 2 = privacy / black-hole device.
+  static int _walkRank(String label) {
+    if (looksBlackHole(label)) return 2;
+    return looksVirtual(label) ? 1 : 0;
   }
 }
