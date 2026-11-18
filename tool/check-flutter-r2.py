@@ -12,6 +12,7 @@ args = parser.parse_args()
 tests = {}
 suites = {}
 outcomes = []
+errors = {}
 recovery = []
 done = []
 for line in args.events.read_text(encoding="utf-8-sig").splitlines():
@@ -30,6 +31,8 @@ for line in args.events.read_text(encoding="utf-8-sig").splitlines():
         outcomes.append(event)
     elif kind == "print" and event.get("message", "").startswith("Stage 2B recovery call="):
         recovery.append(event["message"])
+    elif kind == "error":
+        errors[event.get("testID")] = event.get("error", "")
     elif kind == "done":
         done.append(event.get("success") is True)
 
@@ -50,7 +53,11 @@ for event in outcomes:
         passed += 1
     else:
         failed += 1
-        failed_tests.append({"suite": suite, "test": name})
+        detail = {"suite": suite, "test": name}
+        if suite == "update_windows_transaction_test.dart":
+            # This fixture only uses a disposable dummy executable and paths.
+            detail["error"] = errors.get(event["testID"], "")[:1000]
+        failed_tests.append(detail)
 
 report = dict(passed=passed, failed=failed, failed_tests=failed_tests, skipped=skipped, recovery=recovery)
 args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

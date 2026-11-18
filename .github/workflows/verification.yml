@@ -39,6 +39,7 @@ jobs:
           }
       - run: dart analyze lib test integration_test
       - name: Run and verify all unit and widget tests
+        id: flutter_tests
         shell: pwsh
         run: |
           New-Item -ItemType Directory evidence -Force | Out-Null
@@ -47,6 +48,7 @@ jobs:
           python tool/check-flutter-r2.py evidence/flutter-events.jsonl evidence/flutter-summary.json
           if ($testExit -ne 0 -or $LASTEXITCODE -ne 0) { throw 'Flutter test gate failed' }
       - name: Build Windows debug and verify the bundle
+        if: ${{ !cancelled() && (steps.flutter_tests.outcome == 'success' || steps.flutter_tests.outcome == 'failure') }}
         shell: pwsh
         run: |
           flutter build windows --debug --no-pub *> evidence/windows-build.log
