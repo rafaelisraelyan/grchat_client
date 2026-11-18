@@ -13,6 +13,18 @@ void main() {
     final env = Platform.environment;
     final mode = env['GRCHAT_R2_ICE_MODE'] ?? 'direct';
     expect(['direct', 'stun', 'turn-udp', 'turn-tcp'], contains(mode));
+    final host = env['GRCHAT_R2_ICE_HOST'] ?? '127.0.0.1';
+    final address = InternetAddress.tryParse(host);
+    expect(address?.type, InternetAddressType.IPv4);
+    final octets = address!.rawAddress;
+    expect(
+      octets[0] == 127 ||
+          octets[0] == 10 ||
+          (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) ||
+          (octets[0] == 192 && octets[1] == 168),
+      isTrue,
+      reason: 'use a disposable locally routed IPv4 fixture',
+    );
     final port = int.tryParse(env['GRCHAT_R2_TURN_PORT'] ?? '3478');
     expect(port, inInclusiveRange(1, 65535));
     final relay = mode.startsWith('turn-');
@@ -29,10 +41,10 @@ void main() {
     final config = <String, dynamic>{
       'iceTransportPolicy': relay ? 'relay' : 'all',
       'iceServers': [
-        if (mode == 'stun') {'urls': 'stun:127.0.0.1:$port'},
+        if (mode == 'stun') {'urls': 'stun:$host:$port'},
         if (relay)
           {
-            'urls': 'turn:127.0.0.1:$port?transport=${mode.substring(5)}',
+            'urls': 'turn:$host:$port?transport=${mode.substring(5)}',
             'username': user,
             'credential': password,
           },
@@ -82,8 +94,8 @@ void main() {
         'remote': remote,
         'setup_to_rtp_ms': setupMs,
         'sample_ms': sampleTime.elapsedMilliseconds,
-        'audio_packets': after.audio - before.audio,
-        'video_packets': after.video - before.video,
+        'audio_bytes': after.audio - before.audio,
+        'video_bytes': after.video - before.video,
         'rtt_seconds': route.values['currentRoundTripTime'],
         'inbound': [
           for (final stat in inbound) {'kind': stat.values['kind'], 'bytes_received': statValue(stat, 'bytesReceived'), 'packets_lost': statValue(stat, 'packetsLost'), 'jitter_seconds': statValue(stat, 'jitter')},
