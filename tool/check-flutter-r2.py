@@ -35,6 +35,7 @@ for line in args.events.read_text(encoding="utf-8-sig").splitlines():
 
 passed = 0
 failed = 0
+failed_tests = []
 skipped = []
 allowed_skips = []
 for event in outcomes:
@@ -49,8 +50,9 @@ for event in outcomes:
         passed += 1
     else:
         failed += 1
+        failed_tests.append({"suite": suite, "test": name})
 
-report = dict(passed=passed, failed=failed, skipped=skipped, recovery=recovery)
+report = dict(passed=passed, failed=failed, failed_tests=failed_tests, skipped=skipped, recovery=recovery)
 args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(report))
 if done != [True] or failed:
