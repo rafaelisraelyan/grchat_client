@@ -6,10 +6,14 @@ import 'package:riverpod/riverpod.dart';
 
 import '../app/providers.dart';
 import '../auth/auth_repository.dart';
+import '../transport/grchat_connection.dart';
 import 'call_api.dart';
 import 'call_diagnostics.dart';
 import 'call_tones.dart';
+import 'p2p_media_recovery.dart';
+import 'perfect_negotiation.dart';
 import 'reconnect_watch.dart';
+import 'signal_recovery.dart';
 import 'sdp_tuning.dart';
 import 'group_call.dart' show groupCallProvider;
 import 'media_session.dart';
@@ -123,6 +127,83 @@ ActiveCall incomingRingingCall({
   phase: CallPhase.ringing,
 );
 
+/// TEST-ONLY (§2C.4a): decides whether the compile-time relay flag may take
+/// effect.
+///
+/// Kept as a PURE function on purpose: the four combinations (flag on/off ×
+/// debug/release) must be assertable in a unit test, because the dangerous
+/// case is "flag leaked into a release build" and that cannot be observed by
+/// reading the call site alone.
+///
+/// Returns the ICE transport policy to force, or null for the normal policy.
+@visibleForTesting
+String? testRelayPolicyOverride({required bool flag, required bool debug}) {
+  if (!flag) return null;
+  if (!debug) return null;
+  return 'relay';
+}
+
+/// §2C.4l: may a diagnostic snapshot run right now?
+///
+/// A snapshot taken after teardown starts (or with no transport) reads a
+/// native PeerConnection that is already closed and produces noise like
+/// `getSignalingState() peerConnection is null`. That is expected, not a fault.
+bool diagnosticsAllowed({
+  required bool hasTransport,
+  required bool tearingDown,
+}) => hasTransport && !tearingDown;
+
+/// §2C.4l: one structured line per call termination.
+///
+/// Kept pure so the formatting and the unknown-initiator rule are testable
+/// without a live CallState. Never guesses: a missing initiator stays
+/// `unknown` rather than being derived from the last ICE event.
+String terminationLine({
+  required String? callId,
+  required int epoch,
+  required String? initiator,
+  required String? reason,
+  required bool teardown,
+}) {
+  final id = (callId == null || callId.isEmpty)
+      ? 'unknown'
+      : (callId.length <= 8 ? callId : callId.substring(0, 8));
+  return 'call termination: call=$id epoch=$epoch '
+      'initiator=${(initiator == null || initiator.isEmpty) ? 'unknown' : initiator} '
+      'reason=${(reason == null || reason.isEmpty) ? 'unknown' : reason} '
+      'teardown=$teardown';
+}
+
+/// Outcome of a diagnostics sample (§2C.4l).
+enum DiagnosticsOutcome {
+  /// Sample is valid: log it.
+  emit,
+
+  /// Transport is gone or going away: stay silent, this is expected.
+  drop,
+
+  /// The call is still live but the diagnostic failed: this is a REAL error
+  /// and must be written to the log, never swallowed.
+  reportFailure,
+}
+
+/// Classifies a diagnostics summary.
+///
+/// The distinction matters: `diagnosticsSummary()` returns `stats failed: …`
+/// for ANY exception, so silence is only correct while a transport is gone.
+/// During a live call that same string means the diagnostic itself broke and
+/// hiding it would mask a real WebRTC problem.
+DiagnosticsOutcome classifyDiagnostics({
+  required String summary,
+  required bool hasTransport,
+  required bool tearingDown,
+}) {
+  if (!hasTransport || tearingDown) return DiagnosticsOutcome.drop;
+  return summary.startsWith('stats failed')
+      ? DiagnosticsOutcome.reportFailure
+      : DiagnosticsOutcome.emit;
+}
+
 class CallState extends Notifier<ActiveCall?> {
   RTCPeerConnection? _pc;
   MediaStream? _local;
@@ -201,7 +282,7 @@ class CallState extends Notifier<ActiveCall?> {
     await _releaseStream(cam, 'stale capture ($why)');
   }
 
-/// Inbound-counter watchdog for the remote camera (§remote-mute).
+  /// Inbound-counter watchdog for the remote camera (§remote-mute).
   final _remoteVideoWatch = RemoteVideoWatch();
 
   /// Why the last camera open failed, so every caller shows the SAME honest
@@ -219,8 +300,26 @@ class CallState extends Notifier<ActiveCall?> {
   int get callEpoch => _epoch;
 
   /// Link-loss machine + its grace timer (§reconnect).
-  final _reconnect = ReconnectWatch();
+  /// Stage 2C.3: SINGLE OWNER of media recovery for P2P. Replaces
+  /// [ReconnectWatch], which treated `failed` and `closed` identically and so
+  /// killed a call that an ICE restart could have repaired in place.
+  ///
+  /// This object only DECIDES. CallState keeps the PeerConnection, the capture
+  /// tracks, callId/epoch, the timers and the teardown - exactly as before.
+  final _recovery = P2PMediaRecovery();
+
+  /// Stage 2C.3: SDP glare arbitration (R5.4 proved rollback keeps real RTP).
+  /// Created per session; roles come from the already-relayed `from_id`, so no
+  /// server protocol change is involved.
+  PerfectNegotiation? _negotiation;
   Timer? _reconnectTimer;
+
+  /// Stage 2B: signaling-side recovery (separate axis from the ICE machine
+  /// above - a TCP blip is not a media failure).
+  late final SignalRecovery _signalRecovery = SignalRecovery(
+    resume: (callId) => ref.read(callApiProvider).resume(callId),
+  );
+  StreamSubscription<ConnStatus>? _statusSub;
 
   /// Pending simulated recovery of [debugSimulateLinkState] (debug builds).
   Timer? _debugLinkTimer;
@@ -234,6 +333,13 @@ class CallState extends Notifier<ActiveCall?> {
   /// longer existed (2026-10-14 19:11:48).
   bool _tearingDown = false;
 
+  /// §2C.4l: who ended the call and why. Recorded by each real termination
+  /// path and emitted exactly once by [_cleanup], so a single structured line
+  /// explains the end instead of leaving ICE Disconnected as the only clue.
+  String? _endInitiator;
+  String? _endReason;
+  bool _endLogged = false;
+
   /// Sanitizes a capture-side fps reading before it may become a tier ceiling
   /// (§capture-fps). A black-hole virtual camera (AMD Privacy View, measured
   /// 2026-10-14) reports ~465 fps of synthetic black — such a reading would
@@ -245,10 +351,7 @@ class CallState extends Notifier<ActiveCall?> {
   /// drop it. [maxSane] defaults to [kMaxCameraFps] (spelled as a literal
   /// because a const int can only be a const double default). Pure so the
   /// rule is testable.
-  static double sanitizeObservedFps(
-    double raw, {
-    double maxSane = 60,
-  }) {
+  static double sanitizeObservedFps(double raw, {double maxSane = 60}) {
     if (raw < 0 || raw > maxSane) return -1;
     return raw;
   }
@@ -285,6 +388,64 @@ class CallState extends Notifier<ActiveCall?> {
 
   void ensureListening() {
     _pushSub ??= ref.read(connectionProvider).pushes.listen(_onPush);
+    _statusSub ??= ref.read(connectionProvider).status.listen(_onConnStatus);
+  }
+
+  /// Stage 2B: the signaling transport came (back) up. If a P2P call is live,
+  /// ask the server for its authoritative state (PART D) and reconcile it
+  /// (PART E) - without touching the PeerConnection, the tracks or the call
+  /// timer: the media may well have been flowing the whole time.
+  ///
+  /// A refusal never ends the call: only the ICE machine knows whether audio
+  /// actually stopped.
+  void _onConnStatus(ConnStatus status) {
+    final cur = state;
+    final callId = cur?.callId;
+    // Stage 2C.3.1: the media controller must know that signaling is down,
+    // otherwise it would hand out an ICE restart whose SDP can never be sent
+    // and burn an attempt on a guaranteed failure.
+    if (callId != null) {
+      final decision = _recovery.onSignaling(
+        up: status == ConnStatus.connected,
+        callId: callId,
+        epoch: _epoch,
+        now: DateTime.now(),
+      );
+      if (decision.action == RecoveryAction.awaitSignaling) {
+        dlog('media recovery holds off restart: ${decision.reason}');
+      }
+    }
+    unawaited(
+      _signalRecovery
+          .onStatus(
+            status,
+            callId: callId,
+            // state == null means the call is already gone locally.
+            localEnded: callId == null,
+            localRecoveryEpoch: callId == null ? 0 : 1,
+          )
+          .then((outcome) {
+            if (outcome == SignalRecoveryOutcome.resumed) {
+              final live = state;
+              if (live != null && live.callId == callId) {
+                dlog(
+                  'signaling recovered: server confirmed call ${live.callId}',
+                );
+                state = live.copyWith(linkDown: false);
+              }
+              return;
+            }
+            if (outcome == SignalRecoveryOutcome.refused ||
+                outcome == SignalRecoveryOutcome.failed) {
+              // Deliberately NOT ending: media may still be live and the ICE
+              // machine owns the call lifetime.
+              dlog(
+                'signaling resume $outcome for call ${callId ?? '-'} '
+                '(call left untouched)',
+              );
+            }
+          }),
+    );
   }
 
   Future<Map<String, dynamic>> _rtcConfig() async {
@@ -303,7 +464,21 @@ class CallState extends Notifier<ActiveCall?> {
         });
       }
     } catch (_) {}
-    return {'iceServers': servers, 'sdpSemantics': 'unified-plan'};
+    final cfg = <String, dynamic>{
+      'iceServers': servers,
+      'sdpSemantics': 'unified-plan',
+    };
+    // TEST-ONLY (§2C.4a): force relay so a local two-client call cannot fall
+    // back to a host/host pair, which would make a TURN DROP meaningless.
+    // Never active in a release build, and inert without the compile-time flag.
+    final relay = testRelayPolicyOverride(
+      flag: const bool.fromEnvironment('GRCHAT_TEST_FORCE_RELAY'),
+      debug: kDebugMode,
+    );
+    if (relay != null) {
+      cfg['iceTransportPolicy'] = relay;
+    }
+    return cfg;
   }
 
   Future<RTCPeerConnection> _newPc(String callId) async {
@@ -315,11 +490,24 @@ class CallState extends Notifier<ActiveCall?> {
     _reconnectTimer = null;
     _debugLinkTimer?.cancel();
     _debugLinkTimer = null;
-    _reconnect.reset();
+    _recovery.onCallChanged(callId: callId, epoch: _epoch);
+    _negotiation = null;
     _tearingDown = false;
+    // §2C.4l: a new transport is a new termination record.
+    _endInitiator = null;
+    _endReason = null;
+    _endLogged = false;
     dlog('session epoch -> $_epoch');
     _remoteDescSet = false;
-    _remoteIce.clear();
+    // §2C.4b: queued remote ICE is NOT cleared here. It belongs to the call
+    // being served, not to the transport: a callee receives the caller's relay
+    // candidates while the phone is still ringing (no PeerConnection exists
+    // yet), and _closeTransport/endDisplacedForSwitch both promise to keep
+    // that queue for the accept that follows. Clearing it here dropped exactly
+    // those candidates, so the callee's ICE agent never learned the caller's
+    // addresses and stayed in `New` forever.
+    // The queue is emptied by _prepareIncoming (a superseding ring) and by
+    // _cleanup (call end), which is where ownership actually changes.
     _remoteVideoArrived = false;
     pc.onIceCandidate = (c) {
       if (c.candidate == null || c.candidate!.isEmpty) return;
@@ -354,6 +542,18 @@ class CallState extends Notifier<ActiveCall?> {
     };
     pc.onIceConnectionState = (s) {
       dlog('pc iceConnection=$s');
+      // §2C.4d: a native transition is the ONLY reliable moment to capture a
+      // candidate-pair snapshot — the periodic 10 s tick can step over a
+      // transient loss entirely (the 15:32:34/15:32:40 events lasted ~2 s).
+      // Debug-only, read-only, and it never changes recovery behaviour.
+      if (kDebugMode) {
+        unawaited(
+          _logStatsSnapshot(
+            'ice-${'$s'.split('.').last}',
+            forceCandidatePairs: true,
+          ),
+        );
+      }
       // ICE state is the reliable transient signal; the peer-connection
       // state alone missed the 2026-10-14 drop entirely (only iceConnection
       // fired, and nothing reacted to it).
@@ -365,7 +565,7 @@ class CallState extends Notifier<ActiveCall?> {
             from: pc,
           );
         case RTCIceConnectionState.RTCIceConnectionStateChecking ||
-          RTCIceConnectionState.RTCIceConnectionStateNew:
+            RTCIceConnectionState.RTCIceConnectionStateNew:
           // Startup phase: never a failure, never a grace period.
           break;
         case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
@@ -424,7 +624,28 @@ class CallState extends Notifier<ActiveCall?> {
     }
   }
 
-/// The link-loss state machine (§reconnect): one transport state event in,
+  /// Stage 2C.3: same classification, but for the recovery controller.
+  ///
+  /// Kept as a SEPARATE mapping instead of converting LinkState -> MediaLinkState
+  /// so the debug hook can still drive the legacy shape, and so the two
+  /// vocabularies can diverge without silently changing production behaviour.
+  static MediaLinkState mediaLinkStateFor(RTCPeerConnectionState s) {
+    switch (s) {
+      case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
+        return MediaLinkState.connected;
+      case RTCPeerConnectionState.RTCPeerConnectionStateConnecting:
+      case RTCPeerConnectionState.RTCPeerConnectionStateNew:
+        return MediaLinkState.checking;
+      case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
+        return MediaLinkState.disconnected;
+      case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
+        return MediaLinkState.failed;
+      default:
+        return MediaLinkState.closed;
+    }
+  }
+
+  /// The link-loss state machine (§reconnect): one transport state event in,
   /// one verdict out. A transient loss NEVER ends the call by itself - the
   /// grace period does, and only for the call that lost the link (the timer
   /// is scoped to [epoch] + callId, so a callback from a finished call can
@@ -442,48 +663,202 @@ class CallState extends Notifier<ActiveCall?> {
       dlog('link event ignored: it came from a replaced transport');
       return;
     }
-    final verdict = _reconnect.onState(
-      state: linkStateFor(s),
-      epoch: _epoch,
+    final decision = _recovery.onIceState(
+      state: mediaLinkStateFor(s),
       callId: cur.callId,
+      epoch: _epoch,
       now: DateTime.now(),
     );
-    switch (verdict) {
-      case LinkVerdict.stale:
-        dlog('link event ignored: belongs to another call/epoch');
-      case LinkVerdict.none:
+    dlog(
+      'media recovery: ${decision.action.name} (${decision.phase.name}) '
+      '${decision.reason}',
+    );
+    switch (decision.action) {
+      case RecoveryAction.stale:
+      case RecoveryAction.keep:
         break;
-      case LinkVerdict.enterReconnecting:
-        dlog(
-          'link lost: reconnecting for up to '
-          '${_reconnect.grace.inSeconds}s (call=${cur.callId})',
-        );
+      case RecoveryAction.showReconnecting:
         state = cur.copyWith(linkDown: true);
-        _reconnectTimer?.cancel();
-        final epoch = _epoch;
-        final callId = cur.callId;
-        _reconnectTimer = Timer(_reconnect.grace, () {
-          final tick = _reconnect.onTick(
-            epoch: epoch,
-            callId: callId,
-            now: DateTime.now(),
-          );
-          if (tick != LinkVerdict.endNow) {
-            dlog('reconnect grace tick: $tick (nothing to end)');
-            return;
-          }
-          dlog('reconnect grace expired: ending the call with a reason');
-          unawaited(_endForLinkLoss());
-        });
-      case LinkVerdict.recovered:
-        dlog('link recovered: same session continues');
+        _startRecoveryTimer();
+      case RecoveryAction.recovered:
         _reconnectTimer?.cancel();
         _reconnectTimer = null;
         state = cur.copyWith(linkDown: false);
         _startQuality();
-      case LinkVerdict.endNow:
-        dlog('link definitive failure ($s): ending the call');
+      case RecoveryAction.requestIceRestart:
+        state = cur.copyWith(linkDown: true);
+        unawaited(_performIceRestart(decision.restartNumber ?? 1));
+      case RecoveryAction.awaitSignaling:
+      case RecoveryAction.endCall:
         unawaited(_endForLinkLoss());
+    }
+  }
+
+  /// Drives the grace/budget clock. The tick is only an opportunity to ask the
+  /// controller what to do - it never decides anything on its own, and it
+  /// carries epoch + callId so it can never touch a different call.
+  void _startRecoveryTimer() {
+    _reconnectTimer?.cancel();
+    final epoch = _epoch;
+    final callId = state?.callId;
+    if (callId == null) return;
+    _reconnectTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_tearingDown) return;
+      final decision = _recovery.onTick(
+        callId: callId,
+        epoch: epoch,
+        now: DateTime.now(),
+      );
+      switch (decision.action) {
+        case RecoveryAction.requestIceRestart:
+          _reconnectTimer?.cancel();
+          _reconnectTimer = null;
+          final cur = state;
+          if (cur != null) state = cur.copyWith(linkDown: true);
+          unawaited(_performIceRestart(decision.restartNumber ?? 1));
+        case RecoveryAction.endCall:
+          _reconnectTimer?.cancel();
+          _reconnectTimer = null;
+          unawaited(_endForLinkLoss());
+        case RecoveryAction.stale:
+          _reconnectTimer?.cancel();
+          _reconnectTimer = null;
+        case RecoveryAction.keep:
+        case RecoveryAction.showReconnecting:
+        case RecoveryAction.recovered:
+        case RecoveryAction.awaitSignaling:
+          break;
+      }
+    });
+  }
+
+  /// Stage 2C.3: the glare policy for the live session, created lazily.
+  ///
+  /// Roles come from the caller/callee asymmetry that already exists in the
+  /// call state (`ActiveCall.outgoing`) - it is complementary by construction,
+  /// stable for the whole call, and needs NO server protocol change. Switching
+  /// to per-user keys via the already-relayed `from_id` is a follow-up once our
+  /// own user id is plumbed into CallState.
+  PerfectNegotiation get _negotiationPolicy {
+    final existing = _negotiation;
+    if (existing != null) return existing;
+    final outgoing = state?.outgoing ?? false;
+    final created = PerfectNegotiation(
+      localEndpointKey: outgoing ? 'caller' : 'callee',
+      remoteEndpointKey: outgoing ? 'callee' : 'caller',
+    );
+    dlog(
+      'glare policy created: local=${outgoing ? 'caller' : 'callee'} '
+      'polite=${created.polite}',
+    );
+    _negotiation = created;
+    return created;
+  }
+
+  /// Stage 2C.3: signaling state DERIVED FROM THE ACTUAL DESCRIPTIONS.
+  ///
+  /// The plugin's `pc.signalingState` field is event-backed and proved
+  /// unreliable in the R5.2 harness, so the policy is fed from the real
+  /// descriptions instead of that nullable field.
+  Future<PnSignalingState> _signalingFor() async {
+    final pc = _pc;
+    if (pc == null) return PnSignalingState.closed;
+    final local = await _safeDesc(pc.getLocalDescription);
+    final remote = await _safeDesc(pc.getRemoteDescription);
+    if (local == null) return PnSignalingState.stable;
+    switch (local.type) {
+      case 'offer':
+        // A remote offer that arrived after ours is glare: the transport is in
+        // have-remote-offer only once it was actually applied.
+        return remote?.type == 'offer'
+            ? PnSignalingState.haveRemoteOffer
+            : PnSignalingState.haveLocalOffer;
+      case 'answer':
+        return PnSignalingState.stable;
+      default:
+        return PnSignalingState.stable;
+    }
+  }
+
+  static Future<RTCSessionDescription?> _safeDesc(
+    Future<RTCSessionDescription?> Function() f,
+  ) async {
+    try {
+      return await f();
+    } catch (_) {
+      // getLocalDescription/getRemoteDescription THROW when nothing is set.
+      return null;
+    }
+  }
+
+  /// Stage 2C.3: executes the restart ON THE EXISTING PeerConnection.
+  ///
+  /// Tracks are never re-created and camera/mute state is untouched: an ICE
+  /// restart is an ICE operation. Every async hop re-checks epoch, callId and
+  /// the transport identity, so a late continuation can never drive a new call.
+  Future<void> _performIceRestart(int restartNumber) async {
+    final cur = state;
+    final pc = _pc;
+    final epoch = _epoch;
+    final callId = cur?.callId;
+    if (cur == null || pc == null || callId == null) {
+      _recovery.onIceRestartCompleted(
+        restartNumber: restartNumber,
+        callId: callId ?? '',
+        epoch: epoch,
+        succeeded: false,
+      );
+      return;
+    }
+    // §2C.4g: serialise with the camera/quality renegotiation. Two local
+    // offers at once would break glare arbitration and the answer completer.
+    if (_renegoLock) {
+      dlog(
+        'ICE restart #$restartNumber skipped: renegotiation already in flight',
+      );
+      _recovery.onIceRestartCompleted(
+        restartNumber: restartNumber,
+        callId: callId,
+        epoch: epoch,
+        succeeded: false,
+      );
+      return;
+    }
+    _renegoLock = true;
+    _renegoWait = Completer<bool>();
+    dlog('ICE restart #$restartNumber on the existing transport');
+    var ok = false;
+    try {
+      // The helper applies the offer with setLocalDescription and then sends
+      // the APPLIED description, so the peer receives the NEW ICE generation.
+      ok = await _renegotiateVideo(callId, iceRestart: true);
+    } catch (e) {
+      dlog('ICE restart #$restartNumber failed: $e');
+      ok = false;
+    } finally {
+      _renegoWait = null;
+      _renegoLock = false;
+    }
+
+    // Every await above can outlive the call. A result for a transport or call
+    // that has since been replaced must never be reported as recovery.
+    final sameSession =
+        identical(pc, _pc) && _epoch == epoch && state?.callId == callId;
+    if (!sameSession) {
+      dlog('ICE restart #$restartNumber result discarded: session changed');
+      return;
+    }
+    final decision = _recovery.onIceRestartCompleted(
+      restartNumber: restartNumber,
+      callId: callId,
+      epoch: epoch,
+      succeeded: ok,
+    );
+    if (ok) {
+      // Still optimistic: only the transport event confirms the recovery.
+      _startRecoveryTimer();
+    } else if (decision.action == RecoveryAction.endCall) {
+      unawaited(_endForLinkLoss());
     }
   }
 
@@ -498,7 +873,10 @@ class CallState extends Notifier<ActiveCall?> {
   ///
   /// Scoped exactly like the real timer: epoch + callId are captured and
   /// re-checked, so a pending simulation can never finish a DIFFERENT call.
-  void debugSimulateLinkState({required LinkState link, Duration? recoverAfter}) {
+  void debugSimulateLinkState({
+    required LinkState link,
+    Duration? recoverAfter,
+  }) {
     final cur = state;
     if (cur == null || cur.phase != CallPhase.active) {
       _notice('Симуляция обрыва — только в активном звонке');
@@ -521,23 +899,19 @@ class CallState extends Notifier<ActiveCall?> {
     } else {
       _notice(
         'Симуляция: обрыв без восстановления — звонок завершится через '
-        '${_reconnect.grace.inSeconds} с',
+        '${_recovery.grace.inSeconds} с',
       );
     }
-    _onLinkState(
-      switch (link) {
-        LinkState.connected =>
-          RTCPeerConnectionState.RTCPeerConnectionStateConnected,
-        LinkState.connecting =>
-          RTCPeerConnectionState.RTCPeerConnectionStateConnecting,
-        LinkState.disconnected =>
-          RTCPeerConnectionState.RTCPeerConnectionStateDisconnected,
-        LinkState.failed =>
-          RTCPeerConnectionState.RTCPeerConnectionStateFailed,
-        LinkState.closed =>
-          RTCPeerConnectionState.RTCPeerConnectionStateClosed,
-      },
-    );
+    _onLinkState(switch (link) {
+      LinkState.connected =>
+        RTCPeerConnectionState.RTCPeerConnectionStateConnected,
+      LinkState.connecting =>
+        RTCPeerConnectionState.RTCPeerConnectionStateConnecting,
+      LinkState.disconnected =>
+        RTCPeerConnectionState.RTCPeerConnectionStateDisconnected,
+      LinkState.failed => RTCPeerConnectionState.RTCPeerConnectionStateFailed,
+      LinkState.closed => RTCPeerConnectionState.RTCPeerConnectionStateClosed,
+    });
     if (recoverAfter == null) return;
     _debugLinkTimer = Timer(recoverAfter, () {
       if (epoch != _epoch || state?.callId != callId) {
@@ -554,7 +928,13 @@ class CallState extends Notifier<ActiveCall?> {
   Future<void> _endForLinkLoss() async {
     final cur = state;
     if (cur == null || cur.phase != CallPhase.active) return;
+    // SINGLE OWNER: tell the controller the call is over BEFORE any teardown,
+    // so a late ICE event can never restart recovery on a dead session.
+    _recovery.onCallEnded(reason: 'media recovery gave up');
     _tearingDown = true;
+    // §2C.4l: a link-loss end must never be reported as a plain hangup.
+    _endInitiator ??= 'local';
+    _endReason ??= 'link-loss';
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _debugLinkTimer?.cancel();
@@ -564,7 +944,7 @@ class CallState extends Notifier<ActiveCall?> {
     await hangup();
   }
 
-/// Remote track arrival (§17, §20, §21): never drop, never reuse the
+  /// Remote track arrival (§17, §20, §21): never drop, never reuse the
   /// local renderer, never recreate renderers per event.
   Future<void> _onTrack(RTCTrackEvent ev) async {
     final track = ev.track;
@@ -852,7 +1232,7 @@ class CallState extends Notifier<ActiveCall?> {
         dlog(
           gone
               ? 'remote video gone: no inbound video for '
-                  '${_remoteVideoWatch.staleTicks} ticks - showing the avatar'
+                    '${_remoteVideoWatch.staleTicks} ticks - showing the avatar'
               : 'remote video back: inbound video flowing again',
         );
       }
@@ -1096,7 +1476,9 @@ class CallState extends Notifier<ActiveCall?> {
     // The walk below is for FOREIGN holders (NVIDIA Broadcast holding the
     // physical camera) - those only bite when we own the lock.
     if (!CameraLock.acquire()) {
-      dlog('camera busy (another grchat instance owns it) - no device is touched');
+      dlog(
+        'camera busy (another grchat instance owns it) - no device is touched',
+      );
       _cameraBlock = CameraBlock.anotherInstance;
       return null;
     }
@@ -1247,8 +1629,7 @@ class CallState extends Notifier<ActiveCall?> {
     required bool frameArrived,
     required int frameless,
     required int budget,
-  }) =>
-      !frameArrived && frameless >= budget;
+  }) => !frameArrived && frameless >= budget;
 
   /// Compact device fingerprint for the probe log lines. Windows ids are
   /// 90-character USB paths (`\\?\usb#vid_...`) and several cameras can be
@@ -1273,7 +1654,10 @@ class CallState extends Notifier<ActiveCall?> {
   /// Walk ladder: top profile plus the classic 720p30. A rescue attempt
   /// needs a working capture, not a perfect profile sweep - the tier logic
   /// scales to whatever the device really delivers.
-  static const _ladderQuick = <(int, int, int)>[(1920, 1080, 60), (1280, 720, 30)];
+  static const _ladderQuick = <(int, int, int)>[
+    (1920, 1080, 60),
+    (1280, 720, 30),
+  ];
 
   /// TRUE capture height for the tier scale: verified by actual frames.
   /// Set unconditionally - a device change may LOWER the capture and the
@@ -1524,6 +1908,10 @@ class CallState extends Notifier<ActiveCall?> {
       dlog('offer ${SdpSummary.parse(sdp)}');
       final callId = await api.offer(peerNick: peerNick, dmId: dmId, sdp: sdp);
       _callId = callId;
+      // §2C.4b: the controller was registered by _newPc('') before the server
+      // assigned the id. Fill the real one in WITHOUT re-registering, so the
+      // recovery session (phase, deadlines, restart budget) is preserved.
+      _recovery.bindCallId(callId);
       state = state?.copyWith();
       for (final p in _pendingIce) {
         api
@@ -1701,6 +2089,13 @@ class CallState extends Notifier<ActiveCall?> {
     // takes: transport events must stop steering it (§reconnect).
     _tearingDown = true;
     final cur = state;
+    // §2C.4l: attribute the termination before any teardown can obscure it.
+    if (cur != null) {
+      _endInitiator ??= 'local';
+      _endReason ??= (!cur.outgoing && cur.phase == CallPhase.ringing)
+          ? 'declined'
+          : 'hangup';
+    }
     if (cur != null &&
         !cur.outgoing &&
         cur.phase == CallPhase.ringing &&
@@ -1849,20 +2244,61 @@ class CallState extends Notifier<ActiveCall?> {
   /// `call_renegotiate` over the same ICE transport, the peer's answer
   /// comes back as the same push (answer:true). True when the peer
   /// confirmed the new m-line.
-  Future<bool> _renegotiateVideo(String callId) async {
+  Future<bool> _renegotiateVideo(
+    String callId, {
+    bool iceRestart = false,
+  }) async {
     final pc = _pc;
     if (pc == null) return false;
     try {
-      final rawOffer = await pc.createOffer({});
+      // §2C.4g: a real ICE restart needs restartIce() BEFORE the offer, and the
+      // offer itself must come from createOffer(iceRestart: true). The previous
+      // implementation discarded that offer and read getLocalDescription(),
+      // which still held the PREVIOUS generation - so the peer received stale
+      // ICE credentials and no new candidates were ever gathered.
+      if (iceRestart) {
+        await pc.restartIce();
+      }
+      // Stage 2C.3: register the local offer with the glare policy BEFORE creating
+      // it, so a peer offer that lands mid-flight is detected as a collision
+      // and a late answer can be recognised as ours.
+      final policy = _negotiationPolicy;
+      final begin = policy.beginLocalOffer();
+      if (begin.generation < 0) {
+        dlog('renegotiate offer skipped: ${begin.reason}');
+        return false;
+      }
+      final rawOffer = await pc.createOffer(
+        iceRestart ? <String, dynamic>{'iceRestart': true} : {},
+      );
       final offer = RTCSessionDescription(
         tuneOpusSdp(rawOffer.sdp ?? ''),
         rawOffer.type,
       );
       await pc.setLocalDescription(offer);
+      policy.endLocalOffer();
       final sdp = (await pc.getLocalDescription())?.sdp ?? '';
       dlog('renegotiate offer ${SdpSummary.parse(sdp)}');
+      // §2C.4k: measure the EXACT string handed to the API (not the rawOffer).
+      // Length-only instrumentation: no SDP body, no ICE pwd, no tokens.
+      if (kDebugMode) {
+        final cands = RegExp(r'a=candidate:').allMatches(sdp).length;
+        final hostN = RegExp(r' typ host').allMatches(sdp).length;
+        final srflxN = RegExp(r' typ srflx').allMatches(sdp).length;
+        final relayN = RegExp(r' typ relay').allMatches(sdp).length;
+        final mlines = RegExp('^m=', multiLine: true).allMatches(sdp).length;
+        final uf = RegExp(r'a=ice-ufrag:(\S+)').firstMatch(sdp)?.group(1);
+        final short = callId.length > 8 ? callId.substring(0, 8) : callId;
+        dlog(
+          'renego send role=${state?.outgoing == true ? 'caller' : 'callee'} '
+          'call=$short len=${sdp.length} mlines=$mlines ufrag=${uf ?? 'absent'} '
+          'cand=$cands host=$hostN srflx=$srflxN relay=$relayN '
+          'iceRestart=$iceRestart signaling=${await pc.getSignalingState()}',
+        );
+      }
       await ref.read(callApiProvider).renegotiate(callId: callId, sdp: sdp);
-      final ok = await _renegoWait?.future.timeout(
+      final ok =
+          await _renegoWait?.future.timeout(
             const Duration(seconds: 15),
             onTimeout: () => false,
           ) ??
@@ -1871,7 +2307,11 @@ class CallState extends Notifier<ActiveCall?> {
         dlog('renegotiation answer missing: peer stays video-less');
         // Keep our capture alive: the frames are just muted for the
         // peer until they answer a later renegotiation.
-        _notice('Собеседник не подтвердил камеру');
+        // An ICE restart is a different story: the peer not answering is a
+        // failed recovery, not a muted camera, so it must not claim one.
+        if (!iceRestart) {
+          _notice('Собеседник не подтвердил камеру');
+        }
       } else {
         dlog('renegotiation complete: video m-line live');
       }
@@ -2095,7 +2535,9 @@ class CallState extends Notifier<ActiveCall?> {
       try {
         await _videoSender!.replaceTrack(null);
       } catch (e) {
-        dlog('camera switch: replaceTrack(null) failed ($e), capture continues');
+        dlog(
+          'camera switch: replaceTrack(null) failed ($e), capture continues',
+        );
       }
       for (final t in _cameraTracks()) {
         // Native order quirk (§plugin-dispose-quirk): stop FIRST (this is
@@ -2333,10 +2775,97 @@ class CallState extends Notifier<ActiveCall?> {
     }
   }
 
-  Future<void> _logStatsSnapshot(String why) async {
+  Future<void> _logStatsSnapshot(
+    String why, {
+    bool forceCandidatePairs = false,
+  }) async {
+    // §2C.4l: never sample a transport that is gone or going away. Without
+    // this a late ICE event after teardown produced
+    // `stats failed: ... getSignalingState() peerConnection is null`.
+    if (!diagnosticsAllowed(
+      hasTransport: _pc != null,
+      tearingDown: _tearingDown,
+    )) {
+      return;
+    }
     try {
-      dlog('stats [$why]\n${await diagnosticsSummary()}');
-    } catch (_) {}
+      final base = await diagnosticsSummary();
+      // The PC may have been closed across the await: classify AFTER it, so a
+      // teardown race drops the sample while a live-call failure is reported.
+      switch (classifyDiagnostics(
+        summary: base,
+        hasTransport: _pc != null,
+        tearingDown: _tearingDown,
+      )) {
+        case DiagnosticsOutcome.drop:
+          return;
+        case DiagnosticsOutcome.reportFailure:
+          // Diagnostic breakage during a live call must stay visible.
+          dlog('stats [$why] failed: $base');
+          return;
+        case DiagnosticsOutcome.emit:
+          break;
+      }
+      final extra = forceCandidatePairs ? await _candidatePairDump() : '';
+      dlog('stats [$why]\n$base$extra');
+    } catch (e) {
+      // A real error during a live call must stay visible; teardown noise is
+      // already filtered above.
+      if (_pc != null && !_tearingDown) {
+        dlog('stats [$why] failed: $e');
+      }
+    }
+  }
+
+  /// §2C.4d: candidate-pair snapshot captured AT a native ICE transition.
+  ///
+  /// Diagnostic only. Missing fields print as `absent` — never substituted with
+  /// zero, because "0 requestsSent" would read as "checks were not attempted"
+  /// while the truth may be "the plugin does not expose this field".
+  Future<String> _candidatePairDump() async {
+    final pc = _pc;
+    if (pc == null || _tearingDown) return '\nPAIRS no-peer-connection';
+    final all = await pc.getStats();
+    final cands = <String, Map<dynamic, dynamic>>{
+      for (final r in all.where((r) => r.type.contains('candidate')))
+        r.id: r.values,
+    };
+    String g(Map<dynamic, dynamic> v, String k) {
+      final val = v[k];
+      return val == null ? 'absent' : '$val';
+    }
+
+    final selected = all
+        .where((r) => r.type == 'peer-connection')
+        .map((r) => r.values['selectedCandidatePairId'])
+        .toList();
+    final ufrag = RegExp(r'a=ice-ufrag:(\S+)')
+        .firstMatch((await pc.getLocalDescription())?.sdp ?? '')
+        ?.group(1);
+    final out = StringBuffer(
+      '\nPAIRS selected=$selected '
+      'signaling=${await pc.getSignalingState()} '
+      'ufrag=${ufrag ?? 'absent'}',
+    );
+    for (final r in all.where((r) => r.type == 'candidate-pair')) {
+      final v = r.values;
+      final l = cands[v['localCandidateId']] ?? <dynamic, dynamic>{};
+      final rm = cands[v['remoteCandidateId']] ?? <dynamic, dynamic>{};
+      out.write(
+        '\nPAIR ${r.id}'
+        ' local=${g(l, 'candidateType')} remote=${g(rm, 'candidateType')}'
+        ' state=${g(v, 'state')} nominated=${g(v, 'nominated')}'
+        ' reqSent=${g(v, 'requestsSent')}'
+        ' respRecv=${g(v, 'responsesReceived')}'
+        ' reqRecv=${g(v, 'requestsReceived')}'
+        ' respSent=${g(v, 'responsesSent')}'
+        ' rtt=${g(v, 'currentRoundTripTime')}'
+        ' outBitrate=${g(v, 'availableOutgoingBitrate')}'
+        ' bytesSent=${g(v, 'bytesSent')}'
+        ' bytesRecv=${g(v, 'bytesReceived')}',
+      );
+    }
+    return out.toString();
   }
 
   void setMinimized(bool minimized) {
@@ -2427,6 +2956,22 @@ class CallState extends Notifier<ActiveCall?> {
       final sdp = (ev['sdp'] ?? '').toString();
       if (sdp.isEmpty) throw StateError('empty renegotiate answer');
       dlog('renegotiate answer ${SdpSummary.parse(sdp)}');
+      // Stage 2C.3: glare arbitration. An answer for a negotiation we are no
+      // longer awaiting (we rolled back, or the peer was ignored) must NOT be
+      // applied - it would mutate a session it does not belong to.
+      final verdict = _negotiationPolicy.onRemoteDescription(
+        type: PnDescriptionType.answer,
+        signalingState: await _signalingFor(),
+        sdp: sdp,
+      );
+      if (verdict.action == PnAction.ignoreStaleAnswer) {
+        dlog('renegotiate answer IGNORED as stale: ${verdict.reason}');
+        // P1 FIX: a stale answer is NOT a failure of the camera renegotiation
+        // that may be waiting. Completing the wait with `false` here would pop
+        // «Собеседник не подтвердил камеру» for an ICE-restart answer that was
+        // simply not ours. The wait keeps running and its own timeout decides.
+        return;
+      }
       await _pc?.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
       _remoteDescSet = true;
       await _flushRemoteIce();
@@ -2448,19 +2993,74 @@ class CallState extends Notifier<ActiveCall?> {
       final sdp = (ev['sdp'] ?? '').toString();
       if (sdp.isEmpty) return;
       dlog('peer renegotiate offer ${SdpSummary.parse(sdp)}');
+      // §2C.4l: SDP state-machine trace for simultaneous camera offers.
+      // Debug-only. Logs states and lengths - never the SDP body or ICE pwd.
+      final opId =
+          'rnego-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
+      final t0 = DateTime.now();
+      Future<void> snap(String tag) async {
+        if (!kDebugMode) return;
+        final local = await _safeDesc(pc.getLocalDescription);
+        final remote = await _safeDesc(pc.getRemoteDescription);
+        final uf = RegExp(r'a=ice-ufrag:(\S+)')
+            .firstMatch(local?.sdp ?? '')
+            ?.group(1);
+        final short = cur.callId.length > 8
+            ? cur.callId.substring(0, 8)
+            : cur.callId;
+        dlog(
+          'renego-in[$opId] $tag +${DateTime.now().difference(t0).inMilliseconds}ms '
+          'call=$short epoch=$_epoch pc=${identityHashCode(pc)} '
+          'native=${await pc.getSignalingState()} '
+          'computed=${(await _signalingFor()).name} '
+          'local=${local?.type} remote=${remote?.type} '
+          'ufrag=${uf ?? 'absent'} '
+          'gen=${_negotiation?.generation} '
+          'makingOffer=${_negotiation?.makingOffer}',
+        );
+      }
+
+      await snap('enter');
+      // Stage 2C.3: a colliding offer is either IGNORED (impolite, our own
+      // offer stands) or ROLLED BACK and then accepted (polite). R5.4 proved on
+      // the native runtime that both paths keep real audio+video RTP flowing.
+      final verdict = _negotiationPolicy.onRemoteDescription(
+        type: PnDescriptionType.offer,
+        signalingState: await _signalingFor(),
+        sdp: sdp,
+      );
+      if (verdict.action == PnAction.ignoreCollidingOffer) {
+        await snap('verdict=ignoreCollidingOffer');
+        dlog('peer renegotiate offer IGNORED (glare): ${verdict.reason}');
+        return;
+      }
+      await snap('verdict=${verdict.action.name}');
+      if (verdict.action == PnAction.rollbackThenAcceptOffer) {
+        dlog("glare: rolling back our local offer for the peer's");
+        await pc.setLocalDescription(RTCSessionDescription('', 'rollback'));
+        await snap('afterRollback');
+      }
       // Semantic note: `video` means OUR camera is on. Receiving the peer's
       // late camera does NOT flip theirs — the receiver widens via
       // remoteVideo (onTrack) and keeps the PiP slot hidden until they
       // turn their own camera on with the now-working button.
+      await snap('beforeRemoteOffer');
       await pc.setRemoteDescription(RTCSessionDescription(sdp, 'offer'));
       _remoteDescSet = true;
+      await snap('afterRemoteOffer');
       await _flushRemoteIce();
       final rawAnswer = await pc.createAnswer({});
+      await snap(
+        'afterCreateAnswer type=${rawAnswer.type} '
+        'len=${rawAnswer.sdp?.length}',
+      );
       final answer = RTCSessionDescription(
         tuneOpusSdp(rawAnswer.sdp ?? ''),
         rawAnswer.type,
       );
+      await snap('beforeLocalAnswer');
       await pc.setLocalDescription(answer);
+      await snap('afterLocalAnswer');
       final out = (await pc.getLocalDescription())?.sdp ?? '';
       dlog('renegotiate answer ${SdpSummary.parse(out)}');
       await ref
@@ -2504,6 +3104,14 @@ class CallState extends Notifier<ActiveCall?> {
 
   Future<void> _onEndedAsync(Map<String, dynamic> ev) async {
     final cur = state;
+    // Stage 2C.3: a server-side end cancels any running media recovery
+    // IMMEDIATELY. Without this the controller would keep a grace period alive
+    // on a call that no longer exists and could restart ICE on a dead session.
+    if (cur != null && ev['call_id'] == cur.callId) {
+      _recovery.onCallEnded(reason: 'server ended the call');
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+    }
     if (cur == null || ev['call_id'] != cur.callId) {
       // Late end for a call hidden under a ring (§39): it is already gone
       // remotely — drop it so a later decline cannot resurrect a ghost.
@@ -2520,6 +3128,10 @@ class CallState extends Notifier<ActiveCall?> {
     }
     final reason = ev['reason']?.toString() ?? '';
     final by = (ev['by_nick'] ?? cur.peerNick).toString();
+    // §2C.4l: the peer or the server ended it, never us. `timeout` is the
+    // server sweep, everything else is a remote hangup/decline.
+    _endInitiator ??= reason.contains('timeout') ? 'server' : 'remote';
+    _endReason ??= reason.isEmpty ? 'remote ended' : reason;
     final wasPending = !cur.outgoing && cur.phase == CallPhase.ringing;
     // Audible end: a live call torn down remotely, or a dial that failed.
     // A dismissed incoming stays silent; a resurfaced displaced call never
@@ -2607,6 +3219,10 @@ class CallState extends Notifier<ActiveCall?> {
         stashed = cur;
       }
       _callId = callId;
+      // §2C.4b: a NEW ring supersedes whatever candidates were queued for a
+      // previous pending call; this is the ownership boundary for the queue
+      // that _newPc deliberately no longer clears.
+      _remoteIce.clear();
       // Dry ring (§25): the offer waits for accept; no PeerConnection and
       // no microphone/camera while it rings, even over a live session.
       _pendingOfferSdp = sdp;
@@ -2689,6 +3305,21 @@ class CallState extends Notifier<ActiveCall?> {
   }
 
   Future<void> _cleanup() async {
+    // §2C.4l: exactly one structured termination line per call. Emitted before
+    // the identifiers are cleared; a late event for a previous call/epoch can
+    // never append a second one because _endLogged is already set.
+    if (!_endLogged) {
+      _endLogged = true;
+      dlog(
+        terminationLine(
+          callId: _callId,
+          epoch: _epoch,
+          initiator: _endInitiator,
+          reason: _endReason,
+          teardown: _tearingDown,
+        ),
+      );
+    }
     _callId = null;
     _pendingOfferSdp = null;
     _pendingIce.clear();

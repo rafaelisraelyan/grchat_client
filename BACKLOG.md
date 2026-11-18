@@ -2,6 +2,10 @@
 
 ## Сделано
 
+- **§r1-signaling-queue.** При retire сокета ожидающие конверты могли выйти до decrement общего счётчика. В R1 очередь, счётчик и serial tail принадлежат одному поколению, подпись проверяется до dispatch, pending-запросы завершает detach. Тест держит старые async-верификаторы и проверяет полный лимит нового сокета.
+- **§r1-voice-lease.** Прежний disconnect обрабатывал весь userId. В R1 присутствие привязано к соединению и авторизованной сессии. Новый сокет той же сессии восстанавливает lease в течение 10 с. Voice identity LiveKit содержит lease, roster сопоставляет её с userId. Камера и выпускные настройки качества вне этого контракта.
+- **§r1-updater.** Старый скрипт извлекал архив в рабочую установку и запускал приложение после ошибки распаковки. R1 проверяет версию и структуру в staging, переносит старую установку в backup и возвращает её при ошибке запуска. Проверка подписи предшествует staging. Windows directory moves могут прерваться между двумя операциями, поэтому backup и recovery-скрипт сохраняются.
+
 - **Видеозвонок больше не приходит как аудио (2026-10-13, ждёт живой проверки)**
   - Симптом: пользователь звонит по видео, у собеседника карточка
     «Входящий аудиозвонок». Разбор лога 05:05:44–05:06:31: ВСЕ профили
@@ -135,6 +139,83 @@
   - Сервис рестарта стойки с подписью: `stack_keys_env.ps1` читает seed в env.
   - Обратная совместимость: старые клиенты незнакомые поля игнорируют; оба
     поля чисто аддитивные.
+
+- **TURN relay: ICE Connected через контролируемый relay (2026-10-19, Stage 2C / R4.7)**
+  - Что сломано было: R4.2–R4.6 давали `relay: 0` и вечный `checking`.
+  - Грабли 1 — **loopback-адрес TURN libwebrtc отбрасывает заранее**. На
+    `turn:127.0.0.1:34780` сервер получал `inbound=0` пакетов за пять
+    этапов; на `turn:192.168.31.21:34780` (Wi-Fi IPv4) — `inbound=41`,
+    все ответы ушли, `outboundFailed=0`. Проверять TURN только на loopback
+    бессмысленно.
+  - Грабли 2 — **зеркальный обмен кандидатами в harness**. Обработчики
+    `pa.onIceCandidate → pa.addCandidate` и `pb.onIceCandidate →
+    pb.addCandidate` добавляли кандидаты САМИМ СЕБЕ: противоположный
+    PeerConnection их не получал, а `remoteDescription` ставился до конца
+    gathering, поэтому и в SDP кандидатов не было. ICE оставался в
+    `checking`. Правильно: кандидаты A → в B, кандидаты B → в A.
+    Локальный успешный gathering **не** доказательство обмена — проверять
+    надо `remoteDescription` и ufrag в нём.
+  - §turn-real-ipv4: TURN-стенд поднимается на **реальном IPv4 физического
+    интерфейса** (здесь MediaTek Wi-Fi 6E, `172.19.0.1` — это туннель
+    `happ-xray`, не годится). Control API — только на `127.0.0.1`.
+    `iceTransportPolicy: relay` — исключительно в тестовом harness.
+  - Доказано: 4 allocation, 4 permission, 4 ChannelBind, пара
+    `relay/relay` `nominated=true state=succeeded` с обеих сторон,
+    RTP растёт (video 9386→180352 B, framesDecoded 3→53 за 5 с).
+    Одинаково работают trickle и non-trickle.
+  - Открытый блокер устранён (R4.8): auth починен, управляемый DROP работает.
+  - §turn-auth: НЕЛЬЗЯ использовать `turn.NewLongTermAuthHandler(secret)` для
+    проверки credentials — он считает ключ из самого секрета и **отвергает верные**
+    (`authOK=0`). Рабочий вариант — как в официальном примере v4.1.4:
+    `turn.GenerateAuthKey(user, realm, pass)` на пользователя. Статические
+    credentials — только из флагов.
+  - §turn-relay-address: в pion v4 порт НЕ пишется в
+    `RelayAddressGeneratorStatic.Address`. Значение `"<ip>:0"` даёт bind-адрес
+    `"<ip>:0:0"` и каждый Allocate падает с `error 508: too many colons`.
+    Туда передаётся голый хост (`"0.0.0.0"`, как в примере).
+  - §turn-drop-semantics: счётчики байтов на relay-сокете ОБЯЗАНЫ различать
+    доставленные и отброшенные. Общий счётчик растёт и при DROP и не доказывает
+    остановку доставки. `dropIn` при глобальном переключателе остаётся 0 —
+    блокировка выхода обоих пиров **обесценивает** вход: отбрасывать нечего.
+    Входящее направление доказывается остановкой счётчика доставленных байт.
+  - Грабли стенда: не проброшенный счётчик в `switchConn` роняет весь сервер
+    nil-pointer паником внутри readloop pion **посреди измерения** — добавлена
+    проверка обвязки при старте. Клиентский сокет обязан биндить `0.0.0.0:0`,
+    а не `127.0.0.1:0`: на Windows loopback-сокет не может слать на адрес
+    интерфейса (`wsasendto: unreachable network`).
+  - Доказано 4 прогонами (3 PASS, 1 FAILED на teardown): 4 allocation, relay/relay,
+    за DROP 2 с `bytesInDelta=0` и `bytesOutDelta=0` при норме 30–40 KB,
+    allocations 4→4, relaySockets 4→4; RTP и кадры выросли после возврата,
+    трек камеры тот же, **ICE ufrag не изменился — restart не был**.
+  - Не проверено: `refreshes=0` во всех прогонах (lifetime allocation ~60 с,
+    сессия ~10 с) — Refresh во время DROP не проверен; длинный и permanent
+    DROP не выполнялись; `P2PMediaRecovery` в стенде не участвовал.
+    Короткий обрыв восстанавливается сам, поэтому MEDIA RECOVERY VERIFIED
+    не заявляется.
+
+- **Настоящий ICE restart через управляемый TURN (2026-10-20, Stage 2C / R4.9)**
+  - §ice-restart-real: длинный DROP (30 с) на relay/relay даёт **нативные**
+    `Disconnected → Failed`; контроллер проходит `recovering → restarting`,
+    `restartIce()` меняет ufrag (`tfIB → LrV/`), после снятия DROP приходит
+    нативный `Connected` и `recovered`. Медиа растёт: video 158 KB → 610 KB,
+    кадры 50 → 83 за 3 с.
+  - §recovery-budget: permanent DROP завершается **одним** `endCall` ровно по
+    бюджету 45 с **от первой потери**, а не от включения DROP; `restarts=1`
+    (storm невозможен), teardown один раз, следующий звонок стартует с
+    `phase=idle` и полным бюджетом.
+  - Грабли: `budgetSpent` после `endCall` читается как `false` — `_clear()`
+    сбрасывает `_budgetEnd`; ориентироваться на `fromLoss`, не на флаг.
+  - Грабли teardown: падение процесса в `close()/dispose()` даёт в отчёте только
+    `did not complete` + `PathNotFoundException` из `flutter_tools`
+    (`FlutterPlatform._createListenerDart`) — это **следствие**, а не причина.
+    Лечится наблюдаемым teardown: пошаговый лог + `fail()` при незавершённом
+    шаге; порядок строго по §plugin-dispose-quirk. Нативный кадр в Dart не
+    попадает, поэтому место падения только локализуется.
+  - Ограничение стенда: **реальный `CallState` в тесте не поднимается** —
+    `CallApi` (call_api.dart:91) конкретный класс поверх `GrchatConnection`,
+    `startCall` (call_state.dart:1723) сразу читает `callApiProvider`, точки
+    инъекции готового `RTCPeerConnection` нет. Результаты на сырых PC —
+    **не** приёмка CallState; CALLSTATE RECOVERY остаётся NOT VERIFIED.
 
 ## Открыто
 

@@ -15,14 +15,15 @@ import '../call/call_diagnostics.dart';
 enum UpdateChannel { release, beta }
 
 class UpdateInfo {
-  UpdateInfo(
-      {required this.version,
-      required this.tag,
-      required this.url,
-      required this.sizeBytes,
-      required this.prerelease,
-      this.sha256Url,
-      this.sigUrl});
+  UpdateInfo({
+    required this.version,
+    required this.tag,
+    required this.url,
+    required this.sizeBytes,
+    required this.prerelease,
+    this.sha256Url,
+    this.sigUrl,
+  });
   final String version;
   final String tag;
   final String url;
@@ -42,11 +43,12 @@ class UpdateInfo {
 enum UpdateStatus { idle, checking, available, downloading, uptodate, error }
 
 class UpdateUiState {
-  const UpdateUiState(
-      {this.status = UpdateStatus.idle,
-      this.info,
-      this.progress,
-      this.message});
+  const UpdateUiState({
+    this.status = UpdateStatus.idle,
+    this.info,
+    this.progress,
+    this.message,
+  });
   final UpdateStatus status;
   final UpdateInfo? info;
   final double? progress;
@@ -83,7 +85,9 @@ class UpdateCenter extends Notifier<UpdateUiState> {
   Future<void> setChannel(UpdateChannel c) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
-        _channelKey, c == UpdateChannel.beta ? 'beta' : 'release');
+      _channelKey,
+      c == UpdateChannel.beta ? 'beta' : 'release',
+    );
     ref.invalidate(updateChannelProvider);
     state = const UpdateUiState();
   }
@@ -100,7 +104,9 @@ class UpdateCenter extends Notifier<UpdateUiState> {
       final rel = await _latestInfo(ch);
       if (rel == null) {
         state = const UpdateUiState(
-            status: UpdateStatus.error, message: 'Релизов пока нет');
+          status: UpdateStatus.error,
+          message: 'Релизов пока нет',
+        );
         return;
       }
       final cur = await currentVersion();
@@ -113,22 +119,33 @@ class UpdateCenter extends Notifier<UpdateUiState> {
       // Raw exceptions never reach the UI; the detail goes to the log.
       dlog('update check failed: $e');
       state = const UpdateUiState(
-          status: UpdateStatus.error,
-          message: 'Не вышло проверить обновление');
+        status: UpdateStatus.error,
+        message: 'Не вышло проверить обновление',
+      );
     }
   }
 
   Future<void> downloadAndInstall() async {
     final info = state.info;
-    if (info == null || !supportsInstall) return;
+    if (info == null ||
+        !supportsInstall ||
+        state.status == UpdateStatus.downloading) {
+      return;
+    }
     state = UpdateUiState(
-        status: UpdateStatus.downloading, info: info, progress: 0);
+      status: UpdateStatus.downloading,
+      info: info,
+      progress: 0,
+    );
     try {
       final tmp = await Directory.systemTemp.createTemp('grchat_upd');
       final zip = File('${tmp.path}\\update.zip');
       await _download(info.url, zip, info.sizeBytes, (p) {
         state = UpdateUiState(
-            status: UpdateStatus.downloading, info: info, progress: p);
+          status: UpdateStatus.downloading,
+          info: info,
+          progress: p,
+        );
       });
       if (!await _verify(zip, info)) {
         // The file is deleted: never leave an unverified zip lying around.
@@ -136,23 +153,26 @@ class UpdateCenter extends Notifier<UpdateUiState> {
           await tmp.delete(recursive: true);
         } catch (_) {}
         state = UpdateUiState(
-            status: UpdateStatus.error,
-            info: info,
-            message: 'Обновление не прошло проверку подписи');
+          status: UpdateStatus.error,
+          info: info,
+          message: 'Обновление не прошло проверку подписи',
+        );
         return;
       }
       await _apply(zip, info.version);
       // _apply exits the process; if we are still here it failed.
       state = UpdateUiState(
-          status: UpdateStatus.error,
-          info: info,
-          message: 'Не вышло запустить установку');
+        status: UpdateStatus.error,
+        info: info,
+        message: 'Не вышло запустить установку',
+      );
     } catch (e) {
       dlog('update download failed: $e');
       state = UpdateUiState(
-          status: UpdateStatus.error,
-          info: info,
-          message: 'Не вышло скачать обновление');
+        status: UpdateStatus.error,
+        info: info,
+        message: 'Не вышло скачать обновление',
+      );
     }
   }
 
@@ -207,13 +227,14 @@ class UpdateCenter extends Notifier<UpdateUiState> {
     final m = await _latest(ch);
     if (m == null) return null;
     return UpdateInfo(
-        version: m['version'] as String,
-        tag: m['tag'] as String,
-        url: m['url'] as String,
-        sizeBytes: m['size'] as int,
-        prerelease: m['pre'] as bool,
-        sha256Url: m['sha256'] as String?,
-        sigUrl: m['sig'] as String?);
+      version: m['version'] as String,
+      tag: m['tag'] as String,
+      url: m['url'] as String,
+      sizeBytes: m['size'] as int,
+      prerelease: m['pre'] as bool,
+      sha256Url: m['sha256'] as String?,
+      sigUrl: m['sig'] as String?,
+    );
   }
 
   /// Trust gate before executing anything: the zip is unpacked over the
@@ -248,8 +269,7 @@ class UpdateCenter extends Notifier<UpdateUiState> {
     }
     final shaUrl = info.sha256Url;
     if (shaUrl != null && shaUrl.isNotEmpty) {
-      final expected =
-          (await _fetchText(shaUrl)).split(RegExp(r'\s+')).first;
+      final expected = (await _fetchText(shaUrl)).split(RegExp(r'\s+')).first;
       if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(expected)) {
         dlog('update sha sidecar malformed');
         return false;
@@ -264,17 +284,22 @@ class UpdateCenter extends Notifier<UpdateUiState> {
   }
 
   /// Pure Ed25519 check (testable). False on any malformed input.
-  static Future<bool> verifySignature(
-      {required List<int> data,
-      required List<int> signature,
-      required List<int> publicKey}) async {
+  static Future<bool> verifySignature({
+    required List<int> data,
+    required List<int> signature,
+    required List<int> publicKey,
+  }) async {
     if (publicKey.length != 32 || signature.length != 64) return false;
     try {
       return await cg.Ed25519().verify(
         data,
-        signature: cg.Signature(signature,
-            publicKey: cg.SimplePublicKey(publicKey,
-                type: cg.KeyPairType.ed25519)),
+        signature: cg.Signature(
+          signature,
+          publicKey: cg.SimplePublicKey(
+            publicKey,
+            type: cg.KeyPairType.ed25519,
+          ),
+        ),
       );
     } catch (_) {
       return false;
@@ -289,7 +314,7 @@ class UpdateCenter extends Notifier<UpdateUiState> {
     }
     return [
       for (var i = 0; i < h.length; i += 2)
-        int.parse(h.substring(i, i + 2), radix: 16)
+        int.parse(h.substring(i, i + 2), radix: 16),
     ];
   }
 
@@ -309,7 +334,11 @@ class UpdateCenter extends Notifier<UpdateUiState> {
   }
 
   Future<void> _download(
-      String url, File dst, int total, void Function(double) onP) async {
+    String url,
+    File dst,
+    int total,
+    void Function(double) onP,
+  ) async {
     final client = HttpClient();
     try {
       final req = await client.getUrl(Uri.parse(url));
@@ -331,57 +360,134 @@ class UpdateCenter extends Notifier<UpdateUiState> {
     }
   }
 
-  /// Builds the updater script. Pure (testable): all paths baked in, no
-  /// Dart interpolation surprises at runtime — see update_service_test.
-  static String buildApplyScript(
-      {required int pid,
-      required String zipPath,
-      required String dir,
-      required String exe,
-      required String log}) {
-    return '\$pid0 = $pid\n'
-        '"START " + (Get-Date -Format o) + " pid=\$pid0" | Out-File -Append "$log"\n'
-        'Wait-Process -Id \$pid0 -ErrorAction SilentlyContinue\n'
-        'try {\n'
-        '  foreach (\$p in (Get-Process grchat_client -ErrorAction SilentlyContinue)) {\n'
-        '    if (\$p.Id -ne \$pid0) {\n'
-        '      try {\n'
-        '        if (\$p.Path -eq "$exe") {\n'
-        '          Stop-Process -Id \$p.Id -Force -ErrorAction Stop\n'
-        '          "STOPPED sibling " + \$p.Id | Out-File -Append "$log"\n'
-        '        }\n'
-        '      } catch {\n'
-        '        "SIBLING-SKIP " + \$Error[0] | Out-File -Append "$log"\n'
-        '      }\n'
-        '    }\n'
-        '  }\n'
-        '} catch {\n'
-        '  "SIBLING-SCAN-FAIL " + \$Error[0] | Out-File -Append "$log"\n'
-        '}\n'
-        'Start-Sleep -Seconds 2\n'
-        'try {\n'
-        '  Expand-Archive -Path "$zipPath" -DestinationPath "$dir" -Force -ErrorAction Stop\n'
-        '  "OK " + (Get-Date -Format o) | Out-File -Append "$log"\n'
-        '} catch {\n'
-        '  "FAIL " + \$Error[0] | Out-File -Append "$log"\n'
-        '}\n'
-        'Start-Process "$exe" -WorkingDirectory "$dir"\n'
-        'Remove-Item "$zipPath" -Force -ErrorAction SilentlyContinue\n'
-        'Remove-Item \$PSCommandPath -Force -ErrorAction SilentlyContinue\n';
+  /// Stage and activate beside the install, retaining the previous directory.
+  static String buildApplyScript({
+    required int pid,
+    required String zipPath,
+    required String dir,
+    required String exe,
+    required String log,
+    required String version,
+  }) {
+    String literal(String value) => "'${value.replaceAll("'", "''")}'";
+    final config = [
+      r'param([switch]$StageOnly, [switch]$Recover)',
+      '\$pid0 = $pid',
+      '\$archive = ${literal(zipPath)}',
+      '\$install = ${literal(dir)}',
+      '\$entry = ${literal(exe)}',
+      '\$applyLog = ${literal(log)}',
+      '\$version = ${literal(version)}',
+    ].join('\n');
+    return '$config\n'
+        r'''
+$ErrorActionPreference = 'Stop'
+$tag = Split-Path -Leaf (Split-Path -Parent $archive)
+$stage = "$install.grchat-stage-$tag"
+$backup = "$install.grchat-backup-$tag"
+$failed = "$install.grchat-failed-$tag"
+$lockPath = "$install.grchat-update.lock"
+$entryName = Split-Path -Leaf $entry
+
+function Write-UpdateLog([string]$message) {
+  try { Add-Content -LiteralPath $applyLog -Value ((Get-Date -Format o) + " $message") }
+  catch { [Console]::Error.WriteLine('Could not write updater log') }
+}
+
+function Get-ProductVersion([string]$path) {
+  $raw = [Diagnostics.FileVersionInfo]::GetVersionInfo($path).ProductVersion
+  if ($raw -notmatch '^(\d+\.\d+\.\d+)(?:[+-].*)?$') { throw 'Unknown executable version' }
+  return [Version]$Matches[1]
+}
+
+function Assert-StagedBundle {
+  $candidate = Join-Path $stage $entryName
+  foreach ($relative in @($entryName, 'flutter_windows.dll', 'data\icudtl.dat')) {
+    if (!(Test-Path -LiteralPath (Join-Path $stage $relative) -PathType Leaf)) {
+      throw "Missing required bundle entry: $relative"
+    }
+  }
+  if (!(Test-Path -LiteralPath (Join-Path $stage 'data\flutter_assets') -PathType Container)) {
+    throw 'Missing Flutter assets'
+  }
+  if ((Get-ProductVersion $candidate) -ne [Version]$version) {
+    throw 'Executable version does not match the release'
+  }
+}
+
+function Restore-Backup {
+  if (!(Test-Path -LiteralPath $backup -PathType Container)) { return }
+  if (Test-Path -LiteralPath $install) { [IO.Directory]::Move($install, $failed) }
+  [IO.Directory]::Move($backup, $install)
+  Write-UpdateLog 'ROLLBACK restored previous directory'
+  Start-Process -FilePath $entry -WorkingDirectory $install -ErrorAction Stop
+}
+
+$exclusive = $null
+try {
+  if ($StageOnly) {
+    if (Test-Path -LiteralPath $stage) { throw 'Staging path already exists' }
+    Expand-Archive -LiteralPath $archive -DestinationPath $stage -ErrorAction Stop
+    Assert-StagedBundle
+    Write-UpdateLog 'STAGED validated candidate'
+    exit 0
   }
 
-  /// Two-stage Windows install: a ps1 script waits for this process to
-  /// exit, unpacks the bundle over the install dir and restarts the app.
-  ///
-  /// Hardened after two silent failures:
-  /// - 1.4.0→1.5.0: a sibling client locked the install dir, killing
-  ///   Expand-Archive with no trace. The script now stops siblings and
-  ///   logs every step to apply.log.
-  /// - 1.5.1→1.5.2: `ProcessStartMode.detached` children never execute
-  ///   on this Dart/Windows setup (proven by spawn probes: attached runs,
-  ///   detached is dead on arrival, with or without parent exit). The
-  ///   updater is therefore launched via `cmd /c start` (a real
-  ///   daemonize), which provably survives the parent.
+  $exclusive = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+  if ($Recover) {
+    Restore-Backup
+    exit 0
+  }
+  Assert-StagedBundle
+  if ((Get-ProductVersion $entry) -ge [Version]$version) { throw 'Update is no longer newer' }
+  try { Wait-Process -Id $pid0 -Timeout 20 -ErrorAction Stop }
+  catch {
+    if (Get-Process -Id $pid0 -ErrorAction SilentlyContinue) { throw 'Application is still running' }
+  }
+  foreach ($process in (Get-Process grchat_client -ErrorAction SilentlyContinue)) {
+    if ($process.Path -eq $entry) {
+      if (!$process.CloseMainWindow() -or !$process.WaitForExit(5000)) {
+        throw 'Another instance is still using the installation'
+      }
+    }
+  }
+  $moved = $false
+  $started = $null
+  try {
+    [IO.Directory]::Move($install, $backup)
+    $moved = $true
+    [IO.Directory]::Move($stage, $install)
+    $started = Start-Process -FilePath $entry -WorkingDirectory $install -PassThru -ErrorAction Stop
+    if ($started.WaitForExit(4000)) { throw 'Updated application exited during launch' }
+    Write-UpdateLog "OK retained previous version at $backup"
+  } catch {
+    Write-UpdateLog ('ACTIVATION FAILED ' + $_.Exception.GetType().Name)
+    if ($started -and !$started.HasExited) {
+      if (!$started.CloseMainWindow() -or !$started.WaitForExit(5000)) {
+        throw 'Updated process holds files, backup retained for recovery'
+      }
+    }
+    if ($moved) { Restore-Backup }
+    throw
+  }
+} catch {
+  Write-UpdateLog ('UPDATE FAILED ' + $_.Exception.GetType().Name)
+  if (!$StageOnly -and !$Recover -and !$moved -and
+      (Test-Path -LiteralPath $entry -PathType Leaf)) {
+    $alreadyRunning = Get-Process grchat_client -ErrorAction SilentlyContinue |
+      Where-Object { $_.Path -eq $entry }
+    if (!$alreadyRunning) {
+      try { Start-Process -FilePath $entry -WorkingDirectory $install -ErrorAction Stop }
+      catch { Write-UpdateLog 'Could not restart previous installation' }
+    }
+  }
+  exit 1
+} finally {
+  if ($exclusive) { $exclusive.Dispose() }
+}
+''';
+  }
+
   /// Daemonize argv for the updater script. Pure (testable).
   ///
   /// Two hard-won rules live here:
@@ -392,18 +498,18 @@ class UpdateCenter extends Notifier<UpdateUiState> {
   ///   and pre-quoted paths get mangled into `"""..."""`, which kills the
   ///   launch silently (proven by the sim: quoted died, bare lived).
   static List<String> updaterArgv(String scriptPath) => [
-        '/c',
-        'start',
-        '""',
-        'powershell.exe',
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-WindowStyle',
-        'Hidden',
-        '-File',
-        scriptPath,
-      ];
+    '/c',
+    'start',
+    '""',
+    'powershell.exe',
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'RemoteSigned',
+    '-WindowStyle',
+    'Hidden',
+    '-File',
+    scriptPath,
+  ];
 
   Future<void> _apply(File zip, String version) async {
     final exe = Platform.resolvedExecutable;
@@ -412,15 +518,33 @@ class UpdateCenter extends Notifier<UpdateUiState> {
     final script = File('$tmpDir\\apply.ps1');
     final log = '$tmpDir\\apply.log';
     await script.writeAsString(
-        buildApplyScript(
-            pid: pid,
-            zipPath: zip.path,
-            dir: dir,
-            exe: exe,
-            log: log),
-        flush: true);
-    dlog('update applying $version over $dir');
-    await Process.start('cmd.exe', updaterArgv(script.path));
+      buildApplyScript(
+        pid: pid,
+        zipPath: zip.path,
+        dir: dir,
+        exe: exe,
+        log: log,
+        version: version,
+      ),
+      flush: true,
+    );
+    final stage = await Process.run('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'RemoteSigned',
+      '-File',
+      script.path,
+      '-StageOnly',
+    ], workingDirectory: tmpDir);
+    if (stage.exitCode != 0) {
+      throw StateError('Update staging failed. Details in $log');
+    }
+    dlog('update staged $version, recovery script=${script.path}');
+    await Process.start(
+      'cmd.exe',
+      updaterArgv(script.path),
+      workingDirectory: tmpDir,
+    );
     exit(0);
   }
 
@@ -450,11 +574,11 @@ class UpdateCenter extends Notifier<UpdateUiState> {
   }
 }
 
-final updateCenterProvider =
-    NotifierProvider<UpdateCenter, UpdateUiState>(UpdateCenter.new);
+final updateCenterProvider = NotifierProvider<UpdateCenter, UpdateUiState>(
+  UpdateCenter.new,
+);
 
-final updateChannelProvider =
-    FutureProvider<UpdateChannel>((ref) async {
+final updateChannelProvider = FutureProvider<UpdateChannel>((ref) async {
   final prefs = await SharedPreferences.getInstance();
   return (prefs.getString('update_channel') ?? 'release') == 'beta'
       ? UpdateChannel.beta

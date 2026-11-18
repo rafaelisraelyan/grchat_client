@@ -9,6 +9,10 @@ import '../call/call_api.dart';
 import '../call/call_diagnostics.dart';
 import '../call/room_options.dart';
 import '../call/speaker_focus.dart';
+import '../transport/grchat_connection.dart';
+
+// R1 rooms use one LiveKit identity per voice lease. Legacy rooms use userId.
+String _voiceUserId(String identity) => identity.split('.').first;
 
 /// Voice channel presence (signaling only for now; media comes with SFU).
 class VoiceState extends Notifier<Map<String, Set<String>>> {
@@ -29,9 +33,9 @@ class VoiceState extends Notifier<Map<String, Set<String>>> {
     return null;
   }
 
-  Future<void> join(String channelId) async {
+  Future<bool> join(String channelId) async {
     final s = ref.read(sessionProvider);
-    if (s == null) return;
+    if (s == null) throw GrchatException('NOT_AUTHENTICATED');
     final r = await ref
         .read(connectionProvider)
         .request(
@@ -42,6 +46,7 @@ class VoiceState extends Notifier<Map<String, Set<String>>> {
       throw GrchatException(r['code']?.toString() ?? 'UNKNOWN');
     }
     await refresh(channelId);
+    return r['resumed'] != false;
   }
 
   Future<void> leave() async {
@@ -49,14 +54,15 @@ class VoiceState extends Notifier<Map<String, Set<String>>> {
     if (s == null) return;
     final cur = joinedChannelId;
     if (cur == null) return;
-    await ref
+    final response = await ref
         .read(connectionProvider)
         .request(
           'voice_leave',
           fields: {'session_token': s.token, 'channel_id': cur},
         );
+    if (response['type'] == 'error') return;
     final next = Map<String, Set<String>>.from(state);
-    next[cur]?.remove(s.userId);
+    next[cur] = {...?next[cur]}..remove(s.userId);
     state = next;
   }
 
@@ -332,6 +338,23 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
       _refreshRoster(cur.channelId).then((_) => _syncPeers());
     });
     _pushSub ??= ref.read(connectionProvider).pushes.listen(_onPush);
+    ref.listen(connStatusProvider, (_, update) {
+      final session = state;
+      final room = _room;
+      final connection = ref.read(connectionProvider);
+      if (update.value == ConnStatus.connected &&
+          session != null &&
+          room != null) {
+        unawaited(
+          _restorePresence(
+            connection,
+            connection.socketGeneration,
+            session,
+            room,
+          ),
+        );
+      }
+    });
     ref.onDispose(() => _pushSub?.cancel());
     return null;
   }
@@ -361,6 +384,42 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
       state = state?.copyWith(serverMutedMe: type == 'voice_muted');
     }
     _syncPeers();
+  }
+
+  Future<void> _restorePresence(
+    GrchatConnection connection,
+    int generation,
+    VoiceSession session,
+    Room room,
+  ) async {
+    bool ownsRoom() =>
+        connection.socketGeneration == generation && identical(room, _room);
+    for (var attempt = 0; attempt < 4 && ownsRoom(); attempt++) {
+      try {
+        final resumed = await ref
+            .read(voiceStateProvider.notifier)
+            .join(session.channelId);
+        if (!ownsRoom()) return;
+        if (!resumed) {
+          await _leaveRoom();
+          state = null;
+          await join(channelId: session.channelId, title: session.title);
+        }
+        return;
+      } catch (error) {
+        if (!ownsRoom()) return;
+        final retryable =
+            error is GrchatException && error.code == 'ALREADY_IN_VOICE';
+        if (retryable && attempt < 3) {
+          await Future<void>.delayed(
+            Duration(milliseconds: 200 * (attempt + 1)),
+          );
+          continue;
+        }
+        dlog('voice presence recovery failed: ${error.runtimeType}');
+        await leave();
+      }
+    }
   }
 
   /// Moderator locked my mic: force it off now, keep it locked.
@@ -399,12 +458,17 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     try {
       _attach(room);
       await room.connect(creds.url, creds.token);
-      await room.localParticipant?.setMicrophoneEnabled(true);
+      final mutedByServer = serverMuted.contains(s.userId);
+      if (!mutedByServer) {
+        await room.localParticipant?.setMicrophoneEnabled(true);
+      }
       dlog('voice joined room=${creds.room}');
       state = VoiceSession(
         channelId: channelId,
         title: title,
         room: creds.room,
+        muted: mutedByServer,
+        serverMutedMe: mutedByServer,
       );
       _speakerFocus.reset();
       _levelTimer?.cancel();
@@ -632,24 +696,26 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
             if (t is VideoTrack) video = t;
           }
         }
-        r[p.identity] = (
+        final userId = _voiceUserId(p.identity);
+        r[userId] = (
           name: p.name.isNotEmpty ? p.name : p.identity,
           speaking: p.isSpeaking,
           muted: muted,
         );
-        vids[p.identity] = video;
-        lvls[p.identity] = p.audioLevel;
+        vids[userId] = video;
+        lvls[userId] = p.audioLevel;
       }
       final local = room.localParticipant;
       if (local != null) {
         final s2 = ref.read(sessionProvider);
-        r[local.identity] = (
+        final userId = _voiceUserId(local.identity);
+        r[userId] = (
           name: s2?.nick ?? '?',
           speaking: local.isSpeaking,
           muted: cur.muted,
         );
-        vids[local.identity] = localVideoTrack;
-        lvls[local.identity] = local.audioLevel;
+        vids[userId] = localVideoTrack;
+        lvls[userId] = local.audioLevel;
       }
     }
     final s = ref.read(sessionProvider);
@@ -725,9 +791,10 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
     final room = _room;
     if (cur == null || room == null) return;
     for (final p in room.remoteParticipants.values) {
+      final user = _voiceUserId(p.identity);
       final hear =
-          !serverMuted.contains(p.identity) &&
-          !mutedPeers.contains(p.identity) &&
+          !serverMuted.contains(user) &&
+          !mutedPeers.contains(user) &&
           !cur.deafened;
       if (_appliedSubs[p.identity] == hear) continue;
       _appliedSubs[p.identity] = hear;
@@ -778,7 +845,10 @@ class VoiceSessionState extends Notifier<VoiceSession?> {
       // Server mutes only ever apply to the channel I'm actually in:
       // resolving another channel's roster (limit display) must not
       // inherit its locks.
-      if (state?.channelId == channelId) {
+      if (state?.channelId == channelId ||
+          (state == null &&
+              ref.read(voiceStateProvider.notifier).joinedChannelId ==
+                  channelId)) {
         serverMuted
           ..clear()
           ..addAll(sm);

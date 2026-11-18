@@ -2,6 +2,10 @@
 
 A new Flutter project.
 
+## GRChat R1
+
+Текущая карта архитектуры и совместимость описаны в [architecture-r1](docs/architecture-r1.md). Результаты и границы приёмки — в [отчёте R1](GRCHAT_STABILIZATION_R1_REPORT.md). Windows updater и откат описаны в [windows-update-r1](docs/windows-update-r1.md).
+
 ## Getting Started
 
 This project is a starting point for a Flutter application.

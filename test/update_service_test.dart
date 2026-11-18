@@ -28,8 +28,11 @@ void main() {
     test('same or older is not newer — never reinstall, never downgrade', () {
       expect(UpdateCenter.isNewerForTest('1.1.0', '1.1.0'), isFalse);
       expect(UpdateCenter.isNewerForTest('1.1.0', '1.1.1'), isFalse);
-      expect(UpdateCenter.isNewerForTest('1.1.10', '1.1.9'), isTrue,
-          reason: 'numeric, not lexicographic: 10 > 9');
+      expect(
+        UpdateCenter.isNewerForTest('1.1.10', '1.1.9'),
+        isTrue,
+        reason: 'numeric, not lexicographic: 10 > 9',
+      );
       expect(UpdateCenter.isNewerForTest('1.1.9', '1.1.10'), isFalse);
     });
   });
@@ -50,39 +53,57 @@ void main() {
     test('valid signature verifies', () async {
       final (pub, sig) = await signed(data);
       expect(
-          await UpdateCenter.verifySignature(
-              data: data, signature: sig, publicKey: pub),
-          isTrue);
+        await UpdateCenter.verifySignature(
+          data: data,
+          signature: sig,
+          publicKey: pub,
+        ),
+        isTrue,
+      );
     });
 
     test('tampered data is rejected', () async {
       final (pub, sig) = await signed(data);
       expect(
-          await UpdateCenter.verifySignature(
-              data: utf8.encode('evil zip bytes'),
-              signature: sig,
-              publicKey: pub),
-          isFalse);
+        await UpdateCenter.verifySignature(
+          data: utf8.encode('evil zip bytes'),
+          signature: sig,
+          publicKey: pub,
+        ),
+        isFalse,
+      );
     });
 
     test('signature from another key is rejected', () async {
       final (_, sig) = await signed(data);
       final (otherPub, _) = await signed(data);
       expect(
-          await UpdateCenter.verifySignature(
-              data: data, signature: sig, publicKey: otherPub),
-          isFalse);
+        await UpdateCenter.verifySignature(
+          data: data,
+          signature: sig,
+          publicKey: otherPub,
+        ),
+        isFalse,
+      );
     });
 
     test('malformed lengths fail closed, never throw', () async {
       expect(
-          await UpdateCenter.verifySignature(
-              data: data, signature: [1, 2, 3], publicKey: List.filled(32, 0)),
-          isFalse);
+        await UpdateCenter.verifySignature(
+          data: data,
+          signature: [1, 2, 3],
+          publicKey: List.filled(32, 0),
+        ),
+        isFalse,
+      );
       expect(
-          await UpdateCenter.verifySignature(
-              data: data, signature: List.filled(64, 0), publicKey: [1]),
-          isFalse);
+        await UpdateCenter.verifySignature(
+          data: data,
+          signature: List.filled(64, 0),
+          publicKey: [1],
+        ),
+        isFalse,
+      );
     });
 
     test('hex parsing is strict', () {
@@ -90,8 +111,11 @@ void main() {
       expect(UpdateCenter.parseHex('00ff\n', 2), [0, 255]);
       expect(UpdateCenter.parseHex('00ff', 3), isNull);
       expect(UpdateCenter.parseHex('zz', 1), isNull);
-      expect(UpdateCenter.parseHex('', 32), isNull,
-          reason: 'empty key constant = signing not configured');
+      expect(
+        UpdateCenter.parseHex('', 32),
+        isNull,
+        reason: 'empty key constant = signing not configured',
+      );
     });
   });
 
@@ -101,11 +125,13 @@ void main() {
   /// trace — exactly the silent 1.4.0 and 1.5.1 failures.
   group('apply script', () {
     String script() => UpdateCenter.buildApplyScript(
-        pid: 1234,
-        zipPath: r'C:\T\grchat_updX\update.zip',
-        dir: r'C:\App\Release',
-        exe: r'C:\App\Release\grchat_client.exe',
-        log: r'C:\T\grchat_updX\apply.log');
+      pid: 1234,
+      zipPath: r'C:\T\grchat_updX\update.zip',
+      dir: r'C:\App\Release',
+      exe: r'C:\App\Release\grchat_client.exe',
+      log: r'C:\T\grchat_updX\apply.log',
+      version: '1.5.11',
+    );
 
     test('bakes in runtime values, keeps PowerShell vars literal', () {
       final s = script();
@@ -114,17 +140,25 @@ void main() {
       expect(s, contains(r'C:\App\Release\grchat_client.exe'));
       expect(s, contains(r'C:\T\grchat_updX\apply.log'));
       // No un-rendered Dart interpolation leftovers.
-      expect(s.contains('\$zip'), isFalse);
-      expect(s.contains('\$dir'), isFalse);
-      expect(s.contains('\$exe'), isFalse);
-      expect(s.contains('\$log'), isFalse);
+      expect(s, contains(r"$version = '1.5.11'"));
+      expect(s, contains(r'$StageOnly'));
     });
 
-    test('waits, kills siblings, expands logged, restarts', () {
+    test('stages before activation and preserves rollback', () {
       final s = script();
       expect(s, contains('Wait-Process -Id \$pid0'));
       expect(s, contains('Get-Process grchat_client'));
-      expect(s, contains('Stop-Process'));
+      expect(s, contains('CloseMainWindow'));
+      expect(s, contains('Assert-StagedBundle'));
+      expect(s, contains('Restore-Backup'));
+      expect(s, contains(r'[IO.Directory]::Move($install, $backup)'));
+      expect(s, contains(r'[IO.Directory]::Move($stage, $install)'));
+      expect(
+        s,
+        contains(
+          r'Expand-Archive -LiteralPath $archive -DestinationPath $stage',
+        ),
+      );
       expect(s, contains('Expand-Archive'));
       expect(s, contains('-ErrorAction Stop'));
       expect(s, contains('Start-Process'));
@@ -149,8 +183,7 @@ void main() {
   /// it into `"""..."""` and the launch dies silently.
   group('updater argv', () {
     test('cmd start chain with a bare script path', () {
-      final argv = UpdateCenter.updaterArgv(
-          r'C:\T\grchat_updX\apply.ps1');
+      final argv = UpdateCenter.updaterArgv(r'C:\T\grchat_updX\apply.ps1');
       expect(argv.first, '/c');
       expect(argv, contains('start'));
       expect(argv, contains('powershell.exe'));
@@ -161,8 +194,7 @@ void main() {
     });
 
     test('paths with spaces stay bare (Dart quotes them)', () {
-      final argv = UpdateCenter.updaterArgv(
-          r'C:\My Dir\apply.ps1');
+      final argv = UpdateCenter.updaterArgv(r'C:\My Dir\apply.ps1');
       expect(argv.last, r'C:\My Dir\apply.ps1');
     });
   });

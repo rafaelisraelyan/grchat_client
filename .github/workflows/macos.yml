@@ -22,11 +22,11 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.6'
           cache: true
 
       - run: flutter --version
-      - run: flutter pub get
+      - run: flutter pub get --enforce-lockfile
       - run: flutter analyze
       # Hermetic tests only: goldens are Windows pixel-exact and the
       # connection/signaling tests need a live dev server + Postgres.
