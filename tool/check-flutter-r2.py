@@ -19,6 +19,8 @@ for line in args.events.read_text(encoding="utf-8-sig").splitlines():
         event = json.loads(line)
     except json.JSONDecodeError:
         continue
+    if not isinstance(event, dict):
+        continue
     kind = event.get("type")
     if kind == "suite":
         suites[event["suite"]["id"]] = event["suite"].get("path") or ""

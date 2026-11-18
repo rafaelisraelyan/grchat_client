@@ -28,8 +28,7 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 12
     env:
       SERVER_SHA: ${{ inputs.server_sha }}
-      GRCHAT_TEST_JDBC: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports[5432] }}/grchat_test
-      GRCHAT_TEST_FILE_ROOT: ${{ runner.temp }}/grchat-server-tests
+      GRCHAT_TEST_FILE_ROOT: ${{ github.workspace }}/grchat-server-tests
     steps:
       - name: Require a server commit
         run: |
@@ -60,3 +59,5 @@ jobs:
         working-directory: client
       - name: Require all seven Stage 2B TLS scenarios
         run: bash server/tool/test-stage2b-ci.sh client
+        env:
+          GRCHAT_TEST_JDBC: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/grchat_test

@@ -105,8 +105,10 @@ Future<({num audio, num video})?> waitInboundGrowth(
 String _dumpKind(String tag, List<StatsReport> reports) {
   final buf = StringBuffer();
   for (final r in reports) {
-    buf.writeln('$tag ${r.type} id=${r.id} kind=${r.values['kind']} '
-        'ssrc=${r.values['ssrc']}');
+    buf.writeln(
+      '$tag ${r.type} id=${r.id} kind=${r.values['kind']} '
+      'ssrc=${r.values['ssrc']}',
+    );
     final keys = r.values.keys.map((k) => '$k=${r.values[k]}').toList()..sort();
     buf.writeln('    ${keys.join(' ')}');
   }
@@ -114,17 +116,39 @@ String _dumpKind(String tag, List<StatsReport> reports) {
 }
 
 /// Full stats evidence for the report.
-Future<String> dumpEvidence(MediaPeer receiver, MediaPeer sender, String phase) async {
+Future<String> dumpEvidence(
+  MediaPeer receiver,
+  MediaPeer sender,
+  String phase,
+) async {
   final buf = StringBuffer();
   final inStats = await receiver.pc.getStats();
   final outStats = await sender.pc.getStats();
   buf.writeln('=== EVIDENCE[$phase] ===');
-  buf.writeln('inbound types=${inStats.map((r) => r.type).toSet().toList()..sort()}');
-  buf.writeln('outbound types=${outStats.map((r) => r.type).toSet().toList()..sort()}');
-  buf.write(_dumpKind('INBOUND', inStats.where((r) => r.type == 'inbound-rtp').toList()));
-  buf.write(_dumpKind('OUTBOUND', outStats.where((r) => r.type == 'outbound-rtp').toList()));
-  for (final r in inStats.where((r) => r.type == 'candidate-pair' && r.values['nominated'] == true)) {
-    buf.writeln('SELECTED PAIR id=${r.id} ${r.values.entries.map((e) => '${e.key}=${e.value}').toList()..sort()}');
+  buf.writeln(
+    'inbound types=${inStats.map((r) => r.type).toSet().toList()..sort()}',
+  );
+  buf.writeln(
+    'outbound types=${outStats.map((r) => r.type).toSet().toList()..sort()}',
+  );
+  buf.write(
+    _dumpKind(
+      'INBOUND',
+      inStats.where((r) => r.type == 'inbound-rtp').toList(),
+    ),
+  );
+  buf.write(
+    _dumpKind(
+      'OUTBOUND',
+      outStats.where((r) => r.type == 'outbound-rtp').toList(),
+    ),
+  );
+  for (final r in inStats.where(
+    (r) => r.type == 'candidate-pair' && r.values['nominated'] == true,
+  )) {
+    buf.writeln(
+      'SELECTED PAIR id=${r.id} ${r.values.entries.map((e) => '${e.key}=${e.value}').toList()..sort()}',
+    );
   }
   return buf.toString();
 }
@@ -143,8 +167,11 @@ Future<List<(MediaStream, MediaSource)>> openMicrophonesFirst() async {
   final devices = await enumerateCapture('audioinput');
   final opened = <(MediaStream, MediaSource)>[];
   for (final d in devices.take(2)) {
-    final s =
-        await openCapture(audio: true, video: false, audioDeviceId: d.deviceId);
+    final s = await openCapture(
+      audio: true,
+      video: false,
+      audioDeviceId: d.deviceId,
+    );
     if (s == null) {
       // ignore: avoid_print
       print('MIC open failed for ${d.label}');
@@ -163,16 +190,20 @@ Future<RtpPair?> tryCamera({
   required MediaSource audioDeviceB,
   required MediaSource videoDevice,
   required List<String> log,
+  Map<String, dynamic>? iceConfig,
 }) async {
-  final videoStream =
-      await openCapture(audio: false, video: true, videoDeviceId: videoDevice.deviceId);
+  final videoStream = await openCapture(
+    audio: false,
+    video: true,
+    videoDeviceId: videoDevice.deviceId,
+  );
   if (videoStream == null) {
     log.add('video ${videoDevice.label}: capture open failed');
     return null;
   }
 
-  final a = await MediaPeer.create('A');
-  final b = await MediaPeer.create('B');
+  final a = await MediaPeer.create('A', iceConfig: iceConfig);
+  final b = await MediaPeer.create('B', iceConfig: iceConfig);
   a.wire();
   b.wire();
   // Attach AUDIO FIRST. This order is not cosmetic: with the proven
@@ -194,7 +225,10 @@ Future<RtpPair?> tryCamera({
       final d = await p.pc.getLocalDescription();
       if (d == null) return 'null';
       final sdp = d.sdp ?? '';
-      final sections = sdp.split('\r\n').where((l) => l.startsWith('m=')).toList();
+      final sections = sdp
+          .split('\r\n')
+          .where((l) => l.startsWith('m='))
+          .toList();
       return 'type=${d.type} sections=${sections.length} [$sections] '
           'ufrag=${iceUfrag(d)} pwd=${sdp.contains('a=ice-pwd:')} '
           'candidates=${sdp.split('\r\n').where((l) => l.startsWith('a=candidate')).length}';
@@ -204,31 +238,42 @@ Future<RtpPair?> tryCamera({
   }
 
   // ignore: avoid_print
-  print('NEGOTIATED ${videoDevice.label} A(local=${await localSummary(a)}) '
-      'B(local=${await localSummary(b)}) received A=${a.candidatesReceived} B=${b.candidatesReceived}');
+  print(
+    'NEGOTIATED ${videoDevice.label} A(local=${await localSummary(a)}) '
+    'B(local=${await localSummary(b)}) received A=${a.candidatesReceived} B=${b.candidatesReceived}',
+  );
 
   final up = await waitForIceUp(a, b, timeout: _kAttemptIceBudget);
   if (!up) {
-    log.add('${videoDevice.label}: ICE never came up '
-        '(A received=${a.candidatesReceived} applied=${a.candidatesApplied} failed=${a.candidatesFailed} | '
-        'B received=${b.candidatesReceived} applied=${b.candidatesApplied} failed=${b.candidatesFailed})');
+    log.add(
+      '${videoDevice.label}: ICE never came up '
+      '(A received=${a.candidatesReceived} applied=${a.candidatesApplied} failed=${a.candidatesFailed} | '
+      'B received=${b.candidatesReceived} applied=${b.candidatesApplied} failed=${b.candidatesFailed})',
+    );
     await a.close();
     await b.close();
     await videoStream.dispose();
     return null;
   }
 
-  final growth = await waitInboundGrowth(b, window: const Duration(seconds: 10));
+  final growth = await waitInboundGrowth(
+    b,
+    window: const Duration(seconds: 10),
+  );
   final snapshot = await inboundSnapshot(b);
   // ignore: avoid_print
-  print('ATTEMPT camera=${videoDevice.label} ice=up inboundAudio=${snapshot.audio} '
-      'inboundVideo=${snapshot.video} growth=${growth != null} '
-      'remoteTracks=${b.remoteTracks.map((t) => t.kind).toList()}');
+  print(
+    'ATTEMPT camera=${videoDevice.label} ice=up inboundAudio=${snapshot.audio} '
+    'inboundVideo=${snapshot.video} growth=${growth != null} '
+    'remoteTracks=${b.remoteTracks.map((t) => t.kind).toList()}',
+  );
 
   if (growth == null) {
-    log.add('${videoDevice.label}: ICE up but no RTP growth '
-        '(inbound audio=${snapshot.audio} video=${snapshot.video}, '
-        'remote tracks=${b.remoteTracks.map((t) => t.kind).toList()})');
+    log.add(
+      '${videoDevice.label}: ICE up but no RTP growth '
+      '(inbound audio=${snapshot.audio} video=${snapshot.video}, '
+      'remote tracks=${b.remoteTracks.map((t) => t.kind).toList()})',
+    );
     await a.close();
     await b.close();
     await videoStream.dispose();
@@ -252,26 +297,32 @@ Future<RtpPair?> tryCamera({
     audioDelta: s1.audio - s0.audio,
   );
   // ignore: avoid_print
-  print('PAIR OK video=${videoDevice.label} audioA=${audioDeviceA.label} '
-      'audioB=${audioDeviceB.label} deltaAudio=${pair.audioDelta} deltaVideo=${pair.videoDelta}');
+  print(
+    'PAIR OK video=${videoDevice.label} audioA=${audioDeviceA.label} '
+    'audioB=${audioDeviceB.label} deltaAudio=${pair.audioDelta} deltaVideo=${pair.videoDelta}',
+  );
   return pair;
 }
 
 /// Walks real cameras until a pair carries real audio AND video RTP.
-Future<RtpPair> connectWorkingPair() async {
+Future<RtpPair> connectWorkingPair({Map<String, dynamic>? iceConfig}) async {
   final log = <String>[];
 
   // MUST happen before the first PeerConnection: see openMicrophonesFirst.
   final mics = await openMicrophonesFirst();
   if (mics.length < 2) {
-    fail('audio RTP needs one microphone stream per peer, but only '
-        '${mics.length} could be opened before PeerConnection creation. '
-        'Audio cannot be verified in this environment.');
+    fail(
+      'audio RTP needs one microphone stream per peer, but only '
+      '${mics.length} could be opened before PeerConnection creation. '
+      'Audio cannot be verified in this environment.',
+    );
   }
   final (audioStreamA, audioDeviceA) = mics[0];
   final (audioStreamB, audioDeviceB) = mics[1];
   // ignore: avoid_print
-  print('MIC opened before any PeerConnection: A=${audioDeviceA.label} B=${audioDeviceB.label}');
+  print(
+    'MIC opened before any PeerConnection: A=${audioDeviceA.label} B=${audioDeviceB.label}',
+  );
 
   final videoDevices = (await enumerateCapture('videoinput'))
     ..sort((x, y) => _physicalFirst(x).compareTo(_physicalFirst(y)));
@@ -279,24 +330,28 @@ Future<RtpPair> connectWorkingPair() async {
   print('CANDIDATES video=${videoDevices.map((d) => d.toString()).toList()}');
 
   var pair = await tryCamera(
-      audioStreamA: audioStreamA,
-      audioDeviceA: audioDeviceA,
-      audioStreamB: audioStreamB,
-      audioDeviceB: audioDeviceB,
-      videoDevice: videoDevices.first,
-      log: log);
+    audioStreamA: audioStreamA,
+    audioDeviceA: audioDeviceA,
+    audioStreamB: audioStreamB,
+    audioDeviceB: audioDeviceB,
+    videoDevice: videoDevices.first,
+    log: log,
+    iceConfig: iceConfig,
+  );
 
   // A camera that opens but never delivers frames is common on this host
   // (documented in AGENTS.md), so walk the remaining cameras rather than
   // declaring video unprovable after the first attempt.
   for (var i = 1; pair == null && i < videoDevices.length && i < 4; i++) {
     pair = await tryCamera(
-        audioStreamA: audioStreamA,
-        audioDeviceA: audioDeviceA,
-        audioStreamB: audioStreamB,
-        audioDeviceB: audioDeviceB,
-        videoDevice: videoDevices[i],
-        log: log);
+      audioStreamA: audioStreamA,
+      audioDeviceA: audioDeviceA,
+      audioStreamB: audioStreamB,
+      audioDeviceB: audioDeviceB,
+      videoDevice: videoDevices[i],
+      log: log,
+      iceConfig: iceConfig,
+    );
   }
 
   if (pair == null) {
@@ -304,7 +359,9 @@ Future<RtpPair> connectWorkingPair() async {
     await audioStreamB.dispose();
     // ignore: avoid_print
     print('WALK FAILED:\n${log.join('\n')}');
-    fail('no real audio+video RTP could be established. Attempts:\n${log.join('\n')}');
+    fail(
+      'no real audio+video RTP could be established. Attempts:\n${log.join('\n')}',
+    );
   }
   return pair;
 }

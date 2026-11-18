@@ -47,8 +47,7 @@ class MediaSource {
   String toString() => '$kind "${_mask(label)}" (${_short(deviceId)})';
 }
 
-String _short(String id) =>
-    id.length <= 8 ? id : '${id.substring(0, 8)}…';
+String _short(String id) => id.length <= 8 ? id : '${id.substring(0, 8)}…';
 
 String _mask(String label) {
   // Device labels are user hardware names; keep them short and non-identifying
@@ -81,8 +80,8 @@ Future<MediaStream?> openCapture({
             : <String, dynamic>{
                 'deviceId': audioDeviceId,
                 'optional': [
-                  {'deviceId': audioDeviceId}
-                ]
+                  {'deviceId': audioDeviceId},
+                ],
               },
       if (video)
         'video': videoDeviceId == null
@@ -90,8 +89,8 @@ Future<MediaStream?> openCapture({
             : <String, dynamic>{
                 'deviceId': videoDeviceId,
                 'optional': [
-                  {'deviceId': videoDeviceId}
-                ]
+                  {'deviceId': videoDeviceId},
+                ],
               },
     };
     return await navigator.mediaDevices.getUserMedia(constraints);
@@ -118,13 +117,16 @@ class MediaPeer {
 
   MediaPeer._(this.pc, this.name);
 
-  static Future<MediaPeer> create(String name) async {
+  static Future<MediaPeer> create(
+    String name, {
+    Map<String, dynamic>? iceConfig,
+  }) async {
     // iceServers is empty on purpose: this harness runs both peers on the same
     // host, so host candidates are sufficient and no STUN/TURN dependency is
     // introduced into the verification path.
-    final pc = await createPeerConnection({
-      'iceServers': <dynamic>[]
-    });
+    final pc = await createPeerConnection(
+      iceConfig ?? {'iceServers': <dynamic>[]},
+    );
     return MediaPeer._(pc, name);
   }
 
@@ -207,7 +209,7 @@ Future<void> negotiate(MediaPeer offerer, MediaPeer answerer) async {
 
   final offer = await offerer.pc.createOffer({
     'offerToReceiveAudio': 1,
-    'offerToReceiveVideo': 1
+    'offerToReceiveVideo': 1,
   });
   await offerer.pc.setLocalDescription(offer);
   await answerer.pc.setRemoteDescription(offer);

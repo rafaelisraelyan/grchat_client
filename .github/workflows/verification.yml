@@ -74,8 +74,11 @@ jobs:
             evidence/windows-bundle.json
 
   dependencies:
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.7.1
-    with:
-      scan-args: |-
-        --lockfile=./pubspec.lock
-      upload-sarif: false
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: google/osv-scanner-action/osv-scanner-action@0e457b42d0120153c352875e9b758b1e5c58c7e5
+        with:
+          scan-args: --lockfile=./pubspec.lock
