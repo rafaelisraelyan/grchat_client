@@ -156,10 +156,10 @@ void main() {
       expect(
         s,
         contains(
-          r'Expand-Archive -LiteralPath $archive -DestinationPath $stage',
+          r'[IO.Compression.ZipFile]::ExtractToDirectory($archive, $stage)',
         ),
       );
-      expect(s, contains('Expand-Archive'));
+      expect(s, contains('System.IO.Compression.FileSystem'));
       expect(s, contains('-ErrorAction Stop'));
       expect(s, contains('Start-Process'));
       expect(s, contains('-WorkingDirectory'));

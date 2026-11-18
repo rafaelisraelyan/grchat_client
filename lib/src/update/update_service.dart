@@ -68,7 +68,7 @@ class UpdateCenter extends Notifier<UpdateUiState> {
   static const updatePublicKeyHex =
       '73579ee6e06d793b066f6efed6ec87d15481b8d419dc0184a15b7b4ee4b1ad0c';
 
-  /// In-place install only exists on Windows (PowerShell + Expand-Archive).
+  /// In-place install only exists on Windows (PowerShell + framework ZIP support).
   /// Other platforms see the version notice and fetch the dmg by hand.
   static bool get supportsInstall => Platform.isWindows;
 
@@ -427,7 +427,10 @@ $exclusive = $null
 try {
   if ($StageOnly) {
     if (Test-Path -LiteralPath $stage) { throw 'Staging path already exists' }
-    Expand-Archive -LiteralPath $archive -DestinationPath $stage -ErrorAction Stop
+    Write-UpdateLog 'STAGING extracting archive'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::ExtractToDirectory($archive, $stage)
+    Write-UpdateLog 'STAGING validating bundle'
     Assert-StagedBundle
     Write-UpdateLog 'STAGED validated candidate'
     exit 0
@@ -471,7 +474,7 @@ try {
     throw
   }
 } catch {
-  Write-UpdateLog ('UPDATE FAILED ' + $_.Exception.GetType().Name)
+  Write-UpdateLog ('UPDATE FAILED ' + $_.Exception.GetType().Name + ' (' + $_.FullyQualifiedErrorId + ')')
   if (!$StageOnly -and !$Recover -and !$moved -and
       (Test-Path -LiteralPath $entry -PathType Leaf)) {
     $alreadyRunning = Get-Process grchat_client -ErrorAction SilentlyContinue |
