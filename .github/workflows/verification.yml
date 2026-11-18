@@ -38,9 +38,40 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Dart formatting mismatch' }
           }
       - run: dart analyze lib test integration_test
-      - run: flutter test --no-pub --reporter expanded
-      - name: Build Windows debug
-        run: flutter build windows --debug --no-pub
+      - name: Run and verify all unit and widget tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory evidence -Force | Out-Null
+          flutter test --no-pub --machine *> evidence/flutter-events.jsonl
+          $testExit = $LASTEXITCODE
+          python tool/check-flutter-r2.py evidence/flutter-events.jsonl evidence/flutter-summary.json
+          if ($testExit -ne 0 -or $LASTEXITCODE -ne 0) { throw 'Flutter test gate failed' }
+      - name: Build Windows debug and verify the bundle
+        shell: pwsh
+        run: |
+          flutter build windows --debug --no-pub *> evidence/windows-build.log
+          if ($LASTEXITCODE -ne 0) { throw 'Windows debug build failed' }
+          $bundle = 'build/windows/x64/runner/Debug'
+          $required = @('grchat_client.exe','flutter_windows.dll','flutter_webrtc_plugin.dll',
+            'libwebrtc.dll','livekit_client_plugin.dll','dartjni.dll','data/icudtl.dat',
+            'data/flutter_assets/AssetManifest.bin')
+          $hashes = foreach ($file in $required) {
+            $path = Join-Path $bundle $file
+            if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item $path).Length -eq 0) {
+              throw "Missing Windows bundle file $file"
+            }
+            [ordered]@{path=$file; sha256=(Get-FileHash $path -Algorithm SHA256).Hash}
+          }
+          $hashes | ConvertTo-Json | Set-Content -Encoding utf8 evidence/windows-bundle.json
+      - name: Upload Windows verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-r2-evidence
+          path: |
+            evidence/flutter-summary.json
+            evidence/windows-build.log
+            evidence/windows-bundle.json
 
   dependencies:
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.7.1
